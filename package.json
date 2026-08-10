@@ -15,5 +15,11 @@
     "kokoro-js": "^1.2.1",
     "lucide": "^1.31.0",
     "pdfjs-dist": "^6.2.108"
+  },
+  "allowScripts": {
+    "fsevents@2.3.3": true,
+    "onnxruntime-node@1.21.0": true,
+    "protobufjs@7.6.5": true,
+    "sharp@0.34.5": true
   }
 }
