@@ -5,16 +5,19 @@ import { env } from '@huggingface/transformers';
 env.useBrowserCache = true;
 env.allowLocalModels = false;
 
-// transformers.js points onnxruntime at cdn.jsdelivr.net the moment its backend
-// module is evaluated, which silently overrides the ~21 MB ORT WASM that Vite
-// already emits into our own /assets. Clearing it restores ORT's built-in
-// `new URL(..., self.location.href)` resolution, so the runtime is served from
-// this origin — no third-party dependency, and "local processing" stays true.
-// ORT reads wasmPaths lazily when the backend initializes, so module scope is
-// early enough as long as this runs before the first from_pretrained call.
-if (env.backends?.onnx?.wasm) {
-  env.backends.onnx.wasm.wasmPaths = undefined;
-}
+// NOTE: transformers.js points onnxruntime at cdn.jsdelivr.net when its backend
+// module is evaluated, which overrides the ~21 MB ORT runtime Vite emits into
+// /assets — so that asset ships on every build and is never served.
+//
+// Clearing wasmPaths to reclaim it does NOT work, and fails silently: ORT then
+// asks for `ort-wasm-simd-threaded.jsep.mjs` and `.wasm` by their canonical
+// names, but Vite only emits the content-hashed `.wasm`, so both 404, the wasm
+// backend never initializes, and from_pretrained hangs forever with no error on
+// both the WebGPU and the WASM attempt. It appears to work in dev only because
+// node_modules serves the unhashed originals.
+//
+// Self-hosting properly means copying onnxruntime-web's dist files somewhere
+// stable under their real names and pointing wasmPaths at that directory.
 
 // huggingface.co omits Access-Control-Allow-Origin when a request carries a
 // Referer from certain hosts — *.workers.dev among them — so every weight fetch
