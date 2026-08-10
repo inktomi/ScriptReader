@@ -146,7 +146,21 @@ parsing and inference happens in the visitor's browser, so a deployed copy is
 exactly as private as a local one: the host only ever sees a request for files,
 and scripts never leave the machine reading them.
 
-Configured for Cloudflare Pages:
+Deployed to Cloudflare Pages at `scripts.reef.fish`, built from this repo:
+
+* **Build command:** `npm run build`
+* **Build output directory:** `dist` (also declared as `pages_build_output_dir`
+  in `wrangler.toml`, which Pages reads directly)
+* **Deploy command:** *none*
+
+Leave the deploy command empty. Pages clones, builds, and uploads the output
+itself; adding `wrangler pages deploy` there nests a deploy inside a deploy and
+fails on authentication, because the nested call has to come back through the
+Cloudflare API as an external client with a Pages-scoped token. Note that the
+resulting error reports your *account* role rather than your *token* scope, so
+it can read as "Super Administrator" and "Authentication error" simultaneously.
+
+To publish from a laptop instead of from a push:
 
 ```bash
 npm run build
@@ -154,10 +168,11 @@ npx wrangler pages deploy
 ```
 
 Note the `pages` — plain `wrangler deploy` is the Workers path and will refuse.
-`pages_build_output_dir` in `wrangler.toml` is what lets the deploy command run
-without arguments. If you point a Pages project at the Git repo instead, set the
-build command to `npm run build` and the output directory to `dist`, and skip
-wrangler entirely.
+That route needs a token with **Account → Cloudflare Pages → Edit**.
+
+One deployment trap: a Worker route on the same hostname wins over a Pages
+custom domain, and does so silently — the dashboard looks correct while the old
+Worker keeps answering. Clear any such route before pointing the domain here.
 
 **Whatever you host on must send the headers in `public/_headers`.** The
 `Cross-Origin-Opener-Policy` / `Cross-Origin-Embedder-Policy` pair in
