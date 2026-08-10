@@ -1,4 +1,10 @@
 import { analyzeLineNuance } from '../screenplay/emotion-analyzer.js';
+import {
+  resolvePacing,
+  interruptTrimSec,
+  OVERLAP_TIMING,
+  DEFAULT_PACE
+} from '../screenplay/overlap-pacing.js';
 
 /**
  * Performance Director
@@ -27,12 +33,6 @@ const VOICE_PITCH_STRENGTH = 0.5;
 // The cast studio's pitch slider is ±50; mapping it at half strength keeps the
 // extremes expressive rather than cartoonish.
 const USER_PITCH_STRENGTH = 0.5;
-
-const PACING_FACTORS = {
-  natural: 1.0,
-  dramatic: 1.45,
-  snappy: 0.55
-};
 
 // Gap *between* lines, before the line's own emotional lead-in is added.
 const CUE_GAPS_MS = {
@@ -111,9 +111,25 @@ export function chunkSpeech(text) {
 
 /**
  * Theatrical handoff gap between two consecutive script elements, in ms.
+ *
+ * `pacing` is the listener's transport setting; the passage and per-line pace
+ * ride on the element itself, so every existing caller keeps working unchanged.
+ * A negative result is an overlap, not a gap.
  */
-export function computeCueGapMs(prevElement, element, pacing = 'natural', masterSpeed = 1.0) {
+export function computeCueGapMs(prevElement, element, pacing = DEFAULT_PACE, masterSpeed = 1.0) {
   if (!prevElement) return 0;
+
+  const overlap = element.overlap;
+  if (overlap && overlap.mode === 'simultaneous') {
+    // Placed against the other speaker's start, not against this gap at all.
+    return 0;
+  }
+  if (overlap && overlap.mode === 'interrupt') {
+    const sec = overlap.offsetMs != null
+      ? Math.abs(overlap.offsetMs) / 1000
+      : OVERLAP_TIMING.interruptOverlapSec;
+    return -(sec * 1000) / Math.max(0.5, masterSpeed);
+  }
 
   let base;
   // A new scene needs air on both sides, not just after the slug line.
@@ -130,14 +146,20 @@ export function computeCueGapMs(prevElement, element, pacing = 'natural', master
     base = CUE_GAPS_MS.default;
   }
 
-  const factor = PACING_FACTORS[pacing] || 1.0;
-  return (base * factor) / Math.max(0.5, masterSpeed);
+  // The gap into a line takes that line's pace, so "[[pace: droning]]" placed
+  // ahead of a speech lengthens the silence before it — the drone starts there.
+  const { gapFactor } = resolvePacing({
+    global: pacing,
+    passage: element.pace,
+    line: element.linePace
+  });
+  return (base * gapFactor) / Math.max(0.5, masterSpeed);
 }
 
 /**
  * Resolve the synthesis + playback parameters for one line.
  */
-function resolveDelivery({ nuance, voiceProfile, tuning, masterSpeed }) {
+function resolveDelivery({ nuance, voiceProfile, tuning, masterSpeed, paceTempo = 1.0 }) {
   const charSpeed = tuning && tuning.speedMultiplier ? tuning.speedMultiplier : 1.0;
   const pitchOffset = tuning && tuning.pitchOffset ? tuning.pitchOffset : 0;
 
@@ -150,9 +172,11 @@ function resolveDelivery({ nuance, voiceProfile, tuning, masterSpeed }) {
   const emotionSpeed = clamp(nuance.speedMod || 1, 0.82, 1.15);
   const emotionPitch = clamp(nuance.pitchMod || 1, 0.90, 1.10);
 
-  // Perceived tempo the listener should hear.
+  // Perceived tempo the listener should hear. Pace is a separate multiplier
+  // rather than part of `emotionSpeed`, so an authored fast passage is not
+  // squeezed through the narrow bound a direction alone has to respect.
   const tempo = clamp(
-    (voiceProfile.defaultSpeed || 1.0) * charSpeed * emotionSpeed * masterSpeed,
+    (voiceProfile.defaultSpeed || 1.0) * charSpeed * emotionSpeed * paceTempo * masterSpeed,
     0.6,
     2.0
   );
@@ -192,8 +216,9 @@ export function buildLineUnits({
   lineIndex = 0,
   voiceProfile,
   tuning = null,
+  pan = 0,
   masterSpeed = 1.0,
-  pacing = 'natural'
+  pacing = DEFAULT_PACE
 }) {
   if (!element) return [];
 
@@ -207,12 +232,46 @@ export function buildLineUnits({
   const chunks = chunkSpeech(spoken);
   if (chunks.length === 0) return [];
 
-  const delivery = resolveDelivery({ nuance, voiceProfile, tuning, masterSpeed });
+  const pace = resolvePacing({
+    global: pacing,
+    passage: element.pace,
+    line: element.linePace
+  });
+
+  const delivery = resolveDelivery({
+    nuance, voiceProfile, tuning, masterSpeed, paceTempo: pace.tempoFactor
+  });
   const voiceId = voiceProfile.kokoroId || voiceProfile.id || 'af_heart';
 
+  const overlapMode = (element.overlap && element.overlap.mode) || 'sequential';
+  const isOverlapping = overlapMode !== 'sequential';
+
   const cueGap = computeCueGapMs(prevElement, element, pacing, masterSpeed);
-  const emotionalLead = (nuance.leadPauseMs || 0) * (PACING_FACTORS[pacing] || 1.0);
+  // A line that barges in does not also get to take a breath first. Without
+  // this, an interrupting line marked "(beat)" would carry a 750ms lead-in and
+  // arrive half a second *after* the line it is supposed to be cutting off.
+  const emotionalLead = isOverlapping ? 0 : (nuance.leadPauseMs || 0) * pace.gapFactor;
   const chunkGap = CHUNK_GAP_MS / Math.max(0.5, masterSpeed);
+
+  // Which edge this line measures its start from.
+  const firstAnchor =
+      overlapMode === 'simultaneous' ? 'prevHead'
+    : overlapMode === 'interrupt'    ? 'prevTail'
+    :                                  'sequential';
+
+  const firstLead =
+      overlapMode === 'simultaneous' ? OVERLAP_TIMING.simultaneousStaggerSec
+    : (cueGap + emotionalLead) / 1000;
+
+  // Standing slightly back is what keeps a simultaneous pair readable rather
+  // than a wall of sound. An interrupter stays at full level — it is winning.
+  const gain = overlapMode === 'simultaneous'
+    ? clamp(delivery.gain * OVERLAP_TIMING.simultaneousDuck, 0.25, 1.6)
+    : delivery.gain;
+
+  // Being cut off is trimmed off this line's own tail, which is what lets the
+  // scheduler place it without yet knowing when the interrupter arrives.
+  const trimTailSec = element.cutOff ? interruptTrimSec() : 0;
 
   return chunks.map((text, chunkIndex) => ({
     lineIndex,
@@ -225,11 +284,15 @@ export function buildLineUnits({
     voiceId,
     kokoroSpeed: delivery.kokoroSpeed,
     playbackRate: delivery.playbackRate,
-    gain: delivery.gain,
+    gain,
     filter: delivery.filter,
+    pan,
 
-    // Silence before this unit, in seconds.
-    leadPause: chunkIndex === 0 ? (cueGap + emotionalLead) / 1000 : chunkGap / 1000,
+    anchor: chunkIndex === 0 ? firstAnchor : 'chunk',
+    overlapMode,
+    // Silence before this unit, in seconds. Negative means it starts early.
+    leadPause: chunkIndex === 0 ? firstLead : chunkGap / 1000,
+    trimTailSec: chunkIndex === chunks.length - 1 ? trimTailSec : 0,
 
     estimatedDuration: estimateDuration(text, delivery.tempo),
     key: makeKey(voiceId, delivery.kokoroSpeed, text),
@@ -264,7 +327,12 @@ export function buildPreviewUnits({ text, voiceProfile, tuning = null, nuance = 
     playbackRate: delivery.playbackRate,
     gain: delivery.gain,
     filter: delivery.filter,
+    // An audition is heard on its own, centred, at the pace the chips are set to.
+    pan: 0,
 
+    anchor: chunkIndex === 0 ? 'sequential' : 'chunk',
+    overlapMode: 'sequential',
+    trimTailSec: 0,
     leadPause: chunkIndex === 0 ? 0 : CHUNK_GAP_MS / 1000,
     estimatedDuration: estimateDuration(chunkText, delivery.tempo),
     key: makeKey(voiceId, delivery.kokoroSpeed, chunkText),

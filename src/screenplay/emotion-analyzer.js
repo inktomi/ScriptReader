@@ -389,13 +389,25 @@ function formatSceneHeading(headingText) {
 /**
  * Transforms raw screenplay shorthand into natural, fluid spoken prose for TTS engines.
  */
-export function cleanSpeechForSynthesis(text, speakerType = 'CHARACTER') {
+export function cleanSpeechForSynthesis(text, speakerType = 'CHARACTER', { cutOff = false, pickUp = false } = {}) {
   if (!text) return '';
 
   let spoken = text;
 
   // 1. Strip parentheticals and stage directions from spoken dialogue
   spoken = spoken.replace(/\s*\([^)]*\)\s*/g, ' ');
+
+  // 1b. Strip production notes. The parser drops notes that occupy a whole
+  //     line, but one written mid-sentence reaches us intact, and the
+  //     synthesiser will happily read the brackets out loud.
+  spoken = spoken.replace(/\[\[[^\]]*\]\]/g, ' ');
+
+  // 1c. A line that opens by cutting in starts with a dash. Removing it here
+  //     keeps it from becoming a leading comma further down, which made the
+  //     speaker begin on an odd little hitch.
+  if (pickUp || /^\s*["'‘“(\[]*\s*(--+|—|–)/.test(spoken)) {
+    spoken = spoken.replace(/^(\s*["'‘“(\[]*)\s*(--+|—|–)\s*/, '$1');
+  }
 
   // 2. Special Scene Heading formatting
   if (speakerType === 'SCENE_HEADING') {
@@ -454,16 +466,22 @@ export function cleanSpeechForSynthesis(text, speakerType = 'CHARACTER') {
   // 7. Normalize punctuation & breathing dashes.
   //    A trailing ellipsis becomes a full stop: it should trail off into the
   //    following pause, not leave the synthesiser hanging on a comma.
+  //
+  //    A line someone else talks over is the exception. Ending it on a full
+  //    stop makes the speaker sound like they finished their thought and were
+  //    then rudely followed; leaving it with no terminal punctuation at all is
+  //    what makes the synthesiser hold the pitch up, so the line still sounds
+  //    like it was going somewhere when it was taken away.
   spoken = spoken
-    .replace(/\s*\.\.\.\s*$/, '.')
-    .replace(/\s*--\s*$/, '.')
+    .replace(/\s*\.\.\.\s*$/, cutOff ? '' : '.')
+    .replace(/\s*(--+|—|–)\s*$/, cutOff ? '' : '.')
     .replace(/\s*--\s*/g, ', ')
-    .replace(/\s+—\s+/g, ', ')
+    .replace(/\s*—\s*/g, ', ')
     .replace(/\s*;\s*/g, ', ')
     .replace(/\s*\.\.\.\s*/g, ', ')
     .replace(/\s*,\s*,\s*/g, ', ')
     .replace(/\s+([,.!?])/g, '$1')
-    .replace(/,\s*$/, '.')
+    .replace(/,\s*$/, cutOff ? '' : '.')
     .replace(/\s+/g, ' ')
     .trim();
 
@@ -524,8 +542,17 @@ function collectEmotions(source) {
  * @param {string}  parenthetical Direction in parentheses, without the parens
  * @param {string}  speakerType   CHARACTER | DIALOGUE | ACTION | SCENE_HEADING | TRANSITION
  * @param {string}  extension     Character cue extension, e.g. "(V.O.)" or "(O.S.)"
+ * @param {boolean} cutOff        Someone talks over the end of this line
+ * @param {boolean} pickUp        This line opens by cutting into another
  */
-export function analyzeLineNuance({ text, parenthetical = '', speakerType = 'CHARACTER', extension = '' }) {
+export function analyzeLineNuance({
+  text,
+  parenthetical = '',
+  speakerType = 'CHARACTER',
+  extension = '',
+  cutOff = false,
+  pickUp = false
+}) {
   const rawText = (text || '').trim();
   const isNarration = speakerType === 'ACTION' || speakerType === 'SCENE_HEADING' || speakerType === 'TRANSITION';
 
@@ -587,7 +614,7 @@ export function analyzeLineNuance({ text, parenthetical = '', speakerType = 'CHA
   if (!filter && isOffScreen) filter = 'distant';
   if (!filter && isVoiceOver && primary.key === 'neutral') gainMod *= 0.95;
 
-  const cleanSpeech = cleanSpeechForSynthesis(text, speakerType);
+  const cleanSpeech = cleanSpeechForSynthesis(text, speakerType, { cutOff, pickUp });
   const isQuestion = cleanSpeech.endsWith('?');
   const isExclamation = cleanSpeech.endsWith('!');
 
@@ -622,6 +649,8 @@ export function analyzeLineNuance({ text, parenthetical = '', speakerType = 'CHA
     isExclamation,
     isBeat,
     isVoiceOver,
-    isOffScreen
+    isOffScreen,
+    isCutOff: cutOff,
+    isPickUp: pickUp
   };
 }

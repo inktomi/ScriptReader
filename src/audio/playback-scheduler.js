@@ -7,17 +7,47 @@ import { getAudioContext } from './audio-context.js';
  * rather than being chained off `onended` callbacks. The audio hardware then
  * runs the sequence at sample accuracy, so a slow main thread, a garbage
  * collection pause, or a repainting teleprompter cannot open a hole between
- * two lines. `nextStartTime` is the running edge of everything scheduled so far.
+ * two lines.
+ *
+ * Because characters can talk over each other, "the edge of what is scheduled"
+ * is not one number. A unit declares which edge it measures from via `anchor`:
+ *
+ *   sequential — after everything scheduled so far        (the ordinary case)
+ *   prevTail   — relative to where the current cluster's audio *would* have
+ *                ended, so an interrupter lands on the tail of its victim
+ *   prevHead   — relative to where the current line *started*, so two
+ *                simultaneous speakers begin together
+ *   chunk      — after the previous chunk of the same line
+ *
+ * Invariant: `timelineEnd` never moves backwards. A short line overlapping a
+ * long one must not shrink the buffered horizon, or the manager will read the
+ * collapse as starvation and stack the next line on top of the one still
+ * sounding.
  */
 
-const MIN_LEAD = 0.03;      // never schedule closer than this to "now"
-const RELEASE_TIME = 0.012; // fade used when cutting playback short
+const MIN_LEAD = 0.03;       // never schedule closer than this to "now"
+const RELEASE_TIME = 0.012;  // fade used when cutting playback short
+const INTERRUPT_FADE = 0.08; // fade applied when a line is cut off mid-thought
+const MIN_AUDIBLE = 0.06;    // a trimmed unit never collapses below this
 
 export class PlaybackScheduler {
   constructor() {
     this.ctx = getAudioContext();
     this.active = [];
-    this.nextStartTime = 0;
+
+    // Monotonic max of EFFECTIVE (post-truncation) end times. Drives bufferedAhead.
+    this.timelineEnd = 0;
+    // startAt of the most recent first-chunk — the anchor for simultaneous speech.
+    this.curLineHead = 0;
+    // NATURAL (pre-truncation) tail of the current overlap cluster, maxed across
+    // its members — the anchor for an interrupter.
+    this.curLineTail = 0;
+    // Natural end of the most recently scheduled unit — the anchor for the next
+    // chunk of the same line. Distinct from curLineTail: inside a cluster the
+    // tail is the *maximum* across speakers, which is not where this line's own
+    // next chunk belongs.
+    this.lastUnitEnd = 0;
+
     this.volume = 1.0;
     this.isMuted = false;
 
@@ -47,7 +77,7 @@ export class PlaybackScheduler {
    */
   get bufferedAhead() {
     if (this.active.length === 0) return 0;
-    return Math.max(0, this.nextStartTime - this.currentTime);
+    return Math.max(0, this.timelineEnd - this.currentTime);
   }
 
   setVolume(volume) {
@@ -67,8 +97,23 @@ export class PlaybackScheduler {
   }
 
   /**
-   * Build the per-unit signal chain. Filters are how a table read conveys that a
-   * voice is coming through a radio or from off-screen rather than in the room.
+   * Build the per-unit signal chain:
+   *
+   *   source → [filters] → gain → panner → master
+   *
+   * Filters are how a table read conveys that a voice is coming through a radio
+   * or from off-screen rather than in the room. The panner is where each
+   * character sits at the table, which is what keeps two people talking at once
+   * intelligible rather than mush.
+   *
+   * Node order is deliberate. The panner goes after the filters because a
+   * BiquadFilterNode adapts its channel count to its input, so panning first
+   * would double the filter work for identical output. It goes after the gain
+   * because the interrupt fade automates that node, and keeping the fade on a
+   * mono node keeps it cheap and separate from the pan law.
+   *
+   * @returns {{gainNode: GainNode, tailNode: AudioNode}} the node to automate,
+   *          and the last node in the chain (both need disconnecting).
    */
   _buildChain(unit, source) {
     const ctx = this.ctx;
@@ -107,40 +152,69 @@ export class PlaybackScheduler {
     }
 
     const gainNode = ctx.createGain();
-    // Short ramp in and out removes the click a hard buffer edge would produce.
-    gainNode.gain.value = unit.gain * makeupGain;
+
+    // A StereoPannerNode uses the constant-power law, which at centre puts
+    // cos(pi/4) = 0.707 into each channel. Web Audio's plain mono-to-stereo
+    // upmix puts the full signal into each. Compensating by sqrt(2) makes a
+    // centred voice — every narrator line — bit-for-bit as loud as it was
+    // before this graph gained a panner.
+    const panNode = ctx.createStereoPanner();
+    panNode.pan.value = Math.max(-1, Math.min(1, unit.pan || 0));
+    gainNode.gain.value = unit.gain * makeupGain * Math.SQRT2;
 
     head.connect(gainNode);
-    gainNode.connect(this.master);
+    gainNode.connect(panNode);
+    panNode.connect(this.master);
 
-    return gainNode;
+    return { gainNode, tailNode: panNode };
   }
 
   /**
-   * Place one unit immediately after everything already scheduled.
-   * @returns {{startAt: number, endAt: number}}
+   * Place one unit on the timeline, relative to the edge its `anchor` names.
+   * @returns {{startAt: number, endAt: number, naturalEnd: number, truncated: boolean}}
    */
   schedule(unit, audioBuffer) {
     const ctx = this.ctx;
-    if (!ctx) return { startAt: 0, endAt: 0 };
+    if (!ctx) return { startAt: 0, endAt: 0, naturalEnd: 0, truncated: false };
 
-    const startAt = Math.max(
-      this.nextStartTime + (unit.leadPause || 0),
-      ctx.currentTime + MIN_LEAD
-    );
+    const rate = unit.playbackRate || 1.0;
+    const natural = audioBuffer.duration / rate;
+
+    // A cut-off line is trimmed relative to its OWN natural end. Expressing it
+    // that way is what breaks the circular dependency: when the victim is
+    // scheduled the interrupter's absolute start is not known yet, but "the
+    // interrupter arrives `overlap` before I would have finished" is local.
+    const trim = unit.trimTailSec || 0;
+    const play = trim > 0 ? Math.max(MIN_AUDIBLE, natural - trim) : natural;
+
+    // Read the anchor BEFORE any edge is updated.
+    const base =
+        unit.anchor === 'prevHead' ? this.curLineHead
+      : unit.anchor === 'prevTail' ? this.curLineTail
+      : unit.anchor === 'chunk'    ? this.lastUnitEnd
+      :                              this.timelineEnd;
+
+    const startAt = Math.max(base + (unit.leadPause || 0), ctx.currentTime + MIN_LEAD);
 
     const source = ctx.createBufferSource();
     source.buffer = audioBuffer;
-    source.playbackRate.value = unit.playbackRate || 1.0;
+    source.playbackRate.value = rate;
 
-    const gainNode = this._buildChain(unit, source);
+    const { gainNode, tailNode } = this._buildChain(unit, source);
 
-    const duration = audioBuffer.duration / (unit.playbackRate || 1.0);
-    const endAt = startAt + duration;
+    const naturalEnd = startAt + natural;
+    const endAt = trim > 0 ? startAt + play + INTERRUPT_FADE : naturalEnd;
 
     source.start(startAt);
 
-    const entry = { source, gainNode, startAt, endAt, unit };
+    if (trim > 0) {
+      const cut = startAt + play;
+      gainNode.gain.setValueAtTime(gainNode.gain.value, cut);
+      gainNode.gain.linearRampToValueAtTime(0.0001, cut + INTERRUPT_FADE);
+      source.stop(cut + INTERRUPT_FADE);
+    }
+
+    const entry = { source, gainNode, tailNode, startAt, endAt, unit };
     this.active.push(entry);
 
     source.onended = () => {
@@ -148,22 +222,39 @@ export class PlaybackScheduler {
       if (idx !== -1) this.active.splice(idx, 1);
       try {
         gainNode.disconnect();
+        if (tailNode !== gainNode) tailNode.disconnect();
       } catch (err) {
         // already torn down
       }
     };
 
-    this.nextStartTime = endAt;
-    return { startAt, endAt };
+    if (unit.isFirstChunk) this.curLineHead = startAt;
+
+    // A sequential first chunk opens a new cluster, so the tail restarts there.
+    // Anything else is a member of the cluster already in flight and extends it.
+    this.curLineTail = (unit.isFirstChunk && (!unit.anchor || unit.anchor === 'sequential'))
+      ? naturalEnd
+      : Math.max(this.curLineTail, naturalEnd);
+
+    this.lastUnitEnd = naturalEnd;
+    this.timelineEnd = Math.max(this.timelineEnd, endAt);
+
+    return { startAt, endAt, naturalEnd, truncated: trim > 0 };
   }
 
   /**
-   * Reset the timeline edge. Used when starting fresh or recovering from a stall
-   * so the next unit plays now instead of at a stale timestamp.
+   * Reset every timeline edge. Used when starting fresh or recovering from a
+   * stall so the next unit plays now instead of at a stale timestamp. Collapsing
+   * all four to one instant is also what makes seeking directly onto an
+   * interrupter degrade cleanly into an ordinary sequential start.
    */
   resetTimeline(at = null) {
     if (!this.ctx) return;
-    this.nextStartTime = at !== null ? at : this.ctx.currentTime;
+    const t = at !== null ? at : this.ctx.currentTime;
+    this.timelineEnd = t;
+    this.curLineHead = t;
+    this.curLineTail = t;
+    this.lastUnitEnd = t;
   }
 
   /** Cut everything currently sounding or scheduled. */
@@ -188,7 +279,10 @@ export class PlaybackScheduler {
     }
 
     this.active.length = 0;
-    this.nextStartTime = now;
+    this.timelineEnd = now;
+    this.curLineHead = now;
+    this.curLineTail = now;
+    this.lastUnitEnd = now;
   }
 
   getAnalyser() {

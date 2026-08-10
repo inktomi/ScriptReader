@@ -1,6 +1,7 @@
 import * as pdfjsLib from 'pdfjs-dist';
 import pdfWorker from 'pdfjs-dist/build/pdf.worker.mjs?url';
 import { analyzeLineNuance } from './emotion-analyzer.js';
+import { annotateScriptFlow } from './overlap-pacing.js';
 
 // Configure worker for Vite client
 if (typeof window !== 'undefined' && pdfjsLib.GlobalWorkerOptions) {
@@ -283,11 +284,16 @@ function processExtractedLines(lines, scriptTitle) {
   }));
   characters.sort((a, b) => b.lineCount - a.lineCount);
 
-  return {
+  // A PDF carries no `^` and no notes, but a speaker cut off mid-sentence still
+  // ends on a dash and a direction still reads "(interrupting)" — so the same
+  // post-pass that serves Fountain gets an imported screenplay most of the way
+  // there without this parser needing to know overlap exists. It also fills in
+  // the pace/overlap fields, which is why they are absent above.
+  return annotateScriptFlow({
     title: scriptTitle || 'Exported Screenplay',
     elements,
     characters,
     scenes: sceneList,
     totalLines: elements.length
-  };
+  });
 }

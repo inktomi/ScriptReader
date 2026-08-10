@@ -245,5 +245,83 @@ The lights SNAP OFF. Pitch blackness.
 A single green sensor light blinks in the dark.
 
 FADE TO BLACK.`
+  },
+  {
+    id: 'crossfire-hearing',
+    title: 'Crossfire',
+    genre: 'Legal Drama',
+    synopsis: 'A subcommittee hearing goes off the rails. Written to exercise interruptions, simultaneous speech, and authored pacing all in one scene.',
+    characterCount: 4,
+    fountainText: `Title: Crossfire
+Author: ScriptReader Samples
+
+INT. SENATE HEARING ROOM - MORNING
+
+Rows of cameras. A witness table, one chair, one microphone.
+
+[[pace: droning]]
+
+CHAIRMAN HOLT
+The committee will come to order. Pursuant to the notice issued on the fourteenth of this month, we are convened to examine the procurement irregularities identified in the inspector general's supplemental report.
+
+CHAIRMAN HOLT
+The witness is reminded that she remains under oath from the previous session.
+
+[[pace: natural]]
+
+DOCTOR REYES
+(measured, dignified)
+Understood, Mister Chairman.
+
+[[pace: rapid]]
+
+COUNSEL VANCE
+Doctor Reyes, on the ninth you signed off on a shipment you had not inspected--
+
+DOCTOR REYES
+--I signed off on a manifest.
+
+COUNSEL VANCE
+A manifest you had not--
+
+DOCTOR REYES
+(interrupting)
+A manifest that was certified by your own office. Read the second page.
+
+COUNSEL VANCE
+Objection, the witness is--
+
+CHAIRMAN HOLT
+(talking over)
+The witness will answer the question as asked.
+
+VANCE and REYES both start speaking.
+
+COUNSEL VANCE
+This is exactly the evasion--
+
+DOCTOR REYES ^
+You have had that page for a month--
+
+CHAIRMAN HOLT
+(booming, furious)
+ENOUGH!
+
+Silence. Somewhere a camera shutter clicks.
+
+[[pace: droning]]
+
+CHAIRMAN HOLT
+We will recess for fifteen minutes, after which counsel will confine himself to the matters enumerated in the notice, and the witness will confine herself to answering them.
+
+[[pace: natural]]
+
+DOCTOR REYES
+(quietly, to herself)
+Fifteen minutes.
+
+She does not move.
+
+FADE OUT.`
   }
 ];

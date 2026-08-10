@@ -169,6 +169,33 @@ async function initApp() {
     window.__scriptReader = { audioManager, scriptStore };
   }
 
+  // `?debug=parse` prints how the script was understood — who overlaps whom,
+  // where the pace changes, and what each line will actually be asked to say.
+  // Reading that table is far quicker than listening for a parse mistake.
+  if (new URLSearchParams(window.location.search).get('debug') === 'parse') {
+    const dumpParse = () => {
+      const script = scriptStore.currentScript;
+      if (!script) return;
+      console.log(`%cParse: ${script.title}`, 'font-weight:bold');
+      console.table(script.elements.map((e, i) => ({
+        i,
+        type: e.type,
+        character: e.character,
+        pace: e.pace,
+        linePace: e.linePace || '',
+        overlap: (e.overlap && e.overlap.mode) || '',
+        via: (e.overlap && e.overlap.source) || '',
+        cutOff: !!e.cutOff,
+        pan: audioManager.getPanForCharacter(e.character).toFixed(2),
+        spoken: (e.nuance && e.nuance.cleanSpeech) || ''
+      })));
+    };
+    scriptStore.subscribe(event => {
+      if (event === 'scriptLoaded') dumpParse();
+    });
+    window.__dumpParse = dumpParse;
+  }
+
   // Initialize Canvas Visualizer
   const visualizer = new AudioVisualizer(transportBar.visualizerCanvas);
   audioManager.setVisualizer(visualizer);
@@ -182,15 +209,23 @@ async function initApp() {
         break;
 
       case 'lineStart':
+        // The store notifies the teleprompter with a single index, which would
+        // clear the other speaker in an overlap. Set it first, then paint the
+        // full set over the top.
         scriptStore.setActiveLine(data.index);
-        teleprompter.highlightActiveLine(data.index, true);
-        transportBar.updateActiveSpeaker(data.element, data.voice, data.nuance);
+        teleprompter.setActiveLines(audioManager.getActiveLineIndices(), data.isClusterHead);
+        transportBar.updateActiveSpeaker(
+          data.element, data.voice, data.nuance,
+          data.concurrent.map(i => scriptStore.currentScript.elements[i])
+        );
         transportBar.updateProgress(data.index, scriptStore.currentScript.elements.length);
-        castPanel.setSpeakingCharacter(data.element.character);
+        castPanel.setSpeakingCharacters(audioManager.getActiveCharacters());
         break;
 
       case 'lineEnd':
-        castPanel.setSpeakingCharacter(null);
+        // One voice stopping does not mean the room went quiet.
+        teleprompter.setActiveLines(audioManager.getActiveLineIndices(), false);
+        castPanel.setSpeakingCharacters(audioManager.getActiveCharacters());
         break;
 
       // Emitted by seek() while stopped or paused — keep the transport readout

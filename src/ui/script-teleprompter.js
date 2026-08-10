@@ -1,4 +1,5 @@
 import { getIconSvg } from '../utils/icons.js';
+import { PACE_PROFILES } from '../screenplay/overlap-pacing.js';
 
 export function createScriptTeleprompter({
   scriptStore,
@@ -101,6 +102,10 @@ export function createScriptTeleprompter({
         case 'CHARACTER':
         case 'DIALOGUE':
           lineClass += ' dialogue';
+          const overlapMode = elem.overlap && elem.overlap.mode;
+          if (overlapMode === 'simultaneous') lineClass += ' is-simultaneous';
+          if (overlapMode === 'interrupt') lineClass += ' is-interrupting';
+
           const directionTag = elem.parenthetical ? `
             <div class="script-line parenthetical" style="padding-left: 0; padding-right: 0;">
               (${elem.parenthetical})
@@ -113,13 +118,24 @@ export function createScriptTeleprompter({
             </span>
           ` : '';
 
+          const overlapBadge = overlapMode ? (() => {
+            const color = overlapMode === 'simultaneous' ? '#06B6D4' : '#F43F5E';
+            const text = overlapMode === 'simultaneous' ? '⇉ Simultaneous' : '⏵ Interrupts';
+            return `<span class="emotion-badge" style="background: ${color}22; border-color: ${color}66; color: ${color};">${text}</span>`;
+          })() : '';
+
+          // The dash the author wrote is already in the text; this just marks
+          // that somebody actually took the line away.
+          const cutMark = elem.cutOff ? '<span class="cut-off-mark" title="Cut off">—</span>' : '';
+
           contentHtml = `
             <div class="script-line character-cue" style="padding-left: 0; padding-right: 0; margin-top: 0;">
               <span>${elem.characterOriginal || elem.character}</span>
               ${emotionBadge}
+              ${overlapBadge}
             </div>
             ${directionTag}
-            <div>${elem.text}</div>
+            <div>${elem.text}${cutMark}</div>
           `;
           break;
 
@@ -133,7 +149,14 @@ export function createScriptTeleprompter({
           contentHtml = elem.text;
       }
 
+      // Mark where the pace changes, not every line that inherits it.
+      const prevPace = index > 0 ? script.elements[index - 1].pace : 'natural';
+      const paceMarker = elem.pace && elem.pace !== prevPace
+        ? `<div class="pace-marker">${PACE_PROFILES[elem.pace] ? PACE_PROFILES[elem.pace].icon : ''} ${PACE_PROFILES[elem.pace] ? PACE_PROFILES[elem.pace].label : elem.pace}</div>`
+        : '';
+
       html += `
+        ${paceMarker}
         <div class="${lineClass}" id="line-el-${index}" data-index="${index}">
           <div class="active-glow-indicator" style="display: none;"></div>
           ${contentHtml}
@@ -156,23 +179,38 @@ export function createScriptTeleprompter({
     highlightActiveLine(scriptStore.activeLineIndex, false);
   }
 
-  function highlightActiveLine(index, shouldScroll = true) {
+  /**
+   * Light every line currently being spoken. More than one at a time is normal
+   * once characters talk over each other.
+   */
+  function setActiveLines(indices, shouldScroll = true) {
+    const active = Array.isArray(indices) ? indices : [indices];
+
     pageContent.querySelectorAll('.script-line').forEach(el => {
       el.classList.remove('active');
       const indicator = el.querySelector('.active-glow-indicator');
       if (indicator) indicator.style.display = 'none';
     });
 
-    const activeEl = pageContent.querySelector(`#line-el-${index}`);
-    if (activeEl) {
+    let scrollTarget = null;
+    for (const index of active) {
+      const activeEl = pageContent.querySelector(`#line-el-${index}`);
+      if (!activeEl) continue;
       activeEl.classList.add('active');
       const indicator = activeEl.querySelector('.active-glow-indicator');
       if (indicator) indicator.style.display = 'block';
-
-      if (autoScrollEnabled && shouldScroll) {
-        scrollToActiveLine();
-      }
+      if (scrollTarget === null) scrollTarget = activeEl;
     }
+
+    // Only follow the line that opened the exchange. Chasing the second speaker
+    // of an overlapping pair makes the page jitter between them.
+    if (autoScrollEnabled && shouldScroll && scrollTarget) {
+      scrollToActiveLine();
+    }
+  }
+
+  function highlightActiveLine(index, shouldScroll = true) {
+    setActiveLines([index], shouldScroll);
   }
 
   function scrollToActiveLine(force = false) {
@@ -203,6 +241,7 @@ export function createScriptTeleprompter({
   return {
     element: container,
     renderScript,
+    setActiveLines,
     highlightActiveLine,
     scrollToActiveLine
   };

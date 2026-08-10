@@ -1,4 +1,5 @@
 import { analyzeLineNuance } from './emotion-analyzer.js';
+import { annotateScriptFlow, parsePaceDirective, DEFAULT_PACE } from './overlap-pacing.js';
 
 /**
  * Screenplay Parser for Fountain, Final Draft text, and plain screenplay formats.
@@ -20,6 +21,10 @@ export function parseFountainScript(text) {
   let currentSpeakerOriginal = null;
   let currentParenthetical = '';
   let lineIndex = 0;
+  // Pace runs from a `[[pace: ...]]` note until the next one or the next scene.
+  let activePace = DEFAULT_PACE;
+  // Set by a `^` on the character cue, consumed when that speech is flushed.
+  let pendingDual = false;
 
   // Check for Title Page metadata (e.g. Title: ..., Author: ...)
   let startLine = 0;
@@ -40,7 +45,9 @@ export function parseFountainScript(text) {
   const SCENE_REGEX = /^(INT\.|EXT\.|INT\.\/EXT\.|EXT\.\/INT\.|I\/E\.|EST\.|INT\s|EXT\s|SCENE\s+\d+|PROLOGUE|EPILOGUE)(\s+|$)/i;
   const TRANSITION_REGEX = /^(CUT TO:|FADE IN:|FADE OUT\.|FADE TO BLACK\.|DISSOLVE TO:|SMASH CUT TO:|MATCH CUT TO:|JUMP CUT TO:|>.*<)$/i;
   const PARENTHETICAL_REGEX = /^\s*\((.+)\)\s*$/;
-  const CHARACTER_REGEX = /^\s*([A-Z0-9\s._'-]+?)(\s*\(.*\))?\s*$/;
+  // The trailing `^` is Fountain's dual dialogue marker. It has to be part of
+  // the pattern or a cue carrying one is not recognised as a cue at all.
+  const CHARACTER_REGEX = /^\s*([A-Z0-9\s._'-]+?)(\s*\([^)]*\))?\s*(\^)?\s*$/;
 
   let inDialogueBlock = false;
   let pendingDialogueLines = [];
@@ -67,6 +74,12 @@ export function parseFountainScript(text) {
         characterOriginal: currentSpeakerOriginal || currentSpeaker,
         text: fullDialogueText,
         parenthetical: currentParenthetical,
+        pace: activePace,
+        linePace: null,
+        overlap: pendingDual
+          ? { mode: 'simultaneous', withPrevious: true, offsetMs: null, source: 'caret' }
+          : null,
+        cutOff: false,
         nuance
       };
 
@@ -80,6 +93,7 @@ export function parseFountainScript(text) {
 
       pendingDialogueLines = [];
       currentParenthetical = '';
+      pendingDual = false;
     }
   }
 
@@ -99,14 +113,27 @@ export function parseFountainScript(text) {
       continue;
     }
 
-    // Ignore fountain comments [[ ... ]]
-    if (trimmed.startsWith('[[') && trimmed.endsWith(']]')) continue;
+    // Fountain notes [[ ... ]] are not spoken, but a pace directive in one is
+    // the author telling us how the passage that follows should run.
+    if (trimmed.startsWith('[[') && trimmed.endsWith(']]')) {
+      const pace = parsePaceDirective(trimmed.slice(2, -2));
+      if (pace) {
+        flushDialogue();
+        inDialogueBlock = false;
+        activePace = pace;
+      }
+      continue;
+    }
 
     // 1. Scene Headings (e.g. EXT. OMNICORP SPIRE - 80TH FLOOR LEDGE - NIGHT)
     if (SCENE_REGEX.test(trimmed) || (trimmed.startsWith('.') && trimmed.length > 1 && !trimmed.startsWith('..'))) {
       flushDialogue();
       inDialogueBlock = false;
       currentSpeaker = null;
+
+      // A new scene is a clean slate; a pace set inside the last one does not
+      // leak across the cut.
+      activePace = DEFAULT_PACE;
 
       currentSceneNumber++;
       currentSceneTitle = trimmed.replace(/^\./, '').trim();
@@ -126,6 +153,10 @@ export function parseFountainScript(text) {
         characterOriginal: 'NARRATOR (SCENE)',
         text: currentSceneTitle,
         parenthetical: '',
+        pace: activePace,
+        linePace: null,
+        overlap: null,
+        cutOff: false,
         nuance
       });
       continue;
@@ -151,6 +182,10 @@ export function parseFountainScript(text) {
         characterOriginal: 'NARRATOR',
         text: trimmed.replace(/^>|<$/g, '').trim(),
         parenthetical: '',
+        pace: activePace,
+        linePace: null,
+        overlap: null,
+        cutOff: false,
         nuance
       });
       continue;
@@ -184,7 +219,10 @@ export function parseFountainScript(text) {
     if (isLikelyCharacter) {
       flushDialogue();
       inDialogueBlock = true;
-      currentSpeakerOriginal = trimmed;
+      // The caret is a staging instruction, not part of the name — keep it out
+      // of the cue the teleprompter shows and out of the extension parsing.
+      pendingDual = !!charMatch[3];
+      currentSpeakerOriginal = trimmed.replace(/\s*\^\s*$/, '').trim();
       // Strip extensions like (V.O.), (O.S.), (CONT'D), (INTO PHONE)
       currentSpeaker = charMatch[1].replace(/\s*\([^)]*\)\s*/g, '').trim();
       currentParenthetical = '';
@@ -213,6 +251,10 @@ export function parseFountainScript(text) {
         characterOriginal: 'NARRATOR',
         text: trimmed,
         parenthetical: '',
+        pace: activePace,
+        linePace: null,
+        overlap: null,
+        cutOff: false,
         nuance
       });
     }
@@ -230,11 +272,13 @@ export function parseFountainScript(text) {
   // Sort characters by line count descending
   characters.sort((a, b) => b.lineCount - a.lineCount);
 
-  return {
+  // Overlap is a relationship between neighbours, which only the finished array
+  // can see.
+  return annotateScriptFlow({
     title: scriptTitle,
     elements,
     characters,
     scenes: sceneList,
     totalLines: elements.length
-  };
+  });
 }

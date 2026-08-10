@@ -240,16 +240,19 @@ export function createCastPanel({
     }
   }
 
-  // Highlight currently speaking character
-  function setSpeakingCharacter(charName) {
+  // Highlight everyone currently speaking — during an overlap that is more than
+  // one person, and one of them falling silent must not dim the other.
+  function setSpeakingCharacters(charNames) {
+    const speaking = (Array.isArray(charNames) ? charNames : [charNames])
+      .filter(Boolean)
+      .map(name => name.toUpperCase().trim());
+
     panel.querySelectorAll('.character-card').forEach(card => {
-      if (charName && card.dataset.char && card.dataset.char.toUpperCase().trim() === charName.toUpperCase().trim()) {
-        card.classList.add('speaking');
-      } else {
-        card.classList.remove('speaking');
-      }
+      const cardName = (card.dataset.char || '').toUpperCase().trim();
+      card.classList.toggle('speaking', !!cardName && speaking.includes(cardName));
     });
   }
+
 
   // Subscribe to script store changes
   scriptStore.subscribe((event) => {
@@ -263,7 +266,7 @@ export function createCastPanel({
   return {
     element: panel,
     render,
-    setSpeakingCharacter,
+    setSpeakingCharacters,
     toggleCollapse: () => !panel.classList.toggle('collapsed'),
     isOpen: () => !panel.classList.contains('collapsed')
   };

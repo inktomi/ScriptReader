@@ -99,12 +99,27 @@ export class ScriptStore {
       scriptType: 'custom',
       customData: {
         title: parsed.title,
-        fountainText: parsed.elements.map(e => {
-          if (e.type === 'SCENE_HEADING') return `\n${e.text}\n`;
-          if (e.type === 'DIALOGUE') return `\n${e.characterOriginal || e.character}\n${e.text}\n`;
-          if (e.type === 'TRANSITION') return `\n${e.text}\n`;
-          return `\n${e.text}\n`;
-        }).join('')
+        // Round-tripping through Fountain is how a PDF survives a reload, so
+        // anything dropped here is lost for good. Parentheticals were being
+        // dropped, which quietly cost every direction-derived performance —
+        // and would now cost overlap markings too.
+        fountainText: (() => {
+          let previousPace = 'natural';
+          return parsed.elements.map(e => {
+            let out = '';
+            if (e.pace && e.pace !== previousPace) {
+              out += `\n[[pace: ${e.pace}]]\n`;
+              previousPace = e.pace;
+            }
+            if (e.type === 'DIALOGUE') {
+              const dual = e.overlap && e.overlap.mode === 'simultaneous' ? ' ^' : '';
+              const paren = e.parenthetical ? `(${e.parenthetical})\n` : '';
+              // e.text keeps its raw trailing dash, so interruptions re-derive.
+              return `${out}\n${e.characterOriginal || e.character}${dual}\n${paren}${e.text}\n`;
+            }
+            return `${out}\n${e.text}\n`;
+          }).join('');
+        })()
       },
       resetProgress: true
     });

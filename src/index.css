@@ -647,6 +647,49 @@ body {
   border: 1px solid rgba(245, 158, 11, 0.3);
 }
 
+/* Overlapping dialogue.
+   Drawn as a ::before bar rather than a border, because a border-left rule here
+   would out-specify .script-line.active and swallow the gold active edge. */
+.script-line.is-simultaneous::before,
+.script-line.is-interrupting::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: 6px;
+  bottom: 6px;
+  width: 2px;
+  border-radius: 2px;
+}
+
+.script-line.is-simultaneous::before {
+  background: var(--cyan-accent);
+}
+
+.script-line.is-interrupting::before {
+  background: var(--rose-accent);
+}
+
+/* Two people speaking at once are printed as one beat, not two. */
+.script-line.is-simultaneous {
+  margin-top: 0;
+}
+
+.cut-off-mark {
+  color: var(--rose-accent);
+  opacity: 0.65;
+  margin-left: 2px;
+}
+
+.pace-marker {
+  display: block;
+  font-family: var(--font-ui);
+  font-size: 0.65rem;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+  margin: 18px 0 2px;
+}
+
 .active-glow-indicator {
   position: absolute;
   left: -8px;

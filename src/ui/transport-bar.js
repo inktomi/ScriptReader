@@ -191,7 +191,7 @@ export function createTransportBar({
     }
   }
 
-  function updateActiveSpeaker(element, voice, nuance) {
+  function updateActiveSpeaker(element, voice, nuance, others = []) {
     if (!element) {
       speakerName.textContent = 'Ready';
       speakerEmotion.textContent = 'Press Play to begin readthrough';
@@ -201,11 +201,18 @@ export function createTransportBar({
     }
 
     const name = element.characterOriginal || element.character;
-    speakerName.textContent = name;
+    const alsoSpeaking = (others || [])
+      .filter(Boolean)
+      .map(other => other.characterOriginal || other.character);
+    speakerName.textContent = alsoSpeaking.length > 0
+      ? `${name} + ${alsoSpeaking.join(' + ')}`
+      : name;
 
-    const emotionText = nuance && nuance.emotionKey && nuance.emotionKey !== 'neutral'
-      ? `${nuance.emotionIcon || '🎭'} ${nuance.emotionLabel} (${nuance.description})`
-      : 'Natural Delivery';
+    const emotionText = alsoSpeaking.length > 0
+      ? '🗣️ Talking over each other'
+      : (nuance && nuance.emotionKey && nuance.emotionKey !== 'neutral'
+          ? `${nuance.emotionIcon || '🎭'} ${nuance.emotionLabel} (${nuance.description})`
+          : 'Natural Delivery');
     speakerEmotion.textContent = emotionText;
 
     if (element.character === 'NARRATOR') {

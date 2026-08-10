@@ -46,6 +46,13 @@ const PRIME_TIMEOUT_MS = 20000;
 // Highlight the line a beat before its audio, so the teleprompter never lags.
 const PLAYHEAD_LEAD_SEC = 0.02;
 
+// How far apart the cast is seated. Wide enough that two simultaneous voices
+// separate cleanly, narrow enough that nobody sounds like they left the room.
+const PAN_SPREAD = 0.35;
+
+// Playhead entries are kept this long past their end before being pruned.
+const PLAYHEAD_RETAIN_SEC = 5;
+
 export class ScreenplayAudioManager {
   constructor() {
     this.webSpeechEngine = new WebSpeechEngine();
@@ -73,9 +80,19 @@ export class ScreenplayAudioManager {
     this.unitCache = new Map();   // lineIndex -> unit[]
     this.cursorLine = 0;          // next line to schedule
     this.cursorUnit = 0;          // next chunk within that line
-    this.timeline = [];           // scheduled entries awaiting the playhead
-    this.emitCursor = 0;
-    this.activeLine = null;
+    this.stageOrder = [];         // speaking characters, most lines first — drives panning
+
+    // Playhead bookkeeping. Overlapping speech means more than one line can be
+    // sounding at once, so "the active line" is a set, and a line ends when its
+    // own audio ends — not when some other line happens to start.
+    this.pendingStarts = [];        // [{ lineIndex, startAt, overlapMode }] not yet announced
+    this.lineEndAt = new Map();     // lineIndex -> latest effective end time
+    this.lineComplete = new Map();  // lineIndex -> its last chunk has been scheduled
+    this.lineTruncated = new Map(); // lineIndex -> it was cut off by an interrupter
+    this.activeLines = new Map();   // lineIndex -> element, currently sounding
+    this.hasStartedAnyLine = false;
+    this.clusterRemaining = 0;      // units left to place in the cluster being scheduled
+
     this.reachedEnd = false;
     this.primed = false;
     this.primeDeadline = 0;
@@ -138,9 +155,16 @@ export class ScreenplayAudioManager {
   }
 
   setPacingMode(pacingMode) {
-    this.pacingMode = pacingMode || PACING_MODES.NATURAL;
+    const next = pacingMode || PACING_MODES.NATURAL;
+    if (next === this.pacingMode) return;
+    this.pacingMode = next;
     this._invalidateUnits();
     this.emit('pacingChange', { pacingMode: this.pacingMode });
+    // Pacing now moves delivery speed as well as the gaps, so it changes what
+    // gets synthesised. Restarting matches how a speed change already behaves —
+    // without it the new pacing would only appear on lines not yet rendered,
+    // which sounds like the control half-worked.
+    this._restartIfPlaying();
   }
 
   setEngineType(engineType) {
@@ -155,6 +179,7 @@ export class ScreenplayAudioManager {
     this.scriptElements = elements || [];
     this.characterAssignments = characterMap;
     this.currentIndex = Math.max(0, Math.min(this.scriptElements.length - 1, startIndex || 0));
+    this._buildStageOrder();
     this._invalidateUnits();
     this.emit('scriptLoaded', {
       totalLines: this.scriptElements.length,
@@ -197,7 +222,7 @@ export class ScreenplayAudioManager {
 
   getVoiceProfileForCharacter(characterName) {
     const cleanName = (characterName || '').toUpperCase().trim();
-    if (cleanName === 'NARRATOR' || cleanName.includes('SCENE') || cleanName === 'STAGE') {
+    if (this._isNarratorName(cleanName)) {
       return getVoiceById(this.narratorVoiceId || 'bm_george');
     }
 
@@ -217,10 +242,67 @@ export class ScreenplayAudioManager {
     };
   }
 
+  /**
+   * Seat the cast, biggest parts first. Derived from the elements rather than
+   * from `script.characters` because `setScript` is only ever handed elements,
+   * and this way PDF and Fountain scripts stage identically.
+   */
+  _buildStageOrder() {
+    const counts = new Map();
+    for (const element of this.scriptElements) {
+      if (element.type !== 'DIALOGUE') continue;
+      const name = (element.character || '').toUpperCase().trim();
+      if (!name || this._isNarratorName(name)) continue;
+      counts.set(name, (counts.get(name) || 0) + 1);
+    }
+    this.stageOrder = Array.from(counts.entries())
+      .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
+      .map(([name]) => name);
+  }
+
+  _isNarratorName(cleanName) {
+    return cleanName === 'NARRATOR' || cleanName.includes('SCENE') || cleanName === 'STAGE';
+  }
+
+  /**
+   * Where a character sits in the stereo field. Stable for the whole read, so
+   * a voice never wanders — the spread is what makes two people talking at once
+   * possible to follow at all. The narrator stays dead centre, addressing the
+   * room rather than sitting at the table.
+   */
+  getPanForCharacter(characterName) {
+    const cleanName = (characterName || '').toUpperCase().trim();
+    if (!cleanName || this._isNarratorName(cleanName)) return 0;
+
+    const assignment = this.characterAssignments.get(cleanName);
+    if (assignment && typeof assignment.pan === 'number') {
+      return Math.max(-1, Math.min(1, assignment.pan));
+    }
+
+    const slot = this.stageOrder.indexOf(cleanName);
+    if (slot < 0) return 0;
+
+    // Alternate sides and fill inward, so the leads take the outer chairs.
+    const sign = slot % 2 === 0 ? -1 : 1;
+    const tier = Math.floor(slot / 2);
+    return sign * PAN_SPREAD * (1 - (tier % 3) * 0.30);
+  }
+
   // ----------------------------------------------------------- render pipeline
 
   _invalidateUnits() {
     this.unitCache.clear();
+  }
+
+  /** Forget everything the playhead knows. Called whenever the timeline is torn down. */
+  _resetPlayheadState() {
+    this.pendingStarts = [];
+    this.lineEndAt.clear();
+    this.lineComplete.clear();
+    this.lineTruncated.clear();
+    this.activeLines.clear();
+    this.hasStartedAnyLine = false;
+    this.clusterRemaining = 0;
   }
 
   /**
@@ -240,12 +322,41 @@ export class ScreenplayAudioManager {
       lineIndex,
       voiceProfile: this.getVoiceProfileForCharacter(element.character),
       tuning: this.getCharacterSettings(element.character),
+      pan: this.getPanForCharacter(element.character),
       masterSpeed: this.masterSpeed,
       pacing: this.pacingMode
     });
 
     this.unitCache.set(lineIndex, units);
     return units;
+  }
+
+  /**
+   * The run of lines that must go onto the timeline together: a line plus every
+   * line that follows it speaking over it. Overlap is expressed as a start time
+   * relative to a neighbour, so placing half a cluster and coming back later
+   * would resolve those anchors against a stale edge.
+   */
+  _clusterUnits(fromLine) {
+    const collected = [];
+    let line = fromLine;
+    let guard = 0;
+
+    while (guard++ < 16) {
+      const units = this._unitsForLine(line);
+      if (!units) break;
+      collected.push(...units);
+
+      const next = this.scriptElements[line + 1];
+      if (!next || !next.overlap || !next.overlap.mode) break;
+      line++;
+    }
+
+    return collected;
+  }
+
+  _clusterReady(units) {
+    return units.every(unit => !!this.kokoroEngine.getCached(unit.key));
   }
 
   /** Unit at the scheduling cursor, skipping over lines with nothing to say. */
@@ -337,7 +448,7 @@ export class ScreenplayAudioManager {
   }
 
   _hasPrimeBudget() {
-    const need = this.activeLine === null ? PRIME_SECONDS_INITIAL : PRIME_SECONDS_RECOVER;
+    const need = this.hasStartedAnyLine ? PRIME_SECONDS_RECOVER : PRIME_SECONDS_INITIAL;
     const { seconds, hitEnd } = this._readyRunway();
     if (hitEnd) return true;
     if (seconds >= need) return true;
@@ -346,11 +457,29 @@ export class ScreenplayAudioManager {
 
   _pumpScheduling() {
     let guard = 0;
-    while (this.scheduler.bufferedAhead < SCHEDULE_AHEAD_SEC && guard++ < 64) {
+    // Raised from 64 so a long cluster can never be cut in half by the guard.
+    while (guard++ < 128) {
       const unit = this._unitAtCursor();
       if (!unit) {
         this.reachedEnd = true;
         break;
+      }
+
+      const midCluster = this.clusterRemaining > 0;
+
+      // The horizon check only applies between clusters. Once a cluster starts
+      // it is placed whole: scheduling a four-second line pushes bufferedAhead
+      // well past the horizon, and stopping there would strand the line meant
+      // to start *with* it until the playhead had almost caught up — silently
+      // turning simultaneous speech back into a queue.
+      if (!midCluster && this.scheduler.bufferedAhead >= SCHEDULE_AHEAD_SEC) break;
+
+      if (!midCluster && unit.isFirstChunk) {
+        const cluster = this._clusterUnits(unit.lineIndex);
+        // Every voice in the cluster has to be rendered before any of it is
+        // committed, or the overlap resolves against a half-built timeline.
+        if (cluster.length > unit.chunkCount && !this._clusterReady(cluster)) break;
+        this.clusterRemaining = cluster.length;
       }
 
       const buffer = this.kokoroEngine.getCached(unit.key);
@@ -361,62 +490,123 @@ export class ScreenplayAudioManager {
         this.primed = true;
         // Coming out of a stall, the timeline edge is in the past — snap it to
         // now so the next line plays immediately instead of retroactively.
-        if (this.scheduler.nextStartTime < this.scheduler.currentTime) {
+        if (this.scheduler.timelineEnd < this.scheduler.currentTime) {
           this.scheduler.resetTimeline();
         }
       }
 
-      const { startAt, endAt } = this.scheduler.schedule(unit, buffer);
-      this.timeline.push({
-        lineIndex: unit.lineIndex,
-        startAt,
-        endAt,
-        isFirstChunk: unit.isFirstChunk,
-        isLastChunk: unit.isLastChunk
-      });
-
+      this._recordScheduled(unit, this.scheduler.schedule(unit, buffer));
+      if (this.clusterRemaining > 0) this.clusterRemaining--;
       this._advanceCursor();
     }
   }
 
+  /** Note where a scheduled unit lands, so the playhead can announce its line. */
+  _recordScheduled(unit, { startAt, endAt, truncated }) {
+    const line = unit.lineIndex;
+
+    this.lineEndAt.set(line, Math.max(this.lineEndAt.get(line) || 0, endAt));
+    if (unit.isLastChunk) this.lineComplete.set(line, true);
+    if (truncated) this.lineTruncated.set(line, true);
+
+    if (unit.isFirstChunk) {
+      this.pendingStarts.push({
+        lineIndex: line,
+        startAt,
+        overlapMode: unit.overlapMode || 'sequential'
+      });
+    }
+  }
+
   _pumpPlayhead() {
-    const now = this.scheduler.currentTime + PLAYHEAD_LEAD_SEC;
+    const clock = this.scheduler.currentTime;
+    const now = clock + PLAYHEAD_LEAD_SEC;
 
-    while (this.emitCursor < this.timeline.length && this.timeline[this.emitCursor].startAt <= now) {
-      const entry = this.timeline[this.emitCursor];
-      this.emitCursor++;
+    // --- starts. Overlap means timeline order is not start order, so gather
+    // everything that is due and announce it chronologically.
+    const due = [];
+    const waiting = [];
+    for (const entry of this.pendingStarts) {
+      (entry.startAt <= now ? due : waiting).push(entry);
+    }
+    if (due.length > 0) {
+      this.pendingStarts = waiting;
+      due.sort((a, b) => a.startAt - b.startAt);
+    }
 
-      if (!entry.isFirstChunk) continue;
-
-      if (this.activeLine !== null && this.activeLine !== entry.lineIndex) {
-        this.emit('lineEnd', {
-          index: this.activeLine,
-          element: this.scriptElements[this.activeLine]
-        });
-      }
-
-      this.activeLine = entry.lineIndex;
-      this.currentIndex = entry.lineIndex;
-
+    for (const entry of due) {
       const element = this.scriptElements[entry.lineIndex];
       if (!element) continue;
+
+      const isClusterHead = this.activeLines.size === 0;
+
+      this.activeLines.set(entry.lineIndex, element);
+      this.currentIndex = entry.lineIndex;
+      this.hasStartedAnyLine = true;
 
       this.emit('lineStart', {
         index: entry.lineIndex,
         element,
         voice: this.getVoiceProfileForCharacter(element.character),
-        nuance: element.nuance || {}
+        nuance: element.nuance || {},
+        overlapMode: entry.overlapMode,
+        isClusterHead,
+        concurrent: this.getActiveLineIndices().filter(i => i !== entry.lineIndex)
       });
 
-      if (this.visualizer) {
+      if (this.visualizer && isClusterHead) {
         this.visualizer.setSpeaking(true, element.nuance || {});
       }
     }
 
-    if (this.emitCursor > 64) {
-      this.timeline.splice(0, this.emitCursor);
-      this.emitCursor = 0;
+    // --- ends, driven by when the audio actually stops rather than by the next
+    // line starting. The completeness gate matters: a line whose later chunks
+    // have not been scheduled yet has simply run out of runway, and ending it
+    // there would leave its remaining audio playing with nothing highlighted.
+    for (const [line, element] of Array.from(this.activeLines)) {
+      if (!this.lineComplete.get(line) && !this.lineTruncated.get(line)) continue;
+      const endAt = this.lineEndAt.get(line);
+      if (endAt === undefined || clock < endAt) continue;
+
+      this.activeLines.delete(line);
+      this.emit('lineEnd', {
+        index: line,
+        element,
+        truncated: !!this.lineTruncated.get(line)
+      });
     }
+
+    if (this.activeLines.size === 0 && this.visualizer) {
+      this.visualizer.setSpeaking(false);
+    }
+
+    this._prunePlayhead(clock);
+  }
+
+  _prunePlayhead(clock) {
+    if (this.lineEndAt.size <= 64) return;
+    const cutoff = clock - PLAYHEAD_RETAIN_SEC;
+    for (const [line, endAt] of Array.from(this.lineEndAt)) {
+      if (endAt >= cutoff || this.activeLines.has(line)) continue;
+      this.lineEndAt.delete(line);
+      this.lineComplete.delete(line);
+      this.lineTruncated.delete(line);
+    }
+  }
+
+  /** Lines currently sounding, in script order. */
+  getActiveLineIndices() {
+    return Array.from(this.activeLines.keys()).sort((a, b) => a - b);
+  }
+
+  /** Distinct characters currently speaking, in script order. */
+  getActiveCharacters() {
+    const names = [];
+    for (const index of this.getActiveLineIndices()) {
+      const name = this.activeLines.get(index).character;
+      if (name && !names.includes(name)) names.push(name);
+    }
+    return names;
   }
 
   _pumpState() {
@@ -467,19 +657,18 @@ export class ScreenplayAudioManager {
   }
 
   _finish() {
-    if (this.activeLine !== null) {
+    for (const [line, element] of this.activeLines) {
       this.emit('lineEnd', {
-        index: this.activeLine,
-        element: this.scriptElements[this.activeLine]
+        index: line,
+        element,
+        truncated: !!this.lineTruncated.get(line)
       });
     }
     this._stopTick();
-    this.activeLine = null;
+    this._resetPlayheadState();
     this.currentIndex = 0;
     this.cursorLine = 0;
     this.cursorUnit = 0;
-    this.timeline = [];
-    this.emitCursor = 0;
     this.reachedEnd = false;
     this.primed = false;
     if (this.visualizer) this.visualizer.setSpeaking(false);
@@ -583,9 +772,7 @@ export class ScreenplayAudioManager {
     this.scheduler.stopAll();
     this.scheduler.resetTimeline(this.scheduler.currentTime + 0.08);
 
-    this.timeline = [];
-    this.emitCursor = 0;
-    this.activeLine = null;
+    this._resetPlayheadState();
     this.reachedEnd = false;
     this.primed = false;
     this.primeDeadline = Date.now() + PRIME_TIMEOUT_MS;
@@ -643,9 +830,7 @@ export class ScreenplayAudioManager {
       this.scheduler.stopAll();
     }
 
-    this.timeline = [];
-    this.emitCursor = 0;
-    this.activeLine = null;
+    this._resetPlayheadState();
     this.reachedEnd = false;
     this.primed = false;
 
@@ -842,15 +1027,28 @@ export class ScreenplayAudioManager {
       const nuance = element.nuance || {};
       const tuning = this.getCharacterSettings(element.character);
 
-      this.activeLine = this.currentIndex;
-      this.emit('lineStart', { index: this.currentIndex, element, voice, nuance });
+      // The fallback engine is strictly one voice at a time, so the active set
+      // never holds more than a single line here.
+      this.activeLines.clear();
+      this.activeLines.set(this.currentIndex, element);
+      this.hasStartedAnyLine = true;
+      this.emit('lineStart', {
+        index: this.currentIndex,
+        element,
+        voice,
+        nuance,
+        overlapMode: 'sequential',
+        isClusterHead: true,
+        concurrent: []
+      });
       if (this.visualizer) this.visualizer.setSpeaking(true, nuance);
 
       const advance = () => {
         if (token !== this.webSpeechToken) return;
         if (this.playbackState !== PLAYBACK_STATES.PLAYING) return;
 
-        this.emit('lineEnd', { index: this.currentIndex, element });
+        this.activeLines.delete(this.currentIndex);
+        this.emit('lineEnd', { index: this.currentIndex, element, truncated: false });
 
         const next = this.scriptElements[this.currentIndex + 1];
         const gap = next ? computeCueGapMs(element, next, this.pacingMode, this.masterSpeed) : 0;
