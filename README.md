@@ -146,33 +146,40 @@ parsing and inference happens in the visitor's browser, so a deployed copy is
 exactly as private as a local one: the host only ever sees a request for files,
 and scripts never leave the machine reading them.
 
-Deployed to Cloudflare Pages at `scripts.reef.fish`, built from this repo:
+Deployed to Cloudflare Workers at `scripts.reef.fish` as an assets-only Worker:
+`wrangler.toml` declares `[assets]` and no `main`, so `dist/` is served straight
+off the edge with no script in the request path.
 
-* **Build command:** `npm run build`
-* **Build output directory:** `dist` (also declared as `pages_build_output_dir`
-  in `wrangler.toml`, which Pages reads directly)
-* **Deploy command:** *none*
+Workers Builds settings:
 
-Leave the deploy command empty. Pages clones, builds, and uploads the output
-itself; adding `wrangler pages deploy` there nests a deploy inside a deploy and
-fails on authentication, because the nested call has to come back through the
-Cloudflare API as an external client with a Pages-scoped token. Note that the
-resulting error reports your *account* role rather than your *token* scope, so
-it can read as "Super Administrator" and "Authentication error" simultaneously.
+| Field | Value |
+|---|---|
+| Build command | `npm run build` |
+| Deploy command | `npx wrangler deploy` |
+| Non-production branch deploy command | `npx wrangler versions upload` |
+| Path to the Worker | `/` (repo root, where `wrangler.toml` lives) |
 
-To publish from a laptop instead of from a push:
+`versions upload` publishes a preview without promoting it to the live URL,
+which is what makes a branch build safe to run against the same Worker.
+
+**`name` in `wrangler.toml` must match the Worker that owns the custom domain.**
+Deploying under a different name silently creates a second Worker and leaves the
+domain serving whatever was there before — the deploy succeeds and the site
+never changes.
+
+Publishing from a laptop is the same command:
 
 ```bash
 npm run build
-npx wrangler pages deploy
+npx wrangler deploy
 ```
 
-Note the `pages` — plain `wrangler deploy` is the Workers path and will refuse.
-That route needs a token with **Account → Cloudflare Pages → Edit**.
-
-One deployment trap: a Worker route on the same hostname wins over a Pages
-custom domain, and does so silently — the dashboard looks correct while the old
-Worker keeps answering. Clear any such route before pointing the domain here.
+Do not put a deploy command in a *Pages* project's build config. Pages already
+builds and uploads, so `wrangler pages deploy` there nests a deploy inside a
+deploy and fails on authentication. That error reports your account role rather
+than your token scope, so it can read "Super Administrator" and "Authentication
+error" at once and send you looking for missing permissions that are not the
+problem.
 
 **Whatever you host on must send the headers in `public/_headers`.** The
 `Cross-Origin-Opener-Policy` / `Cross-Origin-Embedder-Policy` pair in
