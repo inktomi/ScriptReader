@@ -16,6 +16,25 @@ if (env.backends?.onnx?.wasm) {
   env.backends.onnx.wasm.wasmPaths = undefined;
 }
 
+// huggingface.co omits Access-Control-Allow-Origin when a request carries a
+// Referer from certain hosts — *.workers.dev among them — so every weight fetch
+// fails CORS and the engine never starts. transformers.js issues those fetches
+// itself with no way to configure them, so the referrer is stripped here.
+// public/_headers sets Referrer-Policy: no-referrer for the same reason; this
+// keeps the worker correct even when the app is served without those headers.
+const HF_HOSTS = ['huggingface.co', 'hf.co', 'cdn-lfs.huggingface.co'];
+const nativeFetch = self.fetch.bind(self);
+self.fetch = (input, init) => {
+  const url = typeof input === 'string' ? input : (input instanceof URL ? input.href : input?.url);
+  let isHF = false;
+  try {
+    isHF = !!url && HF_HOSTS.some(h => new URL(url, self.location.href).hostname.endsWith(h));
+  } catch (e) {
+    isHF = false;
+  }
+  return isHF ? nativeFetch(input, { ...init, referrerPolicy: 'no-referrer' }) : nativeFetch(input, init);
+};
+
 let tts = null;
 let availableVoices = null;
 let fallbackVoiceId = 'af_heart';

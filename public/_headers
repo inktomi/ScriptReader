@@ -15,11 +15,21 @@
 # weights stream from huggingface.co at runtime. Both modes can work — HF does
 # send CORS headers — but require-corp is the strict one about cross-origin
 # subresources, and credentialless removes that failure mode for no cost.
+#
+# `no-referrer` is load-bearing, not hygiene. huggingface.co omits
+# Access-Control-Allow-Origin entirely when a request carries a Referer from
+# this host, so every weight fetch fails CORS and the engine cannot start —
+# almost certainly anti-abuse filtering aimed at the shared *.workers.dev
+# domain. Measured directly against the deployed origin: identical fetches
+# return 200 with referrerPolicy no-referrer and fail with strict-origin,
+# origin, or unsafe-url. The header covers the worker too, since _headers
+# applies to the worker script response and a worker inherits its referrer
+# policy from that. Sending no referrer to a public model host costs nothing.
 /*
   Cross-Origin-Opener-Policy: same-origin
   Cross-Origin-Embedder-Policy: credentialless
   X-Content-Type-Options: nosniff
-  Referrer-Policy: strict-origin-when-cross-origin
+  Referrer-Policy: no-referrer
 
 # Everything Vite emits here is content-hashed, so it can never go stale.
 # Worth being explicit given the ONNX runtime alone is 21 MB — a returning

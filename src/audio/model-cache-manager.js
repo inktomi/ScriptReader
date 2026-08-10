@@ -212,7 +212,12 @@ export class ModelCacheManager {
         return true; // already cached
       }
 
-      const response = await fetch(voiceUrl);
+      // no-referrer: huggingface.co drops Access-Control-Allow-Origin when a
+      // request carries a Referer from some hosts (see public/_headers), which
+      // turns every voice fetch into an opaque CORS failure. The header covers
+      // this too; setting it here as well keeps the app working if it is ever
+      // served from somewhere that does not apply _headers.
+      const response = await fetch(voiceUrl, { referrerPolicy: 'no-referrer' });
       if (response.ok) {
         const clone = response.clone();
         await cache.put(voiceUrl, clone);
