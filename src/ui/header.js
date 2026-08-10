@@ -105,11 +105,11 @@ export function createHeader({
     }
   }
 
-  function updateEngineCacheBadge({ isCached, formattedSize, isFullyCached }) {
+  function updateEngineCacheBadge({ isModelCached, formattedSize, isFullyCached }) {
     const badgeText = header.querySelector('#engine-badge-text');
     const badge = header.querySelector('#engine-status-badge');
     if (badgeText && badge) {
-      if (isFullyCached || isCached) {
+      if (isFullyCached || isModelCached) {
         badgeText.textContent = `⚡ Kokoro (Local Cache)`;
         badge.style.color = '#10B981';
         badge.style.borderColor = 'rgba(16, 185, 129, 0.4)';

@@ -286,13 +286,10 @@ async function initApp() {
       currentModelId: 'onnx-community/Kokoro-82M-v1.0-ONNX',
       onSelectModel: async (modelId) => {
         if (!audioManager.kokoroEngine.isReady && !audioManager.kokoroEngine.isLoading) {
-          showNeuralLoadingNotification();
-          try {
-            await audioManager.kokoroEngine.init();
-            removeNeuralLoadingNotification('Kokoro 82M Neural Engine Ready! 🚀');
-          } catch (e) {
-            removeNeuralLoadingNotification('Neural model load error.');
-          }
+          // The progress subscriber owns the toast for every phase, failure
+          // included. Driving it from here too would dismiss the error state
+          // three seconds later and take the Retry button with it.
+          audioManager.kokoroEngine.init().catch(() => {});
         }
       }
     });
@@ -326,32 +323,50 @@ async function initApp() {
     }, 4000);
   }
 
-  // Connect Kokoro Engine Progress to UI Toast and Header Badge
-  audioManager.kokoroEngine.onProgress(async ({ progress, message, isCachedLocally }) => {
-    const status = await audioManager.getCacheStatus();
-    header.updateEngineCacheBadge(status);
+  // Connect Kokoro Engine Progress to UI Toast and Header Badge.
+  //
+  // Deliberately synchronous. This fires once per network chunk — thousands of
+  // times while the multi-hundred-MB weights stream — so anything awaited here
+  // piles up on the main thread and freezes the very bar it is trying to update.
+  // A cache-status sweep is especially costly (two caches.open + keys + a match
+  // per entry), so the badge is refreshed on phase transitions instead.
+  audioManager.kokoroEngine.onProgress(({ progress, message, phase, isCachedLocally }) => {
+    if (phase === 'error') {
+      showNeuralErrorNotification(message);
+      refreshEngineCacheBadge();
+      return;
+    }
 
-    if (audioManager.kokoroEngine.isLoading) {
-      if (!neuralToast) {
-        showNeuralLoadingNotification();
-      }
-      const msg = neuralToast ? neuralToast.querySelector('#neural-toast-msg') : null;
-      const pct = neuralToast ? neuralToast.querySelector('#neural-toast-pct') : null;
-      const fill = neuralToast ? neuralToast.querySelector('#neural-toast-fill') : null;
-      if (msg) msg.textContent = message;
-      if (pct) pct.textContent = `${progress}%`;
-      if (fill) fill.style.width = `${progress}%`;
-    } else if (audioManager.kokoroEngine.isReady) {
-      removeNeuralLoadingNotification(isCachedLocally ? '⚡ Kokoro Neural Engine Ready (Local Cache)' : 'Kokoro Neural Model Cached Locally! 🚀');
+    if (phase === 'ready') {
+      // The engine's own message already distinguishes "cached locally" from
+      // "ready but the weights did not fit in Cache Storage" — don't second-guess
+      // it here, both of the old strings claimed a cache that may not exist.
+      removeNeuralLoadingNotification(message);
+      refreshEngineCacheBadge();
       // Render the opening lines now so the first Play starts instantly.
       audioManager.prewarm();
+      return;
     }
+
+    if (!neuralToast) {
+      showNeuralLoadingNotification();
+    }
+    const msg = neuralToast ? neuralToast.querySelector('#neural-toast-msg') : null;
+    const pct = neuralToast ? neuralToast.querySelector('#neural-toast-pct') : null;
+    const fill = neuralToast ? neuralToast.querySelector('#neural-toast-fill') : null;
+    if (msg) msg.textContent = message;
+    if (pct) pct.textContent = `${progress}%`;
+    if (fill) fill.style.width = `${progress}%`;
   });
 
+  function refreshEngineCacheBadge() {
+    audioManager.getCacheStatus()
+      .then(status => header.updateEngineCacheBadge(status))
+      .catch(err => console.warn('Cache status notice:', err));
+  }
+
   // Initial check of local cache status
-  audioManager.getCacheStatus().then(status => {
-    header.updateEngineCacheBadge(status);
-  });
+  refreshEngineCacheBadge();
 
   // Neural Loading Notification Toast
   let neuralToast = null;
@@ -377,16 +392,64 @@ async function initApp() {
     document.body.appendChild(neuralToast);
   }
 
+  function dismissNeuralToast() {
+    if (neuralToast) {
+      neuralToast.remove();
+      neuralToast = null;
+    }
+  }
+
+  /**
+   * Replace the progress toast with a failure state.
+   *
+   * Without this the toast keeps whatever text it had when the engine died —
+   * which on a fresh visit is the "Downloading model weights..." line, making a
+   * hard failure look identical to a slow download that never ends.
+   */
+  function showNeuralErrorNotification(message) {
+    if (!neuralToast) showNeuralLoadingNotification();
+    if (!neuralToast) return;
+
+    neuralToast.innerHTML = `
+      <div style="display: flex; justify-content: space-between; align-items: center; gap: 12px; font-size: 0.8rem; font-weight: 600; color: #F87171;">
+        <span>Neural voice engine unavailable</span>
+        <button id="neural-toast-dismiss" title="Dismiss" style="background: none; border: none; color: #F87171; cursor: pointer; font-size: 1rem; line-height: 1; padding: 0;">&times;</button>
+      </div>
+      <div id="neural-toast-error" style="margin-top: 6px; font-size: 0.72rem; color: #FCA5A5; line-height: 1.45; word-break: break-word;"></div>
+      <button id="neural-toast-retry" style="margin-top: 10px; padding: 5px 12px; font-size: 0.72rem; font-weight: 600; color: #06B6D4; background: rgba(6, 182, 212, 0.12); border: 1px solid rgba(6, 182, 212, 0.4); border-radius: 6px; cursor: pointer;">Retry</button>
+    `;
+
+    // textContent, not innerHTML — this string is an arbitrary Error message.
+    const detail = neuralToast.querySelector('#neural-toast-error');
+    if (detail) detail.textContent = message;
+
+    const dismiss = neuralToast.querySelector('#neural-toast-dismiss');
+    if (dismiss) dismiss.addEventListener('click', dismissNeuralToast);
+
+    const retry = neuralToast.querySelector('#neural-toast-retry');
+    if (retry) {
+      retry.addEventListener('click', () => {
+        // Drop the toast entirely so the next 'loading' event rebuilds it with
+        // the progress markup rather than patching the error markup.
+        dismissNeuralToast();
+        audioManager.kokoroEngine.init().catch(() => {
+          /* the error phase re-renders the toast; nothing to do here */
+        });
+      });
+    }
+  }
+
   function removeNeuralLoadingNotification(finalMsg) {
     if (neuralToast) {
       const msg = neuralToast.querySelector('#neural-toast-msg');
+      const pct = neuralToast.querySelector('#neural-toast-pct');
+      const fill = neuralToast.querySelector('#neural-toast-fill');
       if (msg) msg.textContent = finalMsg;
-      setTimeout(() => {
-        if (neuralToast) {
-          neuralToast.remove();
-          neuralToast = null;
-        }
-      }, 3000);
+      // The bar is capped at 99% during load; leaving it there made a finished
+      // engine read as still-loading for the three seconds before it fades.
+      if (pct) pct.textContent = '100%';
+      if (fill) fill.style.width = '100%';
+      setTimeout(dismissNeuralToast, 3000);
     }
   }
 

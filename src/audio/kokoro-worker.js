@@ -5,6 +5,17 @@ import { env } from '@huggingface/transformers';
 env.useBrowserCache = true;
 env.allowLocalModels = false;
 
+// transformers.js points onnxruntime at cdn.jsdelivr.net the moment its backend
+// module is evaluated, which silently overrides the ~21 MB ORT WASM that Vite
+// already emits into our own /assets. Clearing it restores ORT's built-in
+// `new URL(..., self.location.href)` resolution, so the runtime is served from
+// this origin — no third-party dependency, and "local processing" stays true.
+// ORT reads wasmPaths lazily when the backend initializes, so module scope is
+// early enough as long as this runs before the first from_pretrained call.
+if (env.backends?.onnx?.wasm) {
+  env.backends.onnx.wasm.wasmPaths = undefined;
+}
+
 let tts = null;
 let availableVoices = null;
 let fallbackVoiceId = 'af_heart';

@@ -13,6 +13,11 @@ import { getAudioContext } from './audio-context.js';
 // script while bounding memory on a long sit-back-and-listen session.
 const MAX_CACHED_SECONDS = 1500;
 
+// The weights are hundreds of megabytes, so a slow link can legitimately go a
+// long time between chunks. Say something after this much silence rather than
+// leaving a bar that looks identical to a hung request.
+const STALL_HINT_MS = 30000;
+
 export class KokoroNeuralEngine {
   constructor() {
     this.worker = null;
@@ -26,6 +31,18 @@ export class KokoroNeuralEngine {
     this.isCachedLocally = false;
     this.device = null;
 
+    // 'idle' | 'loading' | 'ready' | 'error' — subscribers branch on this rather
+    // than inferring from isLoading/isReady, which are *both* false on failure
+    // and so leave any two-branch consumer showing a stale message forever.
+    this.phase = 'idle';
+    this.lastError = null;
+
+    // file -> { loaded, total }, so the reported percentage is aggregate bytes
+    // instead of whichever file happens to be streaming right now.
+    this.fileProgress = new Map();
+    this._loadingBaseMessage = '';
+    this._stallTimer = null;
+
     this.audioCache = new Map();      // key -> AudioBuffer (insertion-ordered, LRU-trimmed)
     this.cachedSeconds = 0;
     this.pending = new Map();         // key -> { promise, priority }
@@ -38,11 +55,88 @@ export class KokoroNeuralEngine {
     return () => this.progressListeners.delete(callback);
   }
 
-  notifyProgress(progress, message) {
+  notifyProgress(progress, message, phase = 'loading') {
+    this.phase = phase;
     this.loadProgress = progress;
     this.statusMessage = message;
     for (const cb of this.progressListeners) {
-      cb({ progress, message, isCachedLocally: this.isCachedLocally });
+      cb({ progress, message, phase, isCachedLocally: this.isCachedLocally, error: this.lastError });
+    }
+  }
+
+  /**
+   * Fold one transformers.js progress event into an aggregate byte count.
+   *
+   * transformers.js emits `{file, loaded, total, progress}` per network chunk and
+   * restarts `progress` at 0 for every file, so reading it directly makes the bar
+   * bounce config.json -> tokenizer.json -> model.onnx.
+   *
+   * Only files large enough to matter are aggregated. config.json and the
+   * tokenizers are a few KB and arrive first; counting them would drive the bar
+   * to 100% within a second and then snap it back to near zero the moment the
+   * multi-hundred-MB weights file joins the total, which reads as a restart.
+   */
+  _noteDownloadProgress(payload) {
+    this._armStallWatchdog();
+
+    const SIGNIFICANT_BYTES = 1024 * 1024;
+
+    const file = payload.file || 'weights';
+    const total = Number(payload.total) || 0;
+    const loaded = Number(payload.loaded) || 0;
+    if (total > 0) {
+      this.fileProgress.set(file, { loaded: Math.min(loaded, total), total });
+    }
+
+    let sumLoaded = 0;
+    let sumTotal = 0;
+    for (const entry of this.fileProgress.values()) {
+      if (entry.total < SIGNIFICANT_BYTES) continue;
+      sumLoaded += entry.loaded;
+      sumTotal += entry.total;
+    }
+
+    const base = this.isCachedLocally ? 30 : 20;
+
+    if (sumTotal === 0) {
+      // Nothing but the small metadata files so far.
+      this._loadingBaseMessage = 'Fetching model metadata...';
+      this.notifyProgress(base, this._loadingBaseMessage, 'loading');
+      return;
+    }
+
+    const pct = Math.max(0, Math.min(100, (sumLoaded / sumTotal) * 100));
+    const factor = this.isCachedLocally ? 0.6 : 0.7;
+    const overall = Math.min(99, base + Math.round(pct * factor));
+
+    const verb = this.isCachedLocally ? 'Loading local weights' : 'Downloading neural voice weights';
+    const size = `${ModelCacheManager.formatBytes(sumLoaded)} / ${ModelCacheManager.formatBytes(sumTotal)}`;
+
+    this._loadingBaseMessage = `${verb}: ${Math.round(pct)}% — ${size}`;
+    this.notifyProgress(overall, this._loadingBaseMessage, 'loading');
+  }
+
+  _armStallWatchdog() {
+    this._clearStallWatchdog();
+    this._stallTimer = setTimeout(() => {
+      if (this.phase !== 'loading') return;
+      const base = this._loadingBaseMessage || this.statusMessage;
+      const seconds = Math.round(STALL_HINT_MS / 1000);
+      this.notifyProgress(
+        this.loadProgress,
+        `${base} — still waiting on the network (no data for ${seconds}s)`,
+        'loading'
+      );
+      // Re-arm so the hint survives; the suffix is rebuilt from the stored base
+      // each time rather than appended, so it never compounds.
+      this._armStallWatchdog();
+    }, STALL_HINT_MS);
+  }
+
+  _clearStallWatchdog() {
+    if (this._stallTimer) {
+      clearTimeout(this._stallTimer);
+      this._stallTimer = null;
     }
   }
 
@@ -50,15 +144,7 @@ export class KokoroNeuralEngine {
     const { type, id, payload, error } = e.data;
 
     if (type === 'progress') {
-      // transformers.js reports progress as a 0-100 percentage, not a fraction.
-      const pct = Math.max(0, Math.min(100, payload.progress || 0));
-      const base = this.isCachedLocally ? 30 : 20;
-      const factor = this.isCachedLocally ? 0.6 : 0.7;
-      const overall = Math.min(99, base + Math.round(pct * factor));
-      const msg = this.isCachedLocally
-        ? `Loading local weights: ${Math.round(pct)}%`
-        : `Downloading neural voice weights: ${Math.round(pct)}%`;
-      this.notifyProgress(overall, msg);
+      this._noteDownloadProgress(payload);
       return;
     }
 
@@ -86,7 +172,11 @@ export class KokoroNeuralEngine {
 
   async _init(device) {
     this.isLoading = true;
-    this.notifyProgress(5, 'Initializing Kokoro Neural Engine...');
+    this.lastError = null;
+    // A retry must not inherit byte totals from the attempt that failed.
+    this.fileProgress.clear();
+    this._loadingBaseMessage = '';
+    this.notifyProgress(5, 'Initializing Kokoro Neural Engine...', 'loading');
 
     try {
       await ModelCacheManager.requestPersistentStorage();
@@ -94,14 +184,23 @@ export class KokoroNeuralEngine {
       const cacheStatus = await ModelCacheManager.getModelCacheStatus(DEFAULT_MODEL_ID);
       this.isCachedLocally = cacheStatus.isModelCached;
 
-      if (cacheStatus.isModelCached) {
-        this.notifyProgress(30, '⚡ Loading Kokoro-82M from local cache...');
-      } else {
-        this.notifyProgress(15, 'Downloading Kokoro-82M ONNX model weights to local cache...');
-      }
+      this._loadingBaseMessage = cacheStatus.isModelCached
+        ? '⚡ Loading Kokoro-82M from local cache...'
+        : 'Downloading Kokoro-82M ONNX model weights to local cache...';
+      this.notifyProgress(cacheStatus.isModelCached ? 30 : 15, this._loadingBaseMessage, 'loading');
+      this._armStallWatchdog();
 
       this.worker = new Worker(new URL('./kokoro-worker.js', import.meta.url), { type: 'module' });
       this.worker.onmessage = (e) => this.handleWorkerMessage(e);
+      // A worker that fails to boot (bad import, blocked module fetch) otherwise
+      // leaves the init promise pending forever with nothing on screen to say so.
+      this.worker.onerror = (err) => {
+        const pending = [...this.resolvers.values()];
+        this.resolvers.clear();
+        for (const { reject } of pending) {
+          reject(new Error(err.message || 'Neural worker failed to start'));
+        }
+      };
 
       const result = await new Promise((resolve, reject) => {
         const id = ++this.msgId;
@@ -113,15 +212,23 @@ export class KokoroNeuralEngine {
         });
       });
 
+      this._clearStallWatchdog();
       this.device = result && result.device ? result.device : 'wasm';
       this.isReady = true;
       this.isLoading = false;
-      this.isCachedLocally = true;
+
+      // Re-read the cache instead of assuming the weights landed. Cache Storage
+      // rejects put() for very large bodies with an opaque internal error well
+      // before the quota is reached (~200 MB+ in Chromium), and transformers.js
+      // only console.warns about it — so a "cached locally" claim here can be
+      // flatly untrue and the next visit re-downloads everything.
+      const postStatus = await ModelCacheManager.getModelCacheStatus(DEFAULT_MODEL_ID);
+      this.isCachedLocally = postStatus.isModelCached;
 
       const accel = this.device === 'webgpu' ? ' (WebGPU accelerated)' : '';
-      this.notifyProgress(100, cacheStatus.isModelCached
-        ? `⚡ Kokoro Neural Engine ready${accel}`
-        : `Kokoro Neural Engine ready & cached locally${accel}`);
+      this.notifyProgress(100, postStatus.isModelCached
+        ? `⚡ Kokoro Neural Engine ready & cached locally${accel}`
+        : `Kokoro Neural Engine ready${accel} — weights too large to cache, will re-download`, 'ready');
 
       getAudioContext();
 
@@ -132,9 +239,22 @@ export class KokoroNeuralEngine {
       return true;
     } catch (error) {
       console.warn('Kokoro neural engine initialization failed:', error);
+      this._clearStallWatchdog();
       this.isLoading = false;
       this.isReady = false;
-      this.notifyProgress(0, `Neural engine load failed: ${error.message || 'Offline fallback ready'}`);
+      this.lastError = error;
+
+      // Tear the failed worker down. init() is retryable, and without this every
+      // retry would strand another module worker holding an ORT session.
+      if (this.worker) {
+        this.worker.onmessage = null;
+        this.worker.onerror = null;
+        this.worker.terminate();
+        this.worker = null;
+      }
+      this.resolvers.clear();
+
+      this.notifyProgress(0, `Neural engine load failed: ${error.message || 'Unknown error'}`, 'error');
       throw error;
     }
   }

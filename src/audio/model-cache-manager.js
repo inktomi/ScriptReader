@@ -117,34 +117,43 @@ export class ModelCacheManager {
       const tfCache = await caches.open(TRANSFORMERS_CACHE_NAME);
       const tfKeys = await tfCache.keys();
       
-      let modelFileMatches = 0;
-      
+      // Only an actual weights blob counts. config.json + tokenizer.json are a
+      // few KB and land first, so treating them as evidence made an interrupted
+      // download report "cached" on the next visit — and the UI then claimed it
+      // was loading locally while re-pulling hundreds of megabytes.
+      const MIN_WEIGHTS_BYTES = 1024 * 1024;
+      let hasWeights = false;
+
       for (const req of tfKeys) {
         const url = req.url;
         if (url.includes(modelId) || url.includes('Kokoro-82M')) {
           cachedModelFiles++;
+          let entryBytes = 0;
           try {
             const resp = await tfCache.match(req);
             if (resp) {
               const cl = resp.headers.get('content-length');
               if (cl) {
-                totalCachedBytes += parseInt(cl, 10);
+                entryBytes = parseInt(cl, 10) || 0;
               } else {
-                const buf = await resp.clone().arrayBuffer();
-                totalCachedBytes += buf.byteLength;
+                // .blob() rather than .arrayBuffer(): the weights entry can be
+                // 300 MB+, and a Blob stays backed by the browser's blob store
+                // instead of being copied onto the JS heap just to read .size.
+                const blob = await resp.clone().blob();
+                entryBytes = blob.size;
               }
+              totalCachedBytes += entryBytes;
             }
           } catch (e) {
             // ignore sizing error
           }
-          if (url.endsWith('config.json') || url.endsWith('tokenizer.json') || url.includes('.onnx')) {
-            modelFileMatches++;
+          if (url.includes('.onnx') && entryBytes >= MIN_WEIGHTS_BYTES) {
+            hasWeights = true;
           }
         }
       }
 
-      // If we found the ONNX model file and config, the model weights are cached
-      isModelCached = modelFileMatches >= 2;
+      isModelCached = hasWeights;
 
       // 2. Check Kokoro Voices cache
       const voiceCache = await caches.open(KOKORO_VOICES_CACHE_NAME);
@@ -309,10 +318,11 @@ export class ModelCacheManager {
           onProgress({
             phase: 'model',
             percent: modelPct,
-            file: p.file || 'model_q8.onnx',
+            file: p.file || 'weights',
             loaded: p.loaded,
             total: p.total,
-            message: `Caching model weights: ${Math.round(p.progress * 100)}%`
+            // p.progress is already 0-100; scaling it again rendered "10000%".
+            message: `Caching model weights: ${Math.round(p.progress)}%`
           });
         } else if (type === 'init_complete') {
           resolve();
@@ -321,10 +331,15 @@ export class ModelCacheManager {
         }
       };
       
+      // 'auto', not 'wasm'. Forcing wasm here cached model_quantized.onnx while
+      // init() on a WebGPU machine wants model.onnx, so "Preload & Cache All"
+      // did not actually spare the user the big download. Letting the worker run
+      // its normal webgpu -> wasm attempt order caches whatever init() will ask
+      // for on this same machine.
       worker.postMessage({
         type: 'init',
         id: 1,
-        payload: { modelId, device: 'wasm' }
+        payload: { modelId, device: 'auto' }
       });
     });
     
@@ -338,7 +353,8 @@ export class ModelCacheManager {
     });
 
     await this.preloadAllVoices(modelId, (vProg) => {
-      const overall = 80 + Math.round((vProg.completed / vProg.total) * 0.2); // 80% -> 100%
+      // * 20, not * 0.2 — the latter rounded to 0 and pinned this at a flat 80%.
+      const overall = 80 + Math.round((vProg.completed / vProg.total) * 20); // 80% -> 100%
       onProgress({
         phase: 'voices',
         percent: overall,
