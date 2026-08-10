@@ -2,6 +2,9 @@ import { WebSpeechEngine } from './web-speech-engine.js';
 import { KokoroNeuralEngine } from './kokoro-engine.js';
 import { ModelCacheManager, DEFAULT_MODEL_ID } from './model-cache-manager.js';
 import { getVoiceById } from './voice-catalog.js';
+import { PlaybackScheduler } from './playback-scheduler.js';
+import { buildLineUnits, buildPreviewUnits, computeCueGapMs } from './performance-director.js';
+import { getAudioContext, resumeAudioContext, suspendAudioContext } from './audio-context.js';
 
 export const ENGINE_TYPES = {
   KOKORO_NEURAL: 'kokoro_neural',
@@ -21,6 +24,28 @@ export const PACING_MODES = {
   SNAPPY: 'snappy'      // Rapid rehearsal readthrough
 };
 
+// How often the orchestration loop runs. Scheduling happens far enough ahead
+// that this interval only needs to be comfortably faster than the horizon.
+const TICK_MS = 60;
+
+// Seconds of audio kept committed to the AudioContext timeline.
+const SCHEDULE_AHEAD_SEC = 1.6;
+
+// Seconds of audio kept *requested* from the worker, and a hard unit cap so a
+// script of short lines cannot flood the queue.
+const LOOKAHEAD_SEC = 28;
+const LOOKAHEAD_UNITS = 24;
+
+// Audio banked before the first line plays, versus after recovering a stall.
+// Starting with a cushion is what turns "press play, hear a stutter" into
+// "press play, sit back".
+const PRIME_SECONDS_INITIAL = 3.0;
+const PRIME_SECONDS_RECOVER = 1.5;
+const PRIME_TIMEOUT_MS = 20000;
+
+// Highlight the line a beat before its audio, so the teleprompter never lags.
+const PLAYHEAD_LEAD_SEC = 0.02;
+
 export class ScreenplayAudioManager {
   constructor() {
     this.webSpeechEngine = new WebSpeechEngine();
@@ -28,8 +53,10 @@ export class ScreenplayAudioManager {
     this.modelCacheManager = ModelCacheManager;
     this.activeEngineType = ENGINE_TYPES.KOKORO_NEURAL;
 
+    this.scheduler = null;
+
     this.scriptElements = [];
-    this.characterAssignments = new Map(); // characterName -> { voiceId, pitchOffset, speedMultiplier }
+    this.characterAssignments = new Map();
     this.narratorVoiceId = 'bm_george';
 
     this.currentIndex = 0;
@@ -39,15 +66,36 @@ export class ScreenplayAudioManager {
     this.volume = 1.0;
     this.isMuted = false;
 
-    this.playbackToken = 0;
-    this.currentTimeout = null;
     this.visualizer = null;
     this.listeners = new Set();
+
+    // Render pipeline state
+    this.unitCache = new Map();   // lineIndex -> unit[]
+    this.cursorLine = 0;          // next line to schedule
+    this.cursorUnit = 0;          // next chunk within that line
+    this.timeline = [];           // scheduled entries awaiting the playhead
+    this.emitCursor = 0;
+    this.activeLine = null;
+    this.reachedEnd = false;
+    this.primed = false;
+    this.primeDeadline = 0;
+    this.tickHandle = null;
+
+    // Bumped by every stop/seek/play. `play()` has to await engine init and the
+    // audio context, and a seek arriving during those awaits must not leave two
+    // start-ups racing to schedule from different cursors.
+    this.playGeneration = 0;
+
+    this.previewToken = 0;
+    this._previewResolve = null;
+    this.webSpeechToken = 0;
+    this._webSpeechTimer = null;
+    this.usingWebSpeechFallback = false;
   }
 
   async init() {
     await this.webSpeechEngine.init();
-    // Auto-initialize Kokoro neural model and local caching in background
+    // Warm the neural model in the background so the first Play is instant.
     this.kokoroEngine.init().catch(err => {
       console.warn('Kokoro background preload notice:', err);
     });
@@ -57,21 +105,7 @@ export class ScreenplayAudioManager {
     return await ModelCacheManager.getModelCacheStatus(DEFAULT_MODEL_ID);
   }
 
-  setVisualizer(visualizer) {
-    this.visualizer = visualizer;
-  }
-
-  setPacingMode(pacingMode) {
-    this.pacingMode = pacingMode || PACING_MODES.NATURAL;
-    this.emit('pacingChange', { pacingMode: this.pacingMode });
-  }
-
-  setEngineType(engineType) {
-    if (engineType === this.activeEngineType) return;
-    this.stop();
-    this.activeEngineType = engineType;
-    this.emit('engineChange', { engineType });
-  }
+  // ---------------------------------------------------------------- listeners
 
   subscribe(listener) {
     this.listeners.add(listener);
@@ -88,35 +122,77 @@ export class ScreenplayAudioManager {
     }
   }
 
+  _setState(state) {
+    if (this.playbackState === state) return;
+    this.playbackState = state;
+    this.emit('stateChange', { state });
+  }
+
+  // ------------------------------------------------------------ configuration
+
+  setVisualizer(visualizer) {
+    this.visualizer = visualizer;
+    if (visualizer && this.scheduler) {
+      visualizer.start(this.scheduler.getAnalyser());
+    }
+  }
+
+  setPacingMode(pacingMode) {
+    this.pacingMode = pacingMode || PACING_MODES.NATURAL;
+    this._invalidateUnits();
+    this.emit('pacingChange', { pacingMode: this.pacingMode });
+  }
+
+  setEngineType(engineType) {
+    if (engineType === this.activeEngineType) return;
+    this.stop();
+    this.activeEngineType = engineType;
+    this.emit('engineChange', { engineType });
+  }
+
   setScript(elements, characterMap = new Map(), startIndex = 0) {
     this.stop();
     this.scriptElements = elements || [];
     this.characterAssignments = characterMap;
     this.currentIndex = Math.max(0, Math.min(this.scriptElements.length - 1, startIndex || 0));
-    this.emit('scriptLoaded', { totalLines: this.scriptElements.length, currentIndex: this.currentIndex });
-
-    // Pre-warm audio lookahead if Kokoro is active
-    if (this.activeEngineType === ENGINE_TYPES.KOKORO_NEURAL && this.kokoroEngine.isReady && this.scriptElements.length > 0) {
-      this.triggerLookahead(this.currentIndex - 1, 4);
-    }
+    this._invalidateUnits();
+    this.emit('scriptLoaded', {
+      totalLines: this.scriptElements.length,
+      currentIndex: this.currentIndex
+    });
+    this.prewarm();
   }
 
   setVoiceAssignment(characterName, assignment) {
     this.characterAssignments.set(characterName.toUpperCase().trim(), assignment);
+    this._invalidateUnits();
   }
 
   setNarratorVoice(voiceId) {
+    if (this.narratorVoiceId === voiceId) return;
     this.narratorVoiceId = voiceId;
+    this._invalidateUnits();
   }
 
   setMasterSpeed(speed) {
-    this.masterSpeed = Math.min(2.0, Math.max(0.5, speed));
+    const next = Math.min(2.0, Math.max(0.5, speed));
+    if (next === this.masterSpeed) return;
+    this.masterSpeed = next;
+    this._invalidateUnits();
     this.emit('speedChange', { speed: this.masterSpeed });
+    this._restartIfPlaying();
   }
 
   setVolume(volume) {
     this.volume = Math.min(1.0, Math.max(0, volume));
+    if (this.scheduler) this.scheduler.setVolume(this.volume);
     this.emit('volumeChange', { volume: this.volume });
+  }
+
+  setMuted(isMuted) {
+    this.isMuted = !!isMuted;
+    if (this.scheduler) this.scheduler.setMuted(this.isMuted);
+    this.emit('volumeChange', { volume: this.volume, isMuted: this.isMuted });
   }
 
   getVoiceProfileForCharacter(characterName) {
@@ -141,145 +217,486 @@ export class ScreenplayAudioManager {
     };
   }
 
-  /**
-   * Preview a voice profile in the Cast Studio
-   */
-  async previewVoice(voiceId, sampleText = null, pitchOffset = 0, speedMultiplier = 1.0) {
-    this.stop(); // stop active playback
-    const profile = getVoiceById(voiceId);
-    const text = sampleText || profile.sampleLine;
-    const nuance = {
-      cleanSpeech: text,
-      pitchMod: 1.0,
-      rateMod: 1.0,
-      gainMod: 1.0,
-      badgeColor: '#F59E0B'
-    };
+  // ----------------------------------------------------------- render pipeline
 
-    if (this.visualizer) {
-      this.visualizer.setSpeaking(true, { badgeColor: profile.avatarBg.includes('#') ? '#F59E0B' : '#06B6D4' });
+  _invalidateUnits() {
+    this.unitCache.clear();
+  }
+
+  /**
+   * Units for a line, memoised. Returns null past the end of the script and an
+   * empty array for lines with nothing speakable (e.g. bare punctuation).
+   */
+  _unitsForLine(lineIndex) {
+    if (lineIndex < 0 || lineIndex >= this.scriptElements.length) return null;
+
+    const cached = this.unitCache.get(lineIndex);
+    if (cached) return cached;
+
+    const element = this.scriptElements[lineIndex];
+    const units = buildLineUnits({
+      element,
+      prevElement: lineIndex > 0 ? this.scriptElements[lineIndex - 1] : null,
+      lineIndex,
+      voiceProfile: this.getVoiceProfileForCharacter(element.character),
+      tuning: this.getCharacterSettings(element.character),
+      masterSpeed: this.masterSpeed,
+      pacing: this.pacingMode
+    });
+
+    this.unitCache.set(lineIndex, units);
+    return units;
+  }
+
+  /** Unit at the scheduling cursor, skipping over lines with nothing to say. */
+  _unitAtCursor() {
+    let guard = 0;
+    while (guard++ < this.scriptElements.length + 2) {
+      const units = this._unitsForLine(this.cursorLine);
+      if (!units) return null;
+      if (this.cursorUnit < units.length) return units[this.cursorUnit];
+      this.cursorLine++;
+      this.cursorUnit = 0;
+    }
+    return null;
+  }
+
+  _advanceCursor() {
+    const units = this._unitsForLine(this.cursorLine);
+    if (!units) return;
+    this.cursorUnit++;
+    if (this.cursorUnit >= units.length) {
+      this.cursorLine++;
+      this.cursorUnit = 0;
+    }
+  }
+
+  /**
+   * Ask the worker for everything within the lookahead window, tagging each
+   * request with its distance from the playhead so the queue drains in the
+   * order the listener will actually need it.
+   */
+  _pumpRequests() {
+    if (!this.kokoroEngine.isReady) return;
+
+    let line = this.cursorLine;
+    let unit = this.cursorUnit;
+    let seconds = 0;
+    let count = 0;
+    let guard = 0;
+
+    while (count < LOOKAHEAD_UNITS && seconds < LOOKAHEAD_SEC && guard++ < 500) {
+      const units = this._unitsForLine(line);
+      if (!units) break;
+      if (unit >= units.length) {
+        line++;
+        unit = 0;
+        continue;
+      }
+
+      const u = units[unit];
+      const cached = this.kokoroEngine.getCached(u.key);
+      if (cached) {
+        seconds += cached.duration / (u.playbackRate || 1);
+      } else {
+        this.kokoroEngine.request(u, count);
+        seconds += u.estimatedDuration;
+      }
+
+      seconds += u.leadPause || 0;
+      count++;
+      unit++;
+    }
+  }
+
+  /** Contiguous ready audio from the cursor forward, and whether we hit the end. */
+  _readyRunway() {
+    let line = this.cursorLine;
+    let unit = this.cursorUnit;
+    let seconds = 0;
+    let guard = 0;
+
+    while (guard++ < 500) {
+      const units = this._unitsForLine(line);
+      if (!units) return { seconds, hitEnd: true };
+      if (unit >= units.length) {
+        line++;
+        unit = 0;
+        continue;
+      }
+
+      const u = units[unit];
+      const cached = this.kokoroEngine.getCached(u.key);
+      if (!cached) return { seconds, hitEnd: false };
+
+      seconds += cached.duration / (u.playbackRate || 1);
+      unit++;
     }
 
-    // Auto-init Kokoro if needed
+    return { seconds, hitEnd: false };
+  }
+
+  _hasPrimeBudget() {
+    const need = this.activeLine === null ? PRIME_SECONDS_INITIAL : PRIME_SECONDS_RECOVER;
+    const { seconds, hitEnd } = this._readyRunway();
+    if (hitEnd) return true;
+    if (seconds >= need) return true;
+    return Date.now() > this.primeDeadline;
+  }
+
+  _pumpScheduling() {
+    let guard = 0;
+    while (this.scheduler.bufferedAhead < SCHEDULE_AHEAD_SEC && guard++ < 64) {
+      const unit = this._unitAtCursor();
+      if (!unit) {
+        this.reachedEnd = true;
+        break;
+      }
+
+      const buffer = this.kokoroEngine.getCached(unit.key);
+      if (!buffer) break;
+
+      if (!this.primed) {
+        if (!this._hasPrimeBudget()) break;
+        this.primed = true;
+        // Coming out of a stall, the timeline edge is in the past — snap it to
+        // now so the next line plays immediately instead of retroactively.
+        if (this.scheduler.nextStartTime < this.scheduler.currentTime) {
+          this.scheduler.resetTimeline();
+        }
+      }
+
+      const { startAt, endAt } = this.scheduler.schedule(unit, buffer);
+      this.timeline.push({
+        lineIndex: unit.lineIndex,
+        startAt,
+        endAt,
+        isFirstChunk: unit.isFirstChunk,
+        isLastChunk: unit.isLastChunk
+      });
+
+      this._advanceCursor();
+    }
+  }
+
+  _pumpPlayhead() {
+    const now = this.scheduler.currentTime + PLAYHEAD_LEAD_SEC;
+
+    while (this.emitCursor < this.timeline.length && this.timeline[this.emitCursor].startAt <= now) {
+      const entry = this.timeline[this.emitCursor];
+      this.emitCursor++;
+
+      if (!entry.isFirstChunk) continue;
+
+      if (this.activeLine !== null && this.activeLine !== entry.lineIndex) {
+        this.emit('lineEnd', {
+          index: this.activeLine,
+          element: this.scriptElements[this.activeLine]
+        });
+      }
+
+      this.activeLine = entry.lineIndex;
+      this.currentIndex = entry.lineIndex;
+
+      const element = this.scriptElements[entry.lineIndex];
+      if (!element) continue;
+
+      this.emit('lineStart', {
+        index: entry.lineIndex,
+        element,
+        voice: this.getVoiceProfileForCharacter(element.character),
+        nuance: element.nuance || {}
+      });
+
+      if (this.visualizer) {
+        this.visualizer.setSpeaking(true, element.nuance || {});
+      }
+    }
+
+    if (this.emitCursor > 64) {
+      this.timeline.splice(0, this.emitCursor);
+      this.emitCursor = 0;
+    }
+  }
+
+  _pumpState() {
+    const buffered = this.scheduler.bufferedAhead;
+
+    if (this.reachedEnd && buffered <= 0.02) {
+      this._finish();
+      return;
+    }
+
+    // Draining the last scheduled line is not starvation; it is the ending.
+    const starving = buffered <= 0.05 && !this.reachedEnd;
+
+    if (starving && this.playbackState !== PLAYBACK_STATES.BUFFERING) {
+      this.primed = false;
+      this.primeDeadline = Date.now() + PRIME_TIMEOUT_MS;
+      this._setState(PLAYBACK_STATES.BUFFERING);
+      if (this.visualizer) this.visualizer.setSpeaking(false);
+    } else if (!starving && this.playbackState === PLAYBACK_STATES.BUFFERING) {
+      this._setState(PLAYBACK_STATES.PLAYING);
+    }
+  }
+
+  _tick() {
+    if (this.playbackState !== PLAYBACK_STATES.PLAYING &&
+        this.playbackState !== PLAYBACK_STATES.BUFFERING) {
+      return;
+    }
+    if (!this.scheduler || !this.scheduler.ctx) return;
+
+    this._pumpRequests();
+    this._pumpScheduling();
+    this._pumpPlayhead();
+    this._pumpState();
+  }
+
+  _startTick() {
+    if (this.tickHandle) return;
+    this.tickHandle = setInterval(() => this._tick(), TICK_MS);
+    this._tick();
+  }
+
+  _stopTick() {
+    if (this.tickHandle) {
+      clearInterval(this.tickHandle);
+      this.tickHandle = null;
+    }
+  }
+
+  _finish() {
+    if (this.activeLine !== null) {
+      this.emit('lineEnd', {
+        index: this.activeLine,
+        element: this.scriptElements[this.activeLine]
+      });
+    }
+    this._stopTick();
+    this.activeLine = null;
+    this.currentIndex = 0;
+    this.cursorLine = 0;
+    this.cursorUnit = 0;
+    this.timeline = [];
+    this.emitCursor = 0;
+    this.reachedEnd = false;
+    this.primed = false;
+    if (this.visualizer) this.visualizer.setSpeaking(false);
+    this._setState(PLAYBACK_STATES.IDLE);
+    this.emit('complete', {});
+  }
+
+  // -------------------------------------------------------------- audio setup
+
+  async _ensureAudio() {
+    const ctx = getAudioContext();
+    if (!ctx) return null;
+
+    if (!this.scheduler) {
+      this.scheduler = new PlaybackScheduler();
+      this.scheduler.setVolume(this.volume);
+      this.scheduler.setMuted(this.isMuted);
+      if (this.visualizer) {
+        this.visualizer.start(this.scheduler.getAnalyser());
+      }
+    }
+
+    await resumeAudioContext();
+    return this.scheduler;
+  }
+
+  /**
+   * Render a few units ahead without playing, so the first Play has no wait.
+   */
+  prewarm() {
+    if (!this.kokoroEngine.isReady || this.scriptElements.length === 0) return;
+    if (this.playbackState === PLAYBACK_STATES.PLAYING) return;
+
+    this.cursorLine = this.currentIndex;
+    this.cursorUnit = 0;
+
+    let line = this.currentIndex;
+    let unit = 0;
+    let count = 0;
+    let guard = 0;
+
+    while (count < 6 && guard++ < 60) {
+      const units = this._unitsForLine(line);
+      if (!units) break;
+      if (unit >= units.length) {
+        line++;
+        unit = 0;
+        continue;
+      }
+      this.kokoroEngine.request(units[unit], count);
+      count++;
+      unit++;
+    }
+  }
+
+  // ------------------------------------------------------------- transport API
+
+  async play() {
+    if (this.scriptElements.length === 0) return;
+    if (this.playbackState === PLAYBACK_STATES.PLAYING ||
+        this.playbackState === PLAYBACK_STATES.BUFFERING) {
+      return;
+    }
+
+    const generation = ++this.playGeneration;
+
+    await this._ensureAudio();
+    if (generation !== this.playGeneration) return;
+
+    // Resuming from pause: the context clock was frozen, so everything already
+    // scheduled is still valid and simply continues.
+    if (this.playbackState === PLAYBACK_STATES.PAUSED && !this.usingWebSpeechFallback) {
+      this._setState(PLAYBACK_STATES.PLAYING);
+      this._startTick();
+      return;
+    }
+
     if (!this.kokoroEngine.isReady && !this.kokoroEngine.isLoading) {
       try {
         await this.kokoroEngine.init();
-      } catch (e) {
-        console.warn('Kokoro init fallback for preview:', e);
-      }
-    }
-
-    if (this.activeEngineType === ENGINE_TYPES.KOKORO_NEURAL && this.kokoroEngine.isReady) {
-      try {
-        await this.kokoroEngine.playLine({
-          text,
-          voiceProfile: profile,
-          nuance,
-          pitchOffset,
-          speedMultiplier: speedMultiplier * this.masterSpeed,
-          onEnd: () => {
-            if (this.visualizer) this.visualizer.setSpeaking(false);
-          }
-        });
-        return;
       } catch (err) {
-        console.warn('Kokoro preview failed, fallback to Web Speech:', err);
+        console.warn('Kokoro unavailable, falling back to browser speech:', err);
       }
+      if (generation !== this.playGeneration) return;
     }
 
-    // Fallback
-    this.webSpeechEngine.speakLine({
-      text,
-      voiceProfile: profile,
-      nuance,
-      speedMultiplier: speedMultiplier * this.masterSpeed,
-      onEnd: () => {
-        if (this.visualizer) this.visualizer.setSpeaking(false);
-      }
-    });
+    if (!this.kokoroEngine.isReady && !this.kokoroEngine.isLoading) {
+      this.usingWebSpeechFallback = true;
+      this._setState(PLAYBACK_STATES.PLAYING);
+      this._runWebSpeech();
+      return;
+    }
+
+    this.usingWebSpeechFallback = false;
+    this._beginNeuralPlayback(this.currentIndex);
   }
 
-  /**
-   * Start or Resume reading
-   */
-  async play() {
-    if (this.scriptElements.length === 0) return;
-    if (this.playbackState === PLAYBACK_STATES.PLAYING) return;
+  _beginNeuralPlayback(fromIndex) {
+    if (!this.scheduler) return;
 
-    if (this.currentTimeout) {
-      clearTimeout(this.currentTimeout);
-      this.currentTimeout = null;
-    }
+    this.scheduler.stopAll();
+    this.scheduler.resetTimeline(this.scheduler.currentTime + 0.08);
 
-    this.playbackToken++;
-    this.playbackState = PLAYBACK_STATES.PLAYING;
-    this.emit('stateChange', { state: this.playbackState });
+    this.timeline = [];
+    this.emitCursor = 0;
+    this.activeLine = null;
+    this.reachedEnd = false;
+    this.primed = false;
+    this.primeDeadline = Date.now() + PRIME_TIMEOUT_MS;
 
-    // If Kokoro is not ready yet, initialize it
-    if (this.activeEngineType === ENGINE_TYPES.KOKORO_NEURAL && !this.kokoroEngine.isReady && !this.kokoroEngine.isLoading) {
-      try {
-        await this.kokoroEngine.init();
-      } catch (e) {
-        console.warn('Kokoro play initialization fallback:', e);
-      }
-    }
+    this.cursorLine = Math.max(0, Math.min(this.scriptElements.length - 1, fromIndex));
+    this.cursorUnit = 0;
+    this.currentIndex = this.cursorLine;
 
-    if (this.activeEngineType === ENGINE_TYPES.WEB_SPEECH) {
-      this.webSpeechEngine.resume();
-    }
-    this.playCurrentLine(true);
+    this._setState(PLAYBACK_STATES.BUFFERING);
+    this._startTick();
   }
 
-  pause() {
-    this.playbackToken++;
-    this.playbackState = PLAYBACK_STATES.PAUSED;
-    this.emit('stateChange', { state: this.playbackState });
-
-    if (this.currentTimeout) {
-      clearTimeout(this.currentTimeout);
-      this.currentTimeout = null;
+  async pause() {
+    if (this.playbackState !== PLAYBACK_STATES.PLAYING &&
+        this.playbackState !== PLAYBACK_STATES.BUFFERING) {
+      return;
     }
 
-    this.webSpeechEngine.stop();
-    this.kokoroEngine.stop();
+    this._stopTick();
+    this._setState(PLAYBACK_STATES.PAUSED);
 
-    if (this.visualizer) {
-      this.visualizer.setSpeaking(false);
+    if (this.visualizer) this.visualizer.setSpeaking(false);
+
+    if (this.usingWebSpeechFallback) {
+      this.webSpeechToken++;
+      if (this._webSpeechTimer) clearTimeout(this._webSpeechTimer);
+      this.webSpeechEngine.stop();
+      return;
     }
+
+    // Freezing the context clock holds every scheduled source in place, so
+    // resuming picks up mid-line with no re-render.
+    await suspendAudioContext();
   }
 
   stop() {
-    this.playbackToken++;
-    this.playbackState = PLAYBACK_STATES.IDLE;
-    if (this.currentTimeout) {
-      clearTimeout(this.currentTimeout);
-      this.currentTimeout = null;
+    this.playGeneration++;
+    this.previewToken++;
+    if (this._previewResolve) {
+      const resolve = this._previewResolve;
+      this._previewResolve = null;
+      resolve();
     }
 
+    this.webSpeechToken++;
+    if (this._webSpeechTimer) {
+      clearTimeout(this._webSpeechTimer);
+      this._webSpeechTimer = null;
+    }
     this.webSpeechEngine.stop();
-    this.kokoroEngine.stop();
 
-    if (this.visualizer) {
-      this.visualizer.stop();
+    this._stopTick();
+
+    if (this.scheduler) {
+      this.scheduler.stopAll();
     }
 
-    this.emit('stateChange', { state: this.playbackState });
+    this.timeline = [];
+    this.emitCursor = 0;
+    this.activeLine = null;
+    this.reachedEnd = false;
+    this.primed = false;
+
+    if (this.visualizer) this.visualizer.setSpeaking(false);
+
+    this._setState(PLAYBACK_STATES.IDLE);
   }
 
   seek(index) {
     const target = Math.max(0, Math.min(this.scriptElements.length - 1, index));
-    const wasPlaying = this.playbackState === PLAYBACK_STATES.PLAYING;
+    const wasPlaying = this.playbackState === PLAYBACK_STATES.PLAYING ||
+                       this.playbackState === PLAYBACK_STATES.BUFFERING;
 
     this.stop();
     this.currentIndex = target;
-    this.emit('lineChange', { index: this.currentIndex, element: this.scriptElements[this.currentIndex] });
+    this.cursorLine = target;
+    this.cursorUnit = 0;
 
-    // Pre-buffer the newly selected line immediately
-    this.triggerLookahead(this.currentIndex - 1, 4);
+    // Abandon lookahead the jump made irrelevant, keeping only what we now need.
+    this.kokoroEngine.dropPendingExcept(this._upcomingKeys(target, 8));
+
+    this.emit('lineChange', {
+      index: this.currentIndex,
+      element: this.scriptElements[this.currentIndex]
+    });
 
     if (wasPlaying) {
       this.play();
+    } else {
+      this.prewarm();
     }
+  }
+
+  _upcomingKeys(fromLine, count) {
+    const keys = [];
+    let line = fromLine;
+    let unit = 0;
+    let guard = 0;
+
+    while (keys.length < count && guard++ < 60) {
+      const units = this._unitsForLine(line);
+      if (!units) break;
+      if (unit >= units.length) {
+        line++;
+        unit = 0;
+        continue;
+      }
+      keys.push(units[unit].key);
+      unit++;
+    }
+    return keys;
   }
 
   skipNext() {
@@ -294,172 +711,168 @@ export class ScreenplayAudioManager {
     }
   }
 
-  /**
-   * Pre-fetches upcoming lines into neural audio cache for seamless playback
-   */
-  triggerLookahead(fromIndex, count = 4) {
-    if (this.activeEngineType !== ENGINE_TYPES.KOKORO_NEURAL || !this.kokoroEngine.isReady) return;
-
-    const items = [];
-    for (let i = fromIndex + 1; i <= Math.min(this.scriptElements.length - 1, fromIndex + count); i++) {
-      const elem = this.scriptElements[i];
-      if (!elem) continue;
-      const voiceProfile = this.getVoiceProfileForCharacter(elem.character);
-      const charSettings = this.getCharacterSettings(elem.character);
-      items.push({
-        text: elem.text,
-        voiceProfile,
-        nuance: elem.nuance || {},
-        speedMultiplier: charSettings.speedMultiplier * this.masterSpeed
-      });
-    }
-
-    if (items.length > 0) {
-      this.kokoroEngine.preBufferUpcoming(items);
+  _restartIfPlaying() {
+    if (this.playbackState === PLAYBACK_STATES.PLAYING ||
+        this.playbackState === PLAYBACK_STATES.BUFFERING) {
+      this.seek(this.currentIndex);
     }
   }
 
-  /**
-   * Calculates natural theatrical cue handoff gap between lines based on pacing mode
-   */
-  computeCueHandOffDelay(currentElem, nextElem) {
-    if (!nextElem) return 0;
-
-    let pacingFactor = 1.0;
-    if (this.pacingMode === PACING_MODES.DRAMATIC) pacingFactor = 1.40;
-    else if (this.pacingMode === PACING_MODES.SNAPPY) pacingFactor = 0.65;
-
-    let baseDelay = 220;
-
-    // Explicit dramatic beat (e.g. (beat), (pause))
-    if (nextElem.nuance && nextElem.nuance.isBeat) {
-      baseDelay = 800;
-    }
-    // Scene heading: breathing room to let audience visualize new location
-    else if (currentElem.type === 'SCENE_HEADING') {
-      baseDelay = 650;
-    }
-    // Transition (CUT TO / FADE OUT)
-    else if (currentElem.type === 'TRANSITION') {
-      baseDelay = 500;
-    }
-    // Action direction to character dialogue
-    else if (currentElem.type === 'ACTION' && nextElem.type === 'DIALOGUE') {
-      baseDelay = 280;
-    }
-    // Character dialogue to action direction
-    else if (currentElem.type === 'DIALOGUE' && nextElem.type === 'ACTION') {
-      baseDelay = 260;
-    }
-    // Same character continuing dialogue
-    else if (currentElem.character === nextElem.character) {
-      baseDelay = 160;
-    }
-    // Dialogue to Dialogue (different characters in table read)
-    else if (currentElem.type === 'DIALOGUE' && nextElem.type === 'DIALOGUE') {
-      baseDelay = 240;
-    }
-
-    return Math.round((baseDelay * pacingFactor) / this.masterSpeed);
-  }
+  // ------------------------------------------------------------------ previews
 
   /**
-   * Internal line playback pipeline for smooth table reads
+   * Audition a voice in the Cast Studio. Resolves when playback actually ends,
+   * so the calling UI can flip its button back at the right moment.
    */
-  async playCurrentLine(isInitialStart = false) {
-    if (this.playbackState !== PLAYBACK_STATES.PLAYING) return;
-    if (this.currentIndex >= this.scriptElements.length) {
-      this.stop();
-      this.currentIndex = 0;
-      this.emit('complete', {});
-      return;
+  async previewVoice(voiceId, sampleText = null, pitchOffset = 0, speedMultiplier = 1.0) {
+    this.stop();
+
+    const token = ++this.previewToken;
+    const profile = getVoiceById(voiceId);
+    const text = sampleText || profile.sampleLine;
+
+    await this._ensureAudio();
+
+    if (!this.kokoroEngine.isReady && !this.kokoroEngine.isLoading) {
+      try {
+        await this.kokoroEngine.init();
+      } catch (err) {
+        console.warn('Kokoro init fallback for preview:', err);
+      }
     }
-
-    const currentLineToken = ++this.playbackToken;
-    const currentElement = this.scriptElements[this.currentIndex];
-    const voiceProfile = this.getVoiceProfileForCharacter(currentElement.character);
-    const charSettings = this.getCharacterSettings(currentElement.character);
-    const nuance = currentElement.nuance || {};
-
-    // Trigger lookahead pre-buffering for upcoming lines
-    this.triggerLookahead(this.currentIndex, 4);
-
-    // Notify UI active line has started
-    this.emit('lineStart', {
-      index: this.currentIndex,
-      element: currentElement,
-      voice: voiceProfile,
-      nuance
-    });
+    if (token !== this.previewToken) return;
 
     if (this.visualizer) {
-      this.visualizer.setSpeaking(true, nuance);
+      this.visualizer.setSpeaking(true, { badgeColor: '#F59E0B' });
     }
 
-    const onLineFinished = () => {
-      if (this.playbackToken !== currentLineToken || this.playbackState !== PLAYBACK_STATES.PLAYING) return;
-
-      if (this.visualizer) {
-        this.visualizer.setSpeaking(false);
-      }
-
-      this.emit('lineEnd', { index: this.currentIndex, element: currentElement });
-
-      const nextElement = this.scriptElements[this.currentIndex + 1];
-      const cueDelay = this.computeCueHandOffDelay(currentElement, nextElement);
-
-      if (cueDelay <= 0) {
-        this.currentIndex++;
-        this.playCurrentLine(false);
-      } else {
-        this.currentTimeout = setTimeout(() => {
-          if (this.playbackToken === currentLineToken && this.playbackState === PLAYBACK_STATES.PLAYING) {
-            this.currentIndex++;
-            this.playCurrentLine(false);
-          }
-        }, cueDelay);
-      }
-    };
-
-    const onError = (err) => {
-      console.warn('Audio playback error on line', this.currentIndex, err);
-      onLineFinished();
-    };
-
-    // Play with chosen speech engine
-    if (this.activeEngineType === ENGINE_TYPES.KOKORO_NEURAL && this.kokoroEngine.isReady) {
+    if (this.kokoroEngine.isReady && this.scheduler) {
       try {
-        await this.kokoroEngine.playLine({
-          text: currentElement.text,
-          voiceProfile,
-          nuance,
-          pitchOffset: charSettings.pitchOffset,
-          speedMultiplier: charSettings.speedMultiplier * this.masterSpeed,
-          onEnd: onLineFinished,
-          onError
+        const units = buildPreviewUnits({
+          text,
+          voiceProfile: profile,
+          tuning: { pitchOffset, speedMultiplier },
+          masterSpeed: this.masterSpeed
         });
-      } catch (err) {
-        console.warn('Kokoro neural playback error, fallback to browser speech:', err);
-        if (this.playbackToken === currentLineToken) {
-          this.webSpeechEngine.speakLine({
-            text: currentElement.text,
-            voiceProfile,
-            nuance,
-            speedMultiplier: charSettings.speedMultiplier * this.masterSpeed,
-            onEnd: onLineFinished,
-            onError
-          });
+
+        const buffers = [];
+        for (let i = 0; i < units.length; i++) {
+          buffers.push(await this.kokoroEngine.request(units[i], i));
+          if (token !== this.previewToken) return;
         }
+
+        this.scheduler.resetTimeline(this.scheduler.currentTime + 0.06);
+        let endAt = this.scheduler.currentTime;
+        units.forEach((unit, i) => {
+          endAt = this.scheduler.schedule(unit, buffers[i]).endAt;
+        });
+
+        await this._waitUntil(endAt + 0.05, token);
+        if (token === this.previewToken && this.visualizer) {
+          this.visualizer.setSpeaking(false);
+        }
+        return;
+      } catch (err) {
+        console.warn('Kokoro preview failed, falling back to browser speech:', err);
+        if (token !== this.previewToken) return;
       }
-    } else {
-      this.webSpeechEngine.speakLine({
-        text: currentElement.text,
-        voiceProfile,
-        nuance,
-        speedMultiplier: charSettings.speedMultiplier * this.masterSpeed,
-        onEnd: onLineFinished,
-        onError
-      });
     }
+
+    await new Promise((resolve) => {
+      this._previewResolve = resolve;
+      this.webSpeechEngine.speakLine({
+        text,
+        voiceProfile: profile,
+        nuance: { cleanSpeech: text },
+        speedMultiplier: speedMultiplier * this.masterSpeed,
+        onEnd: () => {
+          this._previewResolve = null;
+          if (this.visualizer) this.visualizer.setSpeaking(false);
+          resolve();
+        },
+        onError: () => {
+          this._previewResolve = null;
+          if (this.visualizer) this.visualizer.setSpeaking(false);
+          resolve();
+        }
+      });
+    });
+  }
+
+  /** Wait for the audio clock to reach `time`, interruptible by stop(). */
+  _waitUntil(time, token) {
+    return new Promise((resolve) => {
+      this._previewResolve = resolve;
+
+      const check = () => {
+        if (token !== this.previewToken) {
+          this._previewResolve = null;
+          resolve();
+          return;
+        }
+        const remaining = time - this.scheduler.currentTime;
+        if (remaining <= 0) {
+          this._previewResolve = null;
+          resolve();
+          return;
+        }
+        setTimeout(check, Math.min(250, Math.max(30, remaining * 1000)));
+      };
+
+      check();
+    });
+  }
+
+  // ------------------------------------------------------ web speech fallback
+
+  _runWebSpeech() {
+    const token = ++this.webSpeechToken;
+
+    const step = () => {
+      if (token !== this.webSpeechToken) return;
+      if (this.playbackState !== PLAYBACK_STATES.PLAYING) return;
+
+      if (this.currentIndex >= this.scriptElements.length) {
+        this._finish();
+        return;
+      }
+
+      const element = this.scriptElements[this.currentIndex];
+      const voice = this.getVoiceProfileForCharacter(element.character);
+      const nuance = element.nuance || {};
+      const tuning = this.getCharacterSettings(element.character);
+
+      this.activeLine = this.currentIndex;
+      this.emit('lineStart', { index: this.currentIndex, element, voice, nuance });
+      if (this.visualizer) this.visualizer.setSpeaking(true, nuance);
+
+      const advance = () => {
+        if (token !== this.webSpeechToken) return;
+        if (this.playbackState !== PLAYBACK_STATES.PLAYING) return;
+
+        this.emit('lineEnd', { index: this.currentIndex, element });
+
+        const next = this.scriptElements[this.currentIndex + 1];
+        const gap = next ? computeCueGapMs(element, next, this.pacingMode, this.masterSpeed) : 0;
+        this.currentIndex++;
+        this._webSpeechTimer = setTimeout(step, gap);
+      };
+
+      if (!nuance.cleanSpeech && !element.text) {
+        advance();
+        return;
+      }
+
+      this.webSpeechEngine.speakLine({
+        text: element.text,
+        voiceProfile: voice,
+        nuance,
+        speedMultiplier: (tuning.speedMultiplier || 1) * this.masterSpeed * (nuance.speedMod || 1),
+        onEnd: advance,
+        onError: advance
+      });
+    };
+
+    step();
   }
 }

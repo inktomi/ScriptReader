@@ -22,6 +22,7 @@ export function createTransportBar({
       <div class="scrub-track" id="scrub-track" title="Click to jump line in screenplay">
         <div class="scrub-fill" id="scrub-fill"></div>
       </div>
+      <span id="transport-buffer-status" class="transport-buffer-status"></span>
       <span id="transport-progress-percent">0%</span>
     </div>
 
@@ -69,6 +70,14 @@ export function createTransportBar({
         <!-- Canvas Visualizer -->
         <canvas class="visualizer-canvas" id="audio-visualizer-canvas" title="Real-time Audio Spectrum"></canvas>
 
+        <!-- Volume -->
+        <div class="volume-control" title="Volume">
+          <button id="btn-transport-mute" class="btn-transport" style="width: 32px; height: 32px;">
+            ${getIconSvg('volume', 16)}
+          </button>
+          <input type="range" id="transport-volume" class="slider-input" min="0" max="100" value="100" style="width: 76px;">
+        </div>
+
         <!-- Speed Chips -->
         <div class="speed-chips" title="Playback Speed">
           <button class="speed-chip" data-speed="0.75">0.75x</button>
@@ -95,6 +104,26 @@ export function createTransportBar({
   const speedChips = container.querySelectorAll('.speed-chip');
   const pacingChips = container.querySelectorAll('.pacing-chip');
   const visualizerCanvas = container.querySelector('#audio-visualizer-canvas');
+  const bufferStatus = container.querySelector('#transport-buffer-status');
+  const volumeSlider = container.querySelector('#transport-volume');
+  const btnMute = container.querySelector('#btn-transport-mute');
+
+  // Volume + mute
+  volumeSlider.addEventListener('input', (e) => {
+    const value = parseInt(e.target.value, 10) / 100;
+    audioManager.setVolume(value);
+    if (value > 0 && audioManager.isMuted) {
+      audioManager.setMuted(false);
+      btnMute.classList.remove('btn-active');
+    }
+  });
+
+  btnMute.addEventListener('click', () => {
+    const nextMuted = !audioManager.isMuted;
+    audioManager.setMuted(nextMuted);
+    btnMute.classList.toggle('btn-active', nextMuted);
+    btnMute.innerHTML = getIconSvg(nextMuted ? 'volumeMute' : 'volume', 16);
+  });
 
   // Pacing mode chips
   pacingChips.forEach(chip => {
@@ -108,7 +137,9 @@ export function createTransportBar({
 
   // Play / Pause toggle
   btnPlay.addEventListener('click', () => {
-    if (audioManager.playbackState === PLAYBACK_STATES.PLAYING) {
+    // Buffering counts as "running" — the button has to stop it, not restart it.
+    if (audioManager.playbackState === PLAYBACK_STATES.PLAYING ||
+        audioManager.playbackState === PLAYBACK_STATES.BUFFERING) {
       onPause();
     } else {
       onPlay();
@@ -141,10 +172,18 @@ export function createTransportBar({
   });
 
   function updatePlaybackState(state) {
-    if (state === PLAYBACK_STATES.PLAYING) {
+    const isBuffering = state === PLAYBACK_STATES.BUFFERING;
+    container.classList.toggle('is-buffering', isBuffering);
+    bufferStatus.textContent = isBuffering ? '⏳ Rendering voices…' : '';
+
+    if (state === PLAYBACK_STATES.PLAYING || isBuffering) {
       btnPlay.innerHTML = getIconSvg('pause', 24);
-      btnPlay.style.background = 'linear-gradient(135deg, #06B6D4, #3B82F6)';
-      btnPlay.style.boxShadow = '0 0 24px rgba(6, 182, 212, 0.5)';
+      btnPlay.style.background = isBuffering
+        ? 'linear-gradient(135deg, #64748B, #475569)'
+        : 'linear-gradient(135deg, #06B6D4, #3B82F6)';
+      btnPlay.style.boxShadow = isBuffering
+        ? '0 0 18px rgba(100, 116, 139, 0.4)'
+        : '0 0 24px rgba(6, 182, 212, 0.5)';
     } else {
       btnPlay.innerHTML = getIconSvg('play', 24);
       btnPlay.style.background = 'linear-gradient(135deg, #F59E0B, #D97706)';

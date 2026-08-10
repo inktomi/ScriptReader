@@ -8,10 +8,11 @@ By leveraging advanced in-browser neural Text-to-Speech (TTS), ScriptReader can 
 
 * **Multi-Voice Table Reads**: Assign unique voices to different characters in your screenplay. The application intelligently switches between voices during dialogue scenes to simulate a real ensemble cast.
 * **Format Support**: Upload scripts in standard industry formats, including **Fountain** text files and **PDFs**.
-* **100% Local Processing**: ScriptReader runs entirely in your browser. It uses WebAssembly (WASM) and WebGPU via Transformers.js to execute neural TTS models (like Kokoro) directly on your device. Your data never leaves your computer.
-* **Background Pre-Rendering**: A dedicated Web Worker intelligently looks ahead in your script and pre-renders upcoming lines of dialogue in the background. This ensures completely seamless, lag-free playback during dense, fast-paced dialogue scenes.
+* **100% Local Processing**: ScriptReader runs entirely in your browser. It uses WebGPU (falling back to WebAssembly) via Transformers.js to execute neural TTS models (like Kokoro) directly on your device. Your data never leaves your computer.
+* **Gapless Playback**: Lines are placed directly on the Web Audio timeline at sample accuracy, so the only silence you hear is deliberate theatrical timing. Sit back and the script reads itself.
+* **Direction-Aware Performance**: Parentheticals actually change the delivery. `(whispering)` drops the level and slows the read; `(authoritative)` lowers the pitch and firms the tempo; `(over comms)` band-limits the voice like a radio; an `(O.S.)` cue moves it off-screen.
 * **Teleprompter UI**: Follow along with the audio playback via a clean, auto-scrolling teleprompter interface that highlights the current active line.
-* **Emotion & Nuance Support**: Adjust speech speed, pitch, and emotional nuances to get the perfect delivery for each character.
+* **Cast Studio**: Audition every voice against your own dialogue, then tune pitch and pace per character. Choices persist per script.
 
 ## How It Works
 
@@ -22,9 +23,39 @@ By leveraging advanced in-browser neural Text-to-Speech (TTS), ScriptReader can 
 ## Technical Stack
 
 * **Frontend**: Vanilla JavaScript (ESModules) and CSS, bundled with Vite.
-* **Audio Engine**: Web Audio API combined with `kokoro-js` (a port of the Kokoro TTS model). 
+* **Audio Engine**: Web Audio API combined with `kokoro-js` (a port of the Kokoro TTS model).
 * **Neural Inference**: Handled via `@huggingface/transformers` running in a dedicated Web Worker to prevent UI blocking.
 * **Parsing**: Custom Fountain parsing and PDF text extraction.
+
+## How the audio pipeline works
+
+Seamless playback is the whole point of a table read, so the audio path is built
+around one idea: **never make the listener wait for the renderer.**
+
+```
+script element
+  ↓  performance-director.js   direction → tempo / pitch / level / filter, split into chunks
+render unit
+  ↓  kokoro-engine.js          priority-queued synthesis, deduped + cached as AudioBuffers
+audio buffer
+  ↓  playback-scheduler.js     placed on the AudioContext timeline at an absolute start time
+speaker
+```
+
+* **`audio-manager.js`** runs a 60 ms loop that keeps ~28 s of audio *requested* and
+  ~1.6 s *scheduled*, tags each request with its distance from the playhead, and
+  emits teleprompter events off the audio clock rather than off timers.
+* **Scheduling, not chaining.** Each line is committed to the timeline with
+  `source.start(when)` the moment its buffer exists. Nothing waits on an `onended`
+  callback, so a busy main thread cannot open a hole between two lines.
+* **Tempo and pitch are separated.** Kokoro's `speed` changes tempo but preserves
+  pitch; Web Audio's `playbackRate` changes both. Synthesising at `tempo / pitch`
+  and playing back at `pitch` cancels on tempo and compounds on pitch — which is
+  what lets a direction genuinely reshape a delivery.
+* **Pause freezes the clock.** `AudioContext.suspend()` holds every scheduled
+  source in place, so resuming continues mid-line with no re-render.
+* **Cancellation is surgical.** A seek drops only *pending* lookahead; work
+  already in flight still lands in the cache instead of being thrown away.
 
 ## Running Locally
 

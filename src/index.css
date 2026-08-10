@@ -709,6 +709,34 @@ body {
   position: relative;
 }
 
+.transport-buffer-status {
+  color: #94A3B8;
+  font-size: 0.72rem;
+  white-space: nowrap;
+  opacity: 0;
+  transition: opacity 0.2s ease;
+}
+
+.transport-container.is-buffering .transport-buffer-status {
+  opacity: 1;
+  animation: buffer-pulse 1.4s ease-in-out infinite;
+}
+
+.transport-container.is-buffering .scrub-fill {
+  background: linear-gradient(to right, #64748B, #94A3B8);
+}
+
+@keyframes buffer-pulse {
+  0%, 100% { opacity: 0.55; }
+  50% { opacity: 1; }
+}
+
+.volume-control {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
 .transport-main-row {
   display: flex;
   align-items: center;

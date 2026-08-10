@@ -1,22 +1,36 @@
 import { ModelCacheManager, DEFAULT_MODEL_ID } from './model-cache-manager.js';
+import { getAudioContext } from './audio-context.js';
+
+/**
+ * Neural synthesis service.
+ *
+ * This class renders text to AudioBuffers and caches them. It deliberately owns
+ * *no* playback: scheduling lives in PlaybackScheduler, so nothing here can ever
+ * cancel in-flight lookahead work as a side effect of starting a line.
+ */
+
+// Roughly 25 minutes of speech at 24 kHz mono — plenty of runway for a feature
+// script while bounding memory on a long sit-back-and-listen session.
+const MAX_CACHED_SECONDS = 1500;
 
 export class KokoroNeuralEngine {
   constructor() {
     this.worker = null;
     this.msgId = 0;
     this.resolvers = new Map();
-    this.playToken = 0;
+
     this.isLoading = false;
     this.isReady = false;
     this.loadProgress = 0;
     this.statusMessage = 'Not loaded';
     this.isCachedLocally = false;
-    this.audioCtx = null;
-    this.currentSource = null;
-    this.gainNode = null;
-    this.audioCache = new Map(); // cacheKey -> AudioBuffer
-    this.pendingSyntheses = new Map(); // cacheKey -> Promise<AudioBuffer>
+    this.device = null;
+
+    this.audioCache = new Map();      // key -> AudioBuffer (insertion-ordered, LRU-trimmed)
+    this.cachedSeconds = 0;
+    this.pending = new Map();         // key -> { promise, priority }
     this.progressListeners = new Set();
+    this.initPromise = null;
   }
 
   onProgress(callback) {
@@ -34,40 +48,49 @@ export class KokoroNeuralEngine {
 
   handleWorkerMessage(e) {
     const { type, id, payload, error } = e.data;
-    
+
     if (type === 'progress') {
-      const p = payload;
+      // transformers.js reports progress as a 0-100 percentage, not a fraction.
+      const pct = Math.max(0, Math.min(100, payload.progress || 0));
       const base = this.isCachedLocally ? 30 : 20;
       const factor = this.isCachedLocally ? 0.6 : 0.7;
-      const overall = base + Math.round(p.progress * factor);
+      const overall = Math.min(99, base + Math.round(pct * factor));
       const msg = this.isCachedLocally
-        ? `Loading local weights: ${Math.round(p.progress * 100)}%`
-        : `Downloading neural voice weights: ${Math.round(p.progress * 100)}%`;
+        ? `Loading local weights: ${Math.round(pct)}%`
+        : `Downloading neural voice weights: ${Math.round(pct)}%`;
       this.notifyProgress(overall, msg);
-    } else if (id && this.resolvers.has(id)) {
+      return;
+    }
+
+    if (id && this.resolvers.has(id)) {
       const { resolve, reject } = this.resolvers.get(id);
       this.resolvers.delete(id);
-      
-      if (type === 'error') {
-        reject(new Error(error));
+
+      if (type === 'error' || type === 'dropped') {
+        reject(new Error(error || 'synthesis failed'));
       } else {
         resolve(payload);
       }
     }
   }
 
-  async init(device = 'wasm') {
+  async init(device = 'auto') {
     if (this.isReady) return true;
-    if (this.isLoading) return false;
+    if (this.initPromise) return this.initPromise;
 
+    this.initPromise = this._init(device).finally(() => {
+      this.initPromise = null;
+    });
+    return this.initPromise;
+  }
+
+  async _init(device) {
     this.isLoading = true;
-    this.notifyProgress(5, 'Initializing Kokoro Neural Engine (WASM/WebGPU)...');
+    this.notifyProgress(5, 'Initializing Kokoro Neural Engine...');
 
     try {
-      // 1. Ensure browser grants persistent storage
       await ModelCacheManager.requestPersistentStorage();
 
-      // 2. Inspect if model is already stored locally
       const cacheStatus = await ModelCacheManager.getModelCacheStatus(DEFAULT_MODEL_ID);
       this.isCachedLocally = cacheStatus.isModelCached;
 
@@ -80,7 +103,7 @@ export class KokoroNeuralEngine {
       this.worker = new Worker(new URL('./kokoro-worker.js', import.meta.url), { type: 'module' });
       this.worker.onmessage = (e) => this.handleWorkerMessage(e);
 
-      await new Promise((resolve, reject) => {
+      const result = await new Promise((resolve, reject) => {
         const id = ++this.msgId;
         this.resolvers.set(id, { resolve, reject });
         this.worker.postMessage({
@@ -90,21 +113,18 @@ export class KokoroNeuralEngine {
         });
       });
 
+      this.device = result && result.device ? result.device : 'wasm';
       this.isReady = true;
       this.isLoading = false;
       this.isCachedLocally = true;
 
-      const readyMsg = cacheStatus.isModelCached
-        ? '⚡ Kokoro Neural Engine ready (Loaded from local cache)'
-        : 'Kokoro Neural Engine ready & cached locally';
-      this.notifyProgress(100, readyMsg);
+      const accel = this.device === 'webgpu' ? ' (WebGPU accelerated)' : '';
+      this.notifyProgress(100, cacheStatus.isModelCached
+        ? `⚡ Kokoro Neural Engine ready${accel}`
+        : `Kokoro Neural Engine ready & cached locally${accel}`);
 
-      const AudioContextClass = window.AudioContext || window.webkitAudioContext;
-      if (AudioContextClass) {
-        this.audioCtx = new AudioContextClass();
-      }
+      getAudioContext();
 
-      // 4. Background-cache all 28 character voices so switching voices never hits the network
       ModelCacheManager.preloadAllVoices(DEFAULT_MODEL_ID).catch(err => {
         console.warn('Voice pre-caching notice:', err);
       });
@@ -119,175 +139,109 @@ export class KokoroNeuralEngine {
     }
   }
 
-  getCacheKey(voiceProfile, text, nuance, speedMultiplier) {
-    const voiceId = voiceProfile.kokoroId || 'af_heart';
-    const effectiveSpeed = Math.min(1.4, Math.max(0.75, (voiceProfile.defaultSpeed || 1.0) * speedMultiplier * (nuance.rateMod || 1.0)));
-    const spokenText = nuance.cleanSpeech || text;
-    return `${voiceId}_${effectiveSpeed.toFixed(2)}_${spokenText.trim()}`;
+  getCached(key) {
+    return this.audioCache.get(key) || null;
+  }
+
+  has(key) {
+    return this.audioCache.has(key);
+  }
+
+  isPending(key) {
+    return this.pending.has(key);
   }
 
   /**
-   * Background look-ahead synthesis: pre-renders upcoming lines into AudioBuffer memory
+   * Queue a unit for synthesis. Safe to call every tick: already-cached units are
+   * no-ops and already-queued units only get their priority raised.
+   *
+   * `priority` is a small integer — 0 is "needed next", higher is further ahead.
    */
-  async preBufferUpcoming(items = []) {
-    if (!this.isReady || !this.worker) return;
+  request(unit, priority = 1000) {
+    if (!this.isReady || !this.worker) return null;
+    if (this.audioCache.has(unit.key)) return Promise.resolve(this.audioCache.get(unit.key));
 
-    for (const item of items) {
-      if (!item || !item.text) continue;
-      const cacheKey = this.getCacheKey(item.voiceProfile, item.text, item.nuance || {}, item.speedMultiplier || 1.0);
-      if (this.audioCache.has(cacheKey) || this.pendingSyntheses.has(cacheKey)) {
-        continue;
-      }
-
-      // Synthesize in background (fire and forget, handles its own caching/queuing)
-      this.synthesize(item).catch(() => {
-        // Silently skip pre-buffer failure
-      });
-    }
-  }
-
-  /**
-   * Synthesize audio for text and voice profile with natural prosody
-   */
-  async synthesize({ text, voiceProfile, nuance = {}, speedMultiplier = 1.0 }) {
-    if (!this.isReady || !this.worker) {
-      throw new Error('Kokoro neural engine is not initialized yet.');
-    }
-
-    const voiceId = voiceProfile.kokoroId || 'af_heart';
-    const effectiveSpeed = Math.min(1.4, Math.max(0.75, (voiceProfile.defaultSpeed || 1.0) * speedMultiplier * (nuance.rateMod || 1.0)));
-    const spokenText = (nuance.cleanSpeech || text).trim();
-
-    if (!spokenText) {
-      throw new Error('Empty text for synthesis');
-    }
-
-    const cacheKey = `${voiceId}_${effectiveSpeed.toFixed(2)}_${spokenText}`;
-    if (this.audioCache.has(cacheKey)) {
-      return this.audioCache.get(cacheKey);
-    }
-
-    if (this.pendingSyntheses.has(cacheKey)) {
-      return await this.pendingSyntheses.get(cacheKey);
-    }
-
-    const synthPromise = (async () => {
-      try {
-        const rawAudio = await new Promise((resolve, reject) => {
-          const id = ++this.msgId;
-          this.resolvers.set(id, { resolve, reject });
-          this.worker.postMessage({
-            type: 'generate',
-            id,
-            payload: {
-              text: spokenText,
-              voiceId,
-              speed: effectiveSpeed
-            }
-          });
+    const existing = this.pending.get(unit.key);
+    if (existing) {
+      if (priority < existing.priority) {
+        existing.priority = priority;
+        this.worker.postMessage({
+          type: 'reprioritize',
+          payload: { priorities: { [unit.key]: priority } }
         });
-
-        if (!this.audioCtx) {
-          const AudioContextClass = window.AudioContext || window.webkitAudioContext;
-          this.audioCtx = new AudioContextClass();
-        }
-
-        const audioBuffer = this.audioCtx.createBuffer(
-          1,
-          rawAudio.audio.length,
-          rawAudio.sampling_rate || 24000
-        );
-        audioBuffer.copyToChannel(rawAudio.audio, 0);
-
-        this.audioCache.set(cacheKey, audioBuffer);
-        this.pendingSyntheses.delete(cacheKey);
-        return audioBuffer;
-      } catch (err) {
-        this.pendingSyntheses.delete(cacheKey);
-        throw err;
       }
-    })();
+      return existing.promise;
+    }
 
-    this.pendingSyntheses.set(cacheKey, synthPromise);
-    return await synthPromise;
+    const promise = this._synthesize(unit, priority)
+      .then((buffer) => {
+        this.pending.delete(unit.key);
+        this._store(unit.key, buffer);
+        return buffer;
+      })
+      .catch((err) => {
+        this.pending.delete(unit.key);
+        throw err;
+      });
+
+    // Lookahead rejections are expected (dropped on seek) and must not surface
+    // as unhandled rejections; callers that care attach their own handler.
+    promise.catch(() => {});
+
+    this.pending.set(unit.key, { promise, priority });
+    return promise;
+  }
+
+  async _synthesize(unit, priority) {
+    const raw = await new Promise((resolve, reject) => {
+      const id = ++this.msgId;
+      this.resolvers.set(id, { resolve, reject });
+      this.worker.postMessage({
+        type: 'generate',
+        id,
+        payload: {
+          key: unit.key,
+          text: unit.text,
+          voiceId: unit.voiceId,
+          speed: unit.kokoroSpeed,
+          priority
+        }
+      });
+    });
+
+    const ctx = getAudioContext();
+    if (!ctx) throw new Error('Web Audio is unavailable in this browser.');
+
+    const sampleRate = raw.sampling_rate || 24000;
+    const buffer = ctx.createBuffer(1, raw.audio.length, sampleRate);
+    buffer.copyToChannel(raw.audio, 0);
+    return buffer;
+  }
+
+  _store(key, buffer) {
+    if (this.audioCache.has(key)) return;
+    this.audioCache.set(key, buffer);
+    this.cachedSeconds += buffer.duration;
+
+    while (this.cachedSeconds > MAX_CACHED_SECONDS && this.audioCache.size > 1) {
+      const oldestKey = this.audioCache.keys().next().value;
+      const oldest = this.audioCache.get(oldestKey);
+      this.audioCache.delete(oldestKey);
+      this.cachedSeconds -= oldest.duration;
+    }
   }
 
   /**
-   * Plays a synthesized line with sample-accurate Web Audio API
+   * Abandon queued lookahead that a seek made irrelevant. Units listed in
+   * `keepKeys` survive; anything already generating still completes and caches.
    */
-  async playLine({ text, voiceProfile, nuance = {}, pitchOffset = 0, speedMultiplier = 1.0, onStart, onEnd, onError }) {
-    const currentToken = ++this.playToken;
-    try {
-      const audioBuffer = await this.synthesize({ text, voiceProfile, nuance, speedMultiplier });
-
-      if (this.playToken !== currentToken) {
-        return; // playback was stopped or superseded
-      }
-
-      if (!this.audioCtx) {
-        const AudioContextClass = window.AudioContext || window.webkitAudioContext;
-        this.audioCtx = new AudioContextClass();
-      }
-
-      if (this.audioCtx.state === 'suspended') {
-        await this.audioCtx.resume();
-      }
-
-      this.stop();
-
-      const source = this.audioCtx.createBufferSource();
-      source.buffer = audioBuffer;
-
-      // Soft envelope gain to eliminate clicks and pops
-      const gainNode = this.audioCtx.createGain();
-      const targetGain = Math.min(1.25, Math.max(0.3, (nuance.gainMod || 1.0)));
-      gainNode.gain.setValueAtTime(0.001, this.audioCtx.currentTime);
-      gainNode.gain.exponentialRampToValueAtTime(targetGain, this.audioCtx.currentTime + 0.02);
-
-      // Keep native neural playback rate clean for pristine acoustic fidelity
-      source.playbackRate.value = 1.0;
-
-      source.connect(gainNode);
-      gainNode.connect(this.audioCtx.destination);
-
-      let ended = false;
-      source.onended = () => {
-        if (ended) return;
-        ended = true;
-        this.currentSource = null;
-        if (onEnd) onEnd();
-      };
-
-      this.currentSource = source;
-      this.gainNode = gainNode;
-      if (onStart) onStart();
-      source.start(0);
-
-    } catch (err) {
-      if (err.message === 'interrupted') return;
-      console.warn('Kokoro neural play error:', err);
-      if (onError) onError(err);
-    }
+  dropPendingExcept(keepKeys = []) {
+    if (!this.worker) return;
+    this.worker.postMessage({ type: 'dropPending', payload: { keepKeys } });
   }
 
-  stop() {
-    this.playToken++; // invalidate pending playbacks
-    if (this.worker) {
-      this.worker.postMessage({ type: 'stop' });
-    }
-    if (this.currentSource) {
-      try {
-        if (this.gainNode && this.audioCtx) {
-          this.gainNode.gain.setValueAtTime(this.gainNode.gain.value, this.audioCtx.currentTime);
-          this.gainNode.gain.exponentialRampToValueAtTime(0.001, this.audioCtx.currentTime + 0.015);
-        }
-        this.currentSource.stop();
-      } catch (e) {
-        // already stopped
-      }
-      this.currentSource = null;
-      this.gainNode = null;
-    }
+  clearCache() {
+    this.audioCache.clear();
+    this.cachedSeconds = 0;
   }
 }
-

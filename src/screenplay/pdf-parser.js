@@ -125,10 +125,12 @@ function processExtractedLines(lines, scriptTitle) {
   function flushDialogue() {
     if (pendingDialogueLines.length > 0 && currentSpeaker) {
       const fullDialogueText = pendingDialogueLines.join(' ').trim();
+      const extensionMatch = (currentSpeakerOriginal || '').match(/\([^)]*\)/g);
       const nuance = analyzeLineNuance({
         text: fullDialogueText,
         parenthetical: currentParenthetical,
-        speakerType: 'CHARACTER'
+        speakerType: 'CHARACTER',
+        extension: extensionMatch ? extensionMatch.join(' ') : ''
       });
 
       elements.push({
@@ -174,7 +176,7 @@ function processExtractedLines(lines, scriptTitle) {
       currentSceneTitle = text;
       sceneList.push({ number: currentSceneNumber, title: currentSceneTitle, lineIndex });
 
-      const nuance = analyzeLineNuance({ text, speakerType: 'ACTION' });
+      const nuance = analyzeLineNuance({ text, speakerType: 'SCENE_HEADING' });
       elements.push({
         id: `line-${lineIndex++}`,
         type: 'SCENE_HEADING',
@@ -195,7 +197,7 @@ function processExtractedLines(lines, scriptTitle) {
       inDialogueBlock = false;
       currentSpeaker = null;
 
-      const nuance = analyzeLineNuance({ text, speakerType: 'ACTION' });
+      const nuance = analyzeLineNuance({ text, speakerType: 'TRANSITION' });
       elements.push({
         id: `line-${lineIndex++}`,
         type: 'TRANSITION',

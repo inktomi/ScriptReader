@@ -48,10 +48,14 @@ export function parseFountainScript(text) {
   function flushDialogue() {
     if (pendingDialogueLines.length > 0 && currentSpeaker) {
       const fullDialogueText = pendingDialogueLines.join(' ').trim();
+      // The cue extension — (V.O.), (O.S.) — decides whether this voice is in the
+      // room, on a speaker, or off-screen, so it has to reach the analyzer.
+      const extensionMatch = (currentSpeakerOriginal || '').match(/\([^)]*\)/g);
       const nuance = analyzeLineNuance({
         text: fullDialogueText,
         parenthetical: currentParenthetical,
-        speakerType: 'CHARACTER'
+        speakerType: 'CHARACTER',
+        extension: extensionMatch ? extensionMatch.join(' ') : ''
       });
 
       const element = {
@@ -110,7 +114,7 @@ export function parseFountainScript(text) {
 
       const nuance = analyzeLineNuance({
         text: currentSceneTitle,
-        speakerType: 'ACTION'
+        speakerType: 'SCENE_HEADING'
       });
 
       elements.push({
@@ -135,7 +139,7 @@ export function parseFountainScript(text) {
 
       const nuance = analyzeLineNuance({
         text: trimmed,
-        speakerType: 'ACTION'
+        speakerType: 'TRANSITION'
       });
 
       elements.push({

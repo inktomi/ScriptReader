@@ -30,18 +30,29 @@ export class AudioVisualizer {
     }
   }
 
+  /** Fit the bar count to the space available so bars never overflow. */
+  barCountFor(width) {
+    return Math.max(8, Math.min(32, Math.floor(width / 7)));
+  }
+
   setColors(primary = '#F59E0B', secondary = '#06B6D4') {
     this.accentColor = primary;
     this.secondaryColor = secondary;
   }
 
   start(analyser = null) {
-    this.analyser = analyser;
-    if (this.analyser) {
-      const bufferLength = this.analyser.frequencyBinCount;
-      this.dataArray = new Uint8Array(bufferLength);
+    if (analyser) {
+      this.analyser = analyser;
+      this.dataArray = new Uint8Array(this.analyser.frequencyBinCount);
     }
     this.isPlaying = true;
+
+    // start() is called again once the scheduler's analyser exists; never let
+    // that stack a second animation frame loop on top of the first.
+    if (this.animationId) {
+      cancelAnimationFrame(this.animationId);
+      this.animationId = null;
+    }
     this.animate();
   }
 
@@ -70,6 +81,14 @@ export class AudioVisualizer {
 
     const width = this.canvas.clientWidth;
     const height = this.canvas.clientHeight;
+
+    // Before layout settles the canvas can report zero width, which would make
+    // the bar geometry negative and throw out of roundRect.
+    if (width <= 0 || height <= 0) {
+      this.animationId = requestAnimationFrame(() => this.animate());
+      return;
+    }
+
     this.ctx.clearRect(0, 0, width, height);
 
     if (this.isPlaying) {
@@ -85,8 +104,9 @@ export class AudioVisualizer {
     this.simulatedPhase += 0.15;
 
     // Draw multi-bar spectrum
-    const barCount = 32;
-    const barWidth = (width / barCount) - 3;
+    const barCount = this.barCountFor(width);
+    const gap = width / barCount > 6 ? 3 : 1;
+    const barWidth = Math.max(1, (width / barCount) - gap);
     const centerY = height / 2;
 
     const gradient = this.ctx.createLinearGradient(0, 0, width, height);
@@ -94,19 +114,34 @@ export class AudioVisualizer {
     gradient.addColorStop(1, this.secondaryColor);
     this.ctx.fillStyle = gradient;
 
-    for (let i = 0; i < barCount; i++) {
-      const x = i * (barWidth + 3);
-      
-      // Natural speech rhythm simulation
-      const wave1 = Math.sin(this.simulatedPhase + i * 0.35);
-      const wave2 = Math.cos(this.simulatedPhase * 0.7 + i * 0.2);
-      const randomJitter = (Math.sin(i * 99 + this.simulatedPhase * 3) + 1) * 0.5;
+    // Prefer real spectrum data when the scheduler has handed us an analyser;
+    // fall back to the synthetic waveform when it hasn't.
+    let spectrum = null;
+    if (this.analyser && this.dataArray) {
+      this.analyser.getByteFrequencyData(this.dataArray);
+      spectrum = this.dataArray;
+    }
 
-      const normalizedHeight = Math.abs(wave1 * 0.6 + wave2 * 0.4) * randomJitter * this.simulatedIntensity;
+    for (let i = 0; i < barCount; i++) {
+      const x = i * (barWidth + gap);
+
+      let normalizedHeight;
+      if (spectrum) {
+        // Sample logarithmically so speech energy spreads across the bars.
+        const t = i / (barCount - 1);
+        const bin = Math.min(spectrum.length - 1, Math.round(Math.pow(t, 1.8) * (spectrum.length - 1)));
+        normalizedHeight = (spectrum[bin] / 255) * this.simulatedIntensity;
+      } else {
+        const wave1 = Math.sin(this.simulatedPhase + i * 0.35);
+        const wave2 = Math.cos(this.simulatedPhase * 0.7 + i * 0.2);
+        const randomJitter = (Math.sin(i * 99 + this.simulatedPhase * 3) + 1) * 0.5;
+        normalizedHeight = Math.abs(wave1 * 0.6 + wave2 * 0.4) * randomJitter * this.simulatedIntensity;
+      }
+
       const barHeight = Math.max(4, normalizedHeight * (height - 8));
 
       const y = centerY - (barHeight / 2);
-      const radius = Math.min(barWidth / 2, 2);
+      const radius = Math.max(0, Math.min(barWidth / 2, 2));
 
       // Draw rounded bar
       this.ctx.beginPath();
@@ -123,16 +158,19 @@ export class AudioVisualizer {
     if (!this.ctx || !this.canvas) return;
     const width = this.canvas.clientWidth;
     const height = this.canvas.clientHeight;
+    if (width <= 0 || height <= 0) return;
+
     this.ctx.clearRect(0, 0, width, height);
 
-    const barCount = 32;
-    const barWidth = (width / barCount) - 3;
+    const barCount = this.barCountFor(width);
+    const gap = width / barCount > 6 ? 3 : 1;
+    const barWidth = Math.max(1, (width / barCount) - gap);
     const centerY = height / 2;
 
     this.ctx.fillStyle = 'rgba(148, 163, 184, 0.25)';
 
     for (let i = 0; i < barCount; i++) {
-      const x = i * (barWidth + 3);
+      const x = i * (barWidth + gap);
       const barHeight = 4;
       const y = centerY - (barHeight / 2);
 

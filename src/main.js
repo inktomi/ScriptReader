@@ -139,7 +139,9 @@ async function initApp() {
     onPause: () => audioManager.pause(),
     onStop: () => {
       audioManager.stop();
+      audioManager.seek(0);
       scriptStore.setActiveLine(0);
+      teleprompter.highlightActiveLine(0, true);
       transportBar.updatePlaybackState(PLAYBACK_STATES.IDLE);
       transportBar.updateProgress(0, scriptStore.currentScript ? scriptStore.currentScript.elements.length : 0);
     },
@@ -161,6 +163,11 @@ async function initApp() {
   appRoot.appendChild(header.element);
   appRoot.appendChild(appBody);
   appRoot.appendChild(transportBar.element);
+
+  // Dev-only handle for inspecting playback timing from the console.
+  if (import.meta.env && import.meta.env.DEV) {
+    window.__scriptReader = { audioManager, scriptStore };
+  }
 
   // Initialize Canvas Visualizer
   const visualizer = new AudioVisualizer(transportBar.visualizerCanvas);
@@ -184,6 +191,19 @@ async function initApp() {
 
       case 'lineEnd':
         castPanel.setSpeakingCharacter(null);
+        break;
+
+      // Emitted by seek() while stopped or paused — keep the transport readout
+      // in step with the jump even though no audio started.
+      case 'lineChange':
+        if (data.element) {
+          transportBar.updateProgress(data.index, scriptStore.currentScript.elements.length);
+          transportBar.updateActiveSpeaker(
+            data.element,
+            audioManager.getVoiceProfileForCharacter(data.element.character),
+            data.element.nuance
+          );
+        }
         break;
 
       case 'complete':
@@ -288,6 +308,8 @@ async function initApp() {
       if (fill) fill.style.width = `${progress}%`;
     } else if (audioManager.kokoroEngine.isReady) {
       removeNeuralLoadingNotification(isCachedLocally ? '⚡ Kokoro Neural Engine Ready (Local Cache)' : 'Kokoro Neural Model Cached Locally! 🚀');
+      // Render the opening lines now so the first Play starts instantly.
+      audioManager.prewarm();
     }
   });
 
@@ -346,7 +368,8 @@ async function initApp() {
     if (e.code === 'Space' || e.key === ' ' || e.keyCode === 32) {
       e.preventDefault();
       e.stopPropagation();
-      if (audioManager.playbackState === PLAYBACK_STATES.PLAYING) {
+      if (audioManager.playbackState === PLAYBACK_STATES.PLAYING ||
+          audioManager.playbackState === PLAYBACK_STATES.BUFFERING) {
         audioManager.pause();
       } else {
         audioManager.play();
