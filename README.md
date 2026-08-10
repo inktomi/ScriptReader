@@ -139,6 +139,39 @@ npm run build
 npm run preview
 ```
 
+## Deploying
+
+The build is fully static — there is no server, no API key, and no backend. All
+parsing and inference happens in the visitor's browser, so a deployed copy is
+exactly as private as a local one: the host only ever sees a request for files,
+and scripts never leave the machine reading them.
+
+Configured for Cloudflare Pages:
+
+```bash
+npm run build
+npx wrangler pages deploy
+```
+
+Note the `pages` — plain `wrangler deploy` is the Workers path and will refuse.
+`pages_build_output_dir` in `wrangler.toml` is what lets the deploy command run
+without arguments. If you point a Pages project at the Git repo instead, set the
+build command to `npm run build` and the output directory to `dist`, and skip
+wrangler entirely.
+
+**Whatever you host on must send the headers in `public/_headers`.** The
+`Cross-Origin-Opener-Policy` / `Cross-Origin-Embedder-Policy` pair in
+`vite.config.js` applies to the dev server only — Vite does not carry it into
+the build. Those headers enable `SharedArrayBuffer`, and therefore
+multi-threaded WASM inference. They are a performance floor rather than a
+requirement: WebGPU never needs them, and browsers without it fall back to
+single-threaded inference, which works but is markedly slower. Hosts that cannot
+set response headers at all (GitHub Pages) will run in that degraded mode.
+
+First load pulls ~25 MB of assets plus the Kokoro weights from Hugging Face;
+both are cached in the browser afterwards. Expect a good experience on desktops
+and a memory-constrained one on phones.
+
 ## Privacy & Security
 
 Because all parsing and neural inference happens locally inside your browser, ScriptReader is completely private by design. It does not require an internet connection after the initial loading of the model weights, making it safe for unreleased, confidential screenplays.

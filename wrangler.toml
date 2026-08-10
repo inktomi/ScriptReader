@@ -1,0 +1,13 @@
+# Cloudflare Pages project config.
+#
+# `pages_build_output_dir` is what makes `npx wrangler pages deploy` work with
+# no arguments. Note the `pages` in that command: plain `wrangler deploy` is the
+# Workers path and will not do the right thing here.
+#
+# Not needed at all if you wire the Pages project to the Git repo instead — in
+# that case set the build command to `npm run build` and the output directory to
+# `dist` in the dashboard, and pushing deploys.
+
+name = "scriptreader"
+pages_build_output_dir = "dist"
+compatibility_date = "2026-08-10"
