@@ -11,6 +11,7 @@ export function createScriptTeleprompter({
   container.className = 'screenplay-viewport';
 
   let autoScrollEnabled = true;
+  let activeLineSet = new Set();
 
   container.innerHTML = `
     <div class="teleprompter-toolbar">
@@ -56,6 +57,7 @@ export function createScriptTeleprompter({
   });
 
   function renderScript() {
+    activeLineSet = new Set();
     const script = scriptStore.currentScript;
     if (!script || !script.elements || script.elements.length === 0) {
       pageContent.innerHTML = `
@@ -185,23 +187,31 @@ export function createScriptTeleprompter({
    * once characters talk over each other.
    */
   function setActiveLines(indices, shouldScroll = true) {
-    const active = Array.isArray(indices) ? indices : [indices];
+    const active = (Array.isArray(indices) ? indices : [indices])
+      .filter(index => Number.isInteger(index));
+    const next = new Set(active);
 
-    pageContent.querySelectorAll('.script-line').forEach(el => {
+    for (const index of activeLineSet) {
+      if (next.has(index)) continue;
+      const el = pageContent.querySelector(`#line-el-${index}`);
+      if (!el) continue;
       el.classList.remove('active');
       const indicator = el.querySelector('.active-glow-indicator');
       if (indicator) indicator.style.display = 'none';
-    });
+    }
 
     let scrollTarget = null;
     for (const index of active) {
       const activeEl = pageContent.querySelector(`#line-el-${index}`);
       if (!activeEl) continue;
-      activeEl.classList.add('active');
-      const indicator = activeEl.querySelector('.active-glow-indicator');
-      if (indicator) indicator.style.display = 'block';
+      if (!activeLineSet.has(index)) {
+        activeEl.classList.add('active');
+        const indicator = activeEl.querySelector('.active-glow-indicator');
+        if (indicator) indicator.style.display = 'block';
+      }
       if (scrollTarget === null) scrollTarget = activeEl;
     }
+    activeLineSet = next;
 
     // Only follow the line that opened the exchange. Chasing the second speaker
     // of an overlapping pair makes the page jitter between them.

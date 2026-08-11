@@ -20,6 +20,13 @@ export const ALL_KOKORO_VOICE_IDS = [
 ];
 
 export class ModelCacheManager {
+  static _cacheOperation = Promise.resolve();
+
+  static _withCacheLock(operation) {
+    const next = this._cacheOperation.then(operation, operation);
+    this._cacheOperation = next.catch(() => {});
+    return next;
+  }
   /**
    * Request persistent storage from the browser so cached models are never evicted
    */
@@ -234,6 +241,10 @@ export class ModelCacheManager {
    * Preload and cache all 28 Kokoro voice files in the background with progress reporting
    */
   static async preloadAllVoices(modelId = DEFAULT_MODEL_ID, onProgress = () => {}) {
+    return this._withCacheLock(() => this._preloadAllVoicesUnlocked(modelId, onProgress));
+  }
+
+  static async _preloadAllVoicesUnlocked(modelId = DEFAULT_MODEL_ID, onProgress = () => {}) {
     if (typeof caches === 'undefined') return;
 
     let completed = 0;
@@ -267,19 +278,23 @@ export class ModelCacheManager {
     // Download remaining voices with a concurrency of 4
     const concurrency = 4;
     const queue = [...toFetch];
+    const failed = [];
 
     const worker = async () => {
       while (queue.length > 0) {
         const voiceId = queue.shift();
         if (!voiceId) break;
-        await this.preloadVoice(voiceId, modelId);
-        completed++;
+        const succeeded = await this.preloadVoice(voiceId, modelId);
+        if (succeeded) completed++;
+        else failed.push(voiceId);
         onProgress({
           phase: 'voices',
           completed,
           total,
           percent: Math.round((completed / total) * 100),
-          message: `Caching neural voice: ${voiceId} (${completed}/${total})`
+          message: succeeded
+            ? `Caching neural voice: ${voiceId} (${completed}/${total})`
+            : `Could not cache neural voice: ${voiceId}`
         });
       }
     };
@@ -289,6 +304,10 @@ export class ModelCacheManager {
       workers.push(worker());
     }
     await Promise.all(workers);
+
+    if (failed.length > 0) {
+      throw new Error(`Could not cache ${failed.length} neural voice${failed.length === 1 ? '' : 's'}.`);
+    }
 
     onProgress({
       phase: 'voices',
@@ -303,6 +322,10 @@ export class ModelCacheManager {
    * Proactively preload and cache ALL model assets (ONNX model weights, tokenizer, and 28 voices)
    */
   static async preloadAllModelAssets(modelId = DEFAULT_MODEL_ID, onProgress = () => {}) {
+    return this._withCacheLock(() => this._preloadAllModelAssetsUnlocked(modelId, onProgress));
+  }
+
+  static async _preloadAllModelAssetsUnlocked(modelId = DEFAULT_MODEL_ID, onProgress = () => {}) {
     await this.requestPersistentStorage();
 
     onProgress({
@@ -314,41 +337,43 @@ export class ModelCacheManager {
     // 1. Load KokoroTTS model via worker (this triggers @huggingface/transformers to download and cache config, tokenizer, onnx)
     const worker = new Worker(new URL('./kokoro-worker.js', import.meta.url), { type: 'module' });
     
-    await new Promise((resolve, reject) => {
-      worker.onmessage = (e) => {
-        const { type, payload, error } = e.data;
-        if (type === 'progress') {
-          const p = payload;
-          const modelPct = 15 + Math.round(p.progress * 0.65); // 15% -> 80%
-          onProgress({
-            phase: 'model',
-            percent: modelPct,
-            file: p.file || 'weights',
-            loaded: p.loaded,
-            total: p.total,
-            // p.progress is already 0-100; scaling it again rendered "10000%".
-            message: `Caching model weights: ${Math.round(p.progress)}%`
-          });
-        } else if (type === 'init_complete') {
-          resolve();
-        } else if (type === 'error') {
-          reject(new Error(error));
-        }
-      };
-      
-      // 'auto', not 'wasm'. Forcing wasm here cached model_quantized.onnx while
-      // init() on a WebGPU machine wants model.onnx, so "Preload & Cache All"
-      // did not actually spare the user the big download. Letting the worker run
-      // its normal webgpu -> wasm attempt order caches whatever init() will ask
-      // for on this same machine.
-      worker.postMessage({
-        type: 'init',
-        id: 1,
-        payload: { modelId, device: 'auto' }
+    try {
+      await new Promise((resolve, reject) => {
+        worker.onerror = (event) => reject(new Error(event.message || 'Model worker failed to start'));
+        worker.onmessageerror = () => reject(new Error('Model worker sent an unreadable response'));
+        worker.onmessage = (e) => {
+          const { type, payload, error } = e.data;
+          if (type === 'progress') {
+            const p = payload;
+            const modelPct = 15 + Math.round(p.progress * 0.65); // 15% -> 80%
+            onProgress({
+              phase: 'model',
+              percent: modelPct,
+              file: p.file || 'weights',
+              loaded: p.loaded,
+              total: p.total,
+              // p.progress is already 0-100; scaling it again rendered "10000%".
+              message: `Caching model weights: ${Math.round(p.progress)}%`
+            });
+          } else if (type === 'init_complete') {
+            resolve();
+          } else if (type === 'error') {
+            reject(new Error(error));
+          }
+        };
+
+        worker.postMessage({
+          type: 'init',
+          id: 1,
+          payload: { modelId, device: 'auto' }
+        });
       });
-    });
-    
-    worker.terminate();
+    } finally {
+      worker.onmessage = null;
+      worker.onerror = null;
+      worker.onmessageerror = null;
+      worker.terminate();
+    }
 
     // 2. Preload all 28 voices
     onProgress({
@@ -357,7 +382,7 @@ export class ModelCacheManager {
       message: 'Caching all 28 character voice embeddings...'
     });
 
-    await this.preloadAllVoices(modelId, (vProg) => {
+    await this._preloadAllVoicesUnlocked(modelId, (vProg) => {
       // * 20, not * 0.2 — the latter rounded to 0 and pinned this at a flat 80%.
       const overall = 80 + Math.round((vProg.completed / vProg.total) * 20); // 80% -> 100%
       onProgress({
@@ -375,13 +400,25 @@ export class ModelCacheManager {
       message: 'Kokoro-82M model and all 28 voices fully cached locally!'
     });
 
-    return await this.getModelCacheStatus(modelId);
+    const status = await this.getModelCacheStatus(modelId);
+    if (!status.isFullyCached) {
+      throw new Error(
+        status.cachedVoiceCount < status.totalVoices
+          ? `Only ${status.cachedVoiceCount}/${status.totalVoices} neural voices were cached.`
+          : 'The model weights could not be retained in browser cache storage.'
+      );
+    }
+    return status;
   }
 
   /**
    * Delete cached model weights and voice files from CacheStorage
    */
   static async clearModelCache(modelId = DEFAULT_MODEL_ID) {
+    return this._withCacheLock(() => this._clearModelCacheUnlocked(modelId));
+  }
+
+  static async _clearModelCacheUnlocked(modelId = DEFAULT_MODEL_ID) {
     if (typeof caches === 'undefined') return false;
 
     try {

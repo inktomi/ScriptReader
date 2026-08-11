@@ -174,6 +174,24 @@ export class ScreenplayAudioManager {
           console.error('Engine progress subscriber error:', err);
         }
       }
+
+      if (payload.phase === 'error' &&
+          (this.playbackState === PLAYBACK_STATES.PLAYING ||
+           this.playbackState === PLAYBACK_STATES.BUFFERING)) {
+        const error = this.engine.lastError;
+        const message = payload.message || (error && error.message) || 'Voice synthesis failed.';
+        const code = (error && error.code) || 'runtime_failure';
+        const canFallback = this.engine.capabilities.onUnavailable === 'webspeech';
+
+        this.stop();
+        if (canFallback) {
+          this.usingWebSpeechFallback = true;
+          this._setState(PLAYBACK_STATES.PLAYING);
+          this._runWebSpeech();
+        } else {
+          this.emit('engineError', { engineId: this.engineId, code, message });
+        }
+      }
     });
   }
 
@@ -286,6 +304,7 @@ export class ScreenplayAudioManager {
   setVoiceAssignment(characterName, assignment) {
     this.characterAssignments.set(characterName.toUpperCase().trim(), assignment);
     this._ensureEngineVoices();
+    this.engine.dropPendingExcept([]);
     this._invalidateUnits();
   }
 
@@ -362,6 +381,7 @@ export class ScreenplayAudioManager {
 
   setNarratorVoice(voiceId) {
     if (this.narratorVoiceId === voiceId) return;
+    this.engine.dropPendingExcept([]);
     this.narratorVoiceId = voiceId;
     // Drop the cached cross-engine translation; it was derived from the old id.
     this._narratorByEngine = {};
@@ -443,7 +463,7 @@ export class ScreenplayAudioManager {
   }
 
   _isNarratorName(cleanName) {
-    return cleanName === 'NARRATOR' || cleanName.includes('SCENE') || cleanName === 'STAGE';
+    return cleanName === 'NARRATOR' || cleanName === 'THE NARRATOR' || cleanName === 'STAGE';
   }
 
   /**
@@ -525,7 +545,7 @@ export class ScreenplayAudioManager {
     let line = fromLine;
     let guard = 0;
 
-    while (guard++ < 16) {
+    while (guard++ < this.scriptElements.length + 1) {
       const units = this._unitsForLine(line);
       if (!units) break;
       collected.push(...units);
@@ -573,13 +593,20 @@ export class ScreenplayAudioManager {
   _pumpRequests() {
     if (!this.engine.isReady) return;
 
+    const firstLineUnits = this._unitsForLine(this.cursorLine) || [];
+    const clusterUnits = this._clusterUnits(this.cursorLine);
+    const atomicClusterSize = clusterUnits.length > firstLineUnits.length ? clusterUnits.length : 0;
+    const unitBudget = Math.max(LOOKAHEAD_UNITS, atomicClusterSize);
+    const secondsBudget = atomicClusterSize > 0 ? Infinity : LOOKAHEAD_SEC;
+
     let line = this.cursorLine;
     let unit = this.cursorUnit;
     let seconds = 0;
     let count = 0;
     let guard = 0;
+    const guardLimit = Math.max(500, this.scriptElements.length + unitBudget + 2);
 
-    while (count < LOOKAHEAD_UNITS && seconds < LOOKAHEAD_SEC && guard++ < 500) {
+    while (count < unitBudget && seconds < secondsBudget && guard++ < guardLimit) {
       const units = this._unitsForLine(line);
       if (!units) break;
       if (unit >= units.length) {
@@ -640,8 +667,10 @@ export class ScreenplayAudioManager {
 
   _pumpScheduling() {
     let guard = 0;
-    // Raised from 64 so a long cluster can never be cut in half by the guard.
-    while (guard++ < 128) {
+    // The ordinary cap prevents a malformed cursor from spinning forever, but
+    // once an atomic overlap cluster starts it must be placed whole regardless
+    // of how many chunks it contains.
+    while (guard++ < 128 || this.clusterRemaining > 0) {
       const unit = this._unitAtCursor();
       if (!unit) {
         this.reachedEnd = true;
@@ -883,6 +912,7 @@ export class ScreenplayAudioManager {
    */
   prewarm() {
     if (!this.engine.isReady || this.scriptElements.length === 0) return;
+    if (this.engine.capabilities.metered) return;
     if (this.playbackState === PLAYBACK_STATES.PLAYING) return;
 
     this.cursorLine = this.currentIndex;
@@ -918,8 +948,15 @@ export class ScreenplayAudioManager {
 
     const generation = ++this.playGeneration;
 
-    await this._ensureAudio();
+    const scheduler = await this._ensureAudio();
     if (generation !== this.playGeneration) return;
+
+    if (!scheduler) {
+      this.usingWebSpeechFallback = true;
+      this._setState(PLAYBACK_STATES.PLAYING);
+      this._runWebSpeech();
+      return;
+    }
 
     // Resuming from pause: the context clock was frozen, so everything already
     // scheduled is still valid and simply continues.
@@ -930,7 +967,7 @@ export class ScreenplayAudioManager {
     }
 
     let initError = null;
-    if (!this.engine.isReady && !this.engine.isLoading) {
+    if (!this.engine.isReady) {
       try {
         await this.engine.init();
       } catch (err) {
@@ -940,7 +977,7 @@ export class ScreenplayAudioManager {
       if (generation !== this.playGeneration) return;
     }
 
-    if (!this.engine.isReady && !this.engine.isLoading) {
+    if (!this.engine.isReady) {
       // A failed local model download is exactly what the browser's built-in
       // voice exists to cover. A missing or rejected API key is not: quietly
       // dropping someone who chose paid cloud voices onto the robotic fallback
@@ -1009,7 +1046,7 @@ export class ScreenplayAudioManager {
     await suspendAudioContext();
   }
 
-  stop() {
+  stop({ preservePending = false } = {}) {
     this.playGeneration++;
     this.previewToken++;
     if (this._previewResolve) {
@@ -1024,6 +1061,10 @@ export class ScreenplayAudioManager {
       this._webSpeechTimer = null;
     }
     this.webSpeechEngine.stop();
+
+    if (!preservePending) {
+      this.engine.dropPendingExcept([]);
+    }
 
     this._stopTick();
 
@@ -1045,7 +1086,7 @@ export class ScreenplayAudioManager {
     const wasPlaying = this.playbackState === PLAYBACK_STATES.PLAYING ||
                        this.playbackState === PLAYBACK_STATES.BUFFERING;
 
-    this.stop();
+    this.stop({ preservePending: true });
     this.currentIndex = target;
     this.cursorLine = target;
     this.cursorUnit = 0;

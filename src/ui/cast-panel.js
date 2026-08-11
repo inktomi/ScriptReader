@@ -14,13 +14,15 @@ export function createCastPanel({
   function render() {
     const script = scriptStore.currentScript;
     const characters = script ? script.characters : [];
-    const narratorVoiceId = scriptStore.narratorVoiceId;
-    const narratorProfile = getVoiceById(narratorVoiceId);
-
     // The sidebar has to offer the pool the active engine can speak with; the
     // Kokoro and OpenAI id spaces are disjoint.
     const engineId = audioManager.engineId;
     const enginePool = getVoicesForEngine(engineId);
+    const storedNarratorVoiceId = scriptStore.getNarratorVoice(engineId);
+    const narratorProfile = enginePool.some(v => v.id === storedNarratorVoiceId)
+      ? getVoiceById(storedNarratorVoiceId, engineId)
+      : audioManager.getVoiceProfileForCharacter('NARRATOR');
+    const narratorVoiceId = narratorProfile.id;
     const voiceIdOf = (assignment) =>
       (assignment.voiceIds && assignment.voiceIds[engineId]) || assignment.voiceId;
 
@@ -167,7 +169,7 @@ export function createCastPanel({
     const narratorSelect = panel.querySelector('.narrator-voice-select');
     if (narratorSelect) {
       narratorSelect.addEventListener('change', (e) => {
-        scriptStore.updateNarratorVoice(e.target.value);
+        scriptStore.updateNarratorVoice(e.target.value, engineId);
         audioManager.setNarratorVoice(e.target.value);
       });
     }
@@ -177,7 +179,7 @@ export function createCastPanel({
     if (narratorTestBtn) {
       narratorTestBtn.addEventListener('click', () => {
         audioManager.previewVoice(
-          scriptStore.narratorVoiceId,
+          narratorVoiceId,
           "EXT. OMNICORP SPIRE - NIGHT. Torrential rain lashes against the glass as the city sleeps below."
         );
       });
@@ -222,7 +224,7 @@ export function createCastPanel({
         if (card) {
           card.querySelector('.char-pitch-val').textContent = formatPitchOffset(val);
         }
-        scriptStore.updateCharacterVoice(charName, { pitchOffset: val });
+        scriptStore.updateCharacterVoice(charName, { pitchOffset: val, deferRender: true });
         audioManager.setVoiceAssignment(charName, scriptStore.castAssignments.get(charName.toUpperCase().trim()));
       });
     });
@@ -236,7 +238,7 @@ export function createCastPanel({
         if (card) {
           card.querySelector('.char-speed-val').textContent = `${val.toFixed(1)}x`;
         }
-        scriptStore.updateCharacterVoice(charName, { speedMultiplier: val });
+        scriptStore.updateCharacterVoice(charName, { speedMultiplier: val, deferRender: true });
         audioManager.setVoiceAssignment(charName, scriptStore.castAssignments.get(charName.toUpperCase().trim()));
       });
     });
@@ -246,13 +248,13 @@ export function createCastPanel({
     if (autoCastBtn) {
       autoCastBtn.addEventListener('click', () => {
         if (script) {
-          scriptStore.setScriptData(script, {
-            scriptKey: scriptStore.scriptKey,
-            scriptType: scriptStore.scriptType,
-            sampleId: scriptStore.sampleId,
-            customData: scriptStore.customScriptData,
-            resetProgress: false
-          });
+          scriptStore.autoCastCurrentScript(engineId);
+          audioManager.setNarratorVoice(scriptStore.getNarratorVoice(engineId));
+          audioManager.setScript(
+            scriptStore.currentScript.elements,
+            scriptStore.castAssignments,
+            scriptStore.activeLineIndex
+          );
           render();
         }
       });
@@ -274,8 +276,9 @@ export function createCastPanel({
 
 
   // Subscribe to script store changes
-  scriptStore.subscribe((event) => {
+  scriptStore.subscribe((event, data) => {
     if (event === 'scriptLoaded' || event === 'castUpdated' || event === 'narratorUpdated') {
+      if (event === 'castUpdated' && data && data.deferRender) return;
       render();
     }
   });

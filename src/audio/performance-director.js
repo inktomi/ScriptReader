@@ -109,6 +109,17 @@ export function chunkSpeech(text, maxChars = MAX_CHUNK_CHARS) {
   const chunks = [];
   let current = '';
 
+  const pushWithinLimit = (value) => {
+    let remaining = value.trim();
+    while (remaining.length > maxChars) {
+      let splitAt = remaining.lastIndexOf(' ', maxChars);
+      if (splitAt <= 0) splitAt = maxChars;
+      chunks.push(remaining.slice(0, splitAt).trim());
+      remaining = remaining.slice(splitAt).trim();
+    }
+    if (remaining) chunks.push(remaining);
+  };
+
   const flush = () => {
     const value = current.trim();
     if (value) chunks.push(value);
@@ -127,13 +138,13 @@ export function chunkSpeech(text, maxChars = MAX_CHUNK_CHARS) {
       for (let i = 0; i < clauses.length; i++) {
         const clause = clauses[i] + (i < clauses.length - 1 ? ',' : '');
         if (clauseBuffer && (clauseBuffer.length + clause.length + 1) > maxChars) {
-          chunks.push(clauseBuffer.trim());
+          pushWithinLimit(clauseBuffer);
           clauseBuffer = clause;
         } else {
           clauseBuffer = clauseBuffer ? `${clauseBuffer} ${clause}` : clause;
         }
       }
-      if (clauseBuffer.trim()) chunks.push(clauseBuffer.trim());
+      if (clauseBuffer.trim()) pushWithinLimit(clauseBuffer);
       continue;
     }
 

@@ -1,5 +1,4 @@
 import { parseFountainScript } from './fountain-parser.js';
-import { parsePdfScreenplay } from './pdf-parser.js';
 import { SAMPLE_SCRIPTS } from './sample-scripts.js';
 import { ENGINE_IDS as ENGINE_ID_MAP } from '../audio/engine-contract.js';
 import {
@@ -7,10 +6,12 @@ import {
   getDefaultNarratorVoice,
   makeDefaultAssignment,
   isCastable,
+  mapVoiceAcrossEngines,
   DEFAULT_NARRATOR_VOICE_ID
 } from '../audio/voice-catalog.js';
 import {
   generateScriptKey,
+  generateLegacyScriptKey,
   saveScriptCastConfig,
   loadScriptCastConfig,
   saveAppState,
@@ -30,8 +31,13 @@ export class ScriptStore {
 
     this.castAssignments = new Map(); // characterName -> { voiceId, pitchOffset, speedMultiplier, tonePreset }
     this.narratorVoiceId = DEFAULT_NARRATOR_VOICE_ID;
+    this.narratorVoiceIds = { [ENGINE_ID_MAP.KOKORO]: DEFAULT_NARRATOR_VOICE_ID };
     // Set by the cast migration, consumed once by the UI to offer an undo.
     this.pendingCastMigration = null;
+    // A weak legacy key cannot prove that its config belongs to a newly
+    // imported script. The UI offers this candidate explicitly instead of
+    // either losing it silently or applying another script's cast by mistake.
+    this.pendingLegacyConfig = null;
     this.activeLineIndex = 0;
     this.selectedScene = null;
     this.characterFilter = null;
@@ -70,7 +76,8 @@ export class ScriptStore {
         this.loadFountainText(
           appState.customScriptData.fountainText,
           appState.customScriptData.title || 'Custom Screenplay',
-          false
+          false,
+          appState.activeScriptKey
         );
         return true;
       }
@@ -102,6 +109,7 @@ export class ScriptStore {
    * Loads a screenplay from a PDF File or Buffer
    */
   async loadPdf(file, onProgress) {
+    const { parsePdfScreenplay } = await import('./pdf-parser.js');
     const parsed = await parsePdfScreenplay(file, onProgress);
     const key = generateScriptKey(parsed);
 
@@ -139,7 +147,12 @@ export class ScriptStore {
   /**
    * Loads a screenplay from Fountain or Text string
    */
-  loadFountainText(text, title = 'Custom Screenplay', resetProgress = false) {
+  loadFountainText(
+    text,
+    title = 'Custom Screenplay',
+    resetProgress = false,
+    legacyConfigKey = null
+  ) {
     const parsed = parseFountainScript(text);
     if (title && (parsed.title === 'Screenplay' || !parsed.title)) {
       parsed.title = title;
@@ -153,7 +166,8 @@ export class ScriptStore {
         title: parsed.title,
         fountainText: text
       },
-      resetProgress
+      resetProgress,
+      legacyConfigKey
     });
   }
 
@@ -165,8 +179,14 @@ export class ScriptStore {
     scriptType = 'sample',
     sampleId = null,
     customData = null,
-    resetProgress = false
+    resetProgress = false,
+    legacyConfigKey = null
   } = {}) {
+    if (this.savePositionTimeout) {
+      clearTimeout(this.savePositionTimeout);
+      this.savePositionTimeout = null;
+    }
+
     this.currentScript = parsedScript;
     this.scriptKey = scriptKey || generateScriptKey(parsedScript);
     this.scriptType = scriptType;
@@ -175,14 +195,53 @@ export class ScriptStore {
     this.selectedScene = null;
     this.characterFilter = null;
     this.castAssignments.clear();
+    this.pendingLegacyConfig = null;
 
     // Check if we have saved voice configuration and progress for this script in LocalStorage
-    const savedConfig = loadScriptCastConfig(this.scriptKey);
+    const expectedLegacyKey = scriptType === 'custom'
+      ? generateLegacyScriptKey(parsedScript)
+      : null;
+    const useExplicitLegacyConfig = Boolean(
+      legacyConfigKey
+      && legacyConfigKey === expectedLegacyKey
+      && legacyConfigKey !== this.scriptKey
+    );
+    let savedConfig = useExplicitLegacyConfig
+      ? loadScriptCastConfig(legacyConfigKey)
+      : loadScriptCastConfig(this.scriptKey);
+    let migratedLegacyConfig = false;
+    if (useExplicitLegacyConfig) {
+      migratedLegacyConfig = !!savedConfig;
+    } else if (!savedConfig && expectedLegacyKey && expectedLegacyKey !== this.scriptKey) {
+      const legacyCandidate = loadScriptCastConfig(expectedLegacyKey);
+      if (legacyCandidate && legacyCandidate.configured) {
+        this.pendingLegacyConfig = {
+          legacyKey: expectedLegacyKey,
+          scriptKey: this.scriptKey,
+          scriptTitle: parsedScript.title
+        };
+      }
+    }
+    if (migratedLegacyConfig) {
+      saveScriptCastConfig(this.scriptKey, {
+        narratorVoiceId: savedConfig.narratorVoiceId,
+        narratorVoiceIds: savedConfig.narratorVoiceIds,
+        castAssignments: savedConfig.castAssignments,
+        activeLineIndex: savedConfig.activeLineIndex,
+        scriptTitle: parsedScript.title,
+        castVersion: savedConfig.castVersion
+      });
+    }
     let isConfigured = false;
 
     if (savedConfig && savedConfig.configured) {
       isConfigured = true;
-      this.narratorVoiceId = savedConfig.narratorVoiceId || getDefaultNarratorVoice().id;
+      this.narratorVoiceIds = { ...(savedConfig.narratorVoiceIds || {}) };
+      this.narratorVoiceId = this.narratorVoiceIds[ENGINE_ID_MAP.KOKORO]
+        || getDefaultNarratorVoice().id;
+      if (!this.narratorVoiceIds[ENGINE_ID_MAP.KOKORO]) {
+        this.narratorVoiceIds[ENGINE_ID_MAP.KOKORO] = this.narratorVoiceId;
+      }
       
       // Load saved character assignments
       if (savedConfig.castAssignments) {
@@ -226,6 +285,7 @@ export class ScriptStore {
       // First time loading this script: Auto-assign smart unique voices for each detected character
       isConfigured = false;
       this.narratorVoiceId = getDefaultNarratorVoice().id;
+      this.narratorVoiceIds = { [ENGINE_ID_MAP.KOKORO]: this.narratorVoiceId };
       const usedVoices = new Set([this.narratorVoiceId]);
 
       for (const char of parsedScript.characters) {
@@ -252,6 +312,8 @@ export class ScriptStore {
       activeLineIndex: this.activeLineIndex
     });
 
+    if (migratedLegacyConfig) this.saveCurrentState();
+
     this.notify('scriptLoaded', {
       script: this.currentScript,
       characters: this.currentScript.characters,
@@ -271,6 +333,7 @@ export class ScriptStore {
 
     saveScriptCastConfig(this.scriptKey, {
       narratorVoiceId: this.narratorVoiceId,
+      narratorVoiceIds: this.narratorVoiceIds,
       castAssignments: this.castAssignments,
       activeLineIndex: this.activeLineIndex,
       scriptTitle: this.currentScript.title
@@ -321,6 +384,10 @@ export class ScriptStore {
     // else is a choice.
     if (this.narratorVoiceId === 'bm_george') {
       this.narratorVoiceId = DEFAULT_NARRATOR_VOICE_ID;
+      this.narratorVoiceIds = {
+        ...this.narratorVoiceIds,
+        [ENGINE_ID_MAP.KOKORO]: DEFAULT_NARRATOR_VOICE_ID
+      };
       changed.push('NARRATOR');
     }
 
@@ -357,7 +424,16 @@ export class ScriptStore {
     this.saveCurrentState();
   }
 
-  updateCharacterVoice(characterName, { voiceId, pitchOffset, speedMultiplier, tonePreset, direction, engineId }) {
+  updateCharacterVoice(characterName, {
+    voiceId,
+    voiceIds: incomingVoiceIds,
+    pitchOffset,
+    speedMultiplier,
+    tonePreset,
+    direction,
+    engineId,
+    deferRender = false
+  }) {
     const key = characterName.toUpperCase().trim();
     // This runs for slider drags too, so a character with no assignment yet had
     // `am_adam` — the worst-graded voice in the set — written to localStorage
@@ -367,7 +443,7 @@ export class ScriptStore {
     // A voice choice belongs to the engine it was made under. Writing it into
     // that engine's slot is what lets a listener keep a Kokoro cast and an OpenAI
     // cast for the same script and switch between them without losing either.
-    const voiceIds = { ...(existing.voiceIds || {}) };
+    const voiceIds = { ...(existing.voiceIds || {}), ...(incomingVoiceIds || {}) };
     if (voiceId !== undefined && engineId) voiceIds[engineId] = voiceId;
 
     this.castAssignments.set(key, {
@@ -391,14 +467,84 @@ export class ScriptStore {
 
     this.notify('castUpdated', {
       character: key,
-      assignment: this.castAssignments.get(key)
+      assignment: this.castAssignments.get(key),
+      deferRender
     });
   }
 
-  updateNarratorVoice(voiceId) {
-    this.narratorVoiceId = voiceId;
+  getNarratorVoice(engineId = ENGINE_ID_MAP.KOKORO) {
+    return this.narratorVoiceIds[engineId] || this.narratorVoiceId;
+  }
+
+  updateNarratorVoice(voiceId, engineId = ENGINE_ID_MAP.KOKORO) {
+    this.narratorVoiceIds = { ...this.narratorVoiceIds, [engineId]: voiceId };
+    if (engineId === ENGINE_ID_MAP.KOKORO) this.narratorVoiceId = voiceId;
     this.saveCurrentState();
-    this.notify('narratorUpdated', { voiceId });
+    this.notify('narratorUpdated', { voiceId, engineId });
+  }
+
+  updateCast({ narratorVoiceId, narratorEngineId, castAssignments }) {
+    this.narratorVoiceIds = {
+      ...this.narratorVoiceIds,
+      [narratorEngineId]: narratorVoiceId
+    };
+    if (narratorEngineId === ENGINE_ID_MAP.KOKORO) {
+      this.narratorVoiceId = narratorVoiceId;
+    }
+    this.castAssignments = new Map(
+      Array.from(castAssignments, ([name, assignment]) => [name, { ...assignment }])
+    );
+    this.saveCurrentState();
+    this.notify('castUpdated', { bulk: true });
+    this.notify('narratorUpdated', { voiceId: narratorVoiceId, engineId: narratorEngineId });
+  }
+
+  autoCastCurrentScript(engineId = ENGINE_ID_MAP.KOKORO) {
+    if (!this.currentScript) return;
+
+    const localNarrator = getDefaultNarratorVoice().id;
+    const activeNarrator = engineId === ENGINE_ID_MAP.KOKORO
+      ? localNarrator
+      : mapVoiceAcrossEngines(localNarrator, engineId);
+    this.narratorVoiceIds = {
+      ...this.narratorVoiceIds,
+      [engineId]: activeNarrator
+    };
+    if (engineId === ENGINE_ID_MAP.KOKORO) this.narratorVoiceId = localNarrator;
+
+    const usedLocalVoices = new Set([localNarrator]);
+    const usedEngineVoices = new Set([activeNarrator]);
+    const nextAssignments = new Map();
+    for (const char of this.currentScript.characters) {
+      const localVoiceId = getSuggestedVoiceForCharacter(char.name, {
+        sampleLine: char.sampleLine,
+        usedVoices: usedLocalVoices
+      });
+      usedLocalVoices.add(localVoiceId);
+      const activeVoiceId = engineId === ENGINE_ID_MAP.KOKORO
+        ? localVoiceId
+        : mapVoiceAcrossEngines(localVoiceId, engineId, usedEngineVoices);
+      usedEngineVoices.add(activeVoiceId);
+
+      const key = char.name.toUpperCase().trim();
+      const existing = this.castAssignments.get(key) || makeDefaultAssignment(localVoiceId);
+      nextAssignments.set(key, {
+        ...existing,
+        voiceId: engineId === ENGINE_ID_MAP.KOKORO ? activeVoiceId : existing.voiceId,
+        voiceIds: { ...(existing.voiceIds || {}), [engineId]: activeVoiceId },
+        pitchOffset: 0,
+        speedMultiplier: 1.0,
+        tonePreset: 'natural',
+        auto: true
+      });
+    }
+    this.castAssignments = nextAssignments;
+    this.saveCurrentState();
+    this.notify('castUpdated', { bulk: true, autoCast: true });
+    this.notify('narratorUpdated', {
+      voiceId: activeNarrator,
+      engineId
+    });
   }
 
   setActiveLine(index) {
@@ -407,10 +553,10 @@ export class ScriptStore {
 
     // Debounce save playback position to avoid excessive storage writes during fast reading
     if (this.savePositionTimeout) clearTimeout(this.savePositionTimeout);
+    const scriptKey = this.scriptKey;
     this.savePositionTimeout = setTimeout(() => {
-      if (this.scriptKey) {
-        savePlaybackPosition(this.scriptKey, index);
-      }
+      if (scriptKey) savePlaybackPosition(scriptKey, index);
+      this.savePositionTimeout = null;
     }, 400);
 
     this.notify('activeLineChanged', {

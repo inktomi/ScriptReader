@@ -1,7 +1,15 @@
 import * as pdfjsLib from 'pdfjs-dist';
-import pdfWorker from 'pdfjs-dist/build/pdf.worker.mjs?url';
 import { analyzeLineNuance } from './emotion-analyzer.js';
 import { annotateScriptFlow } from './overlap-pacing.js';
+import {
+  isPdfDialogueContinuation,
+  shouldSplitPdfDialogueAtParenthetical
+} from './pdf-layout.js';
+
+const pdfWorker = new URL(
+  '../../node_modules/pdfjs-dist/build/pdf.worker.mjs',
+  import.meta.url
+).href;
 
 // Configure worker for Vite client
 if (typeof window !== 'undefined' && pdfjsLib.GlobalWorkerOptions) {
@@ -25,12 +33,13 @@ export async function parsePdfScreenplay(fileOrBuffer, onProgress = () => {}) {
   }
 
   const loadingTask = pdfjsLib.getDocument({ data: arrayBuffer });
-  const pdfDoc = await loadingTask.promise;
-  const numPages = pdfDoc.numPages;
+  let pdfDoc = null;
+  try {
+    pdfDoc = await loadingTask.promise;
+    const numPages = pdfDoc.numPages;
+    const rawLines = [];
 
-  const rawLines = [];
-
-  for (let pageNum = 1; pageNum <= numPages; pageNum++) {
+    for (let pageNum = 1; pageNum <= numPages; pageNum++) {
     onProgress({ page: pageNum, totalPages: numPages, percent: Math.round((pageNum / numPages) * 100) });
     const page = await pdfDoc.getPage(pageNum);
     const textContent = await page.getTextContent();
@@ -94,17 +103,24 @@ export async function parsePdfScreenplay(fileOrBuffer, onProgress = () => {}) {
       return true;
     });
 
-    rawLines.push(...cleanedPageLines);
-  }
+      rawLines.push(...cleanedPageLines);
+    }
 
-  // Now process lines with layout geometry and screenplay conventions
-  return processExtractedLines(rawLines, fileName);
+    // Now process lines with layout geometry and screenplay conventions
+    return processExtractedLines(rawLines, fileName);
+  } finally {
+    if (pdfDoc) {
+      await pdfDoc.destroy();
+    } else {
+      await loadingTask.destroy();
+    }
+  }
 }
 
 /**
  * Converts extracted raw PDF lines with X coordinates into structured screenplay elements
  */
-function processExtractedLines(lines, scriptTitle) {
+export function processExtractedLines(lines, scriptTitle) {
   const elements = [];
   const characterSet = new Map();
   const sceneList = [];
@@ -216,6 +232,10 @@ function processExtractedLines(lines, scriptTitle) {
     // 3. Parentheticals: (whispering) or (beat)
     const parenMatch = text.match(PARENTHETICAL_REGEX);
     if (parenMatch && (inDialogueBlock || currentSpeaker || (normalizedXRatio >= 0.28 && normalizedXRatio <= 0.55))) {
+      if (shouldSplitPdfDialogueAtParenthetical(pendingDialogueLines)) {
+        flushDialogue();
+        inDialogueBlock = true;
+      }
       currentParenthetical = parenMatch[1];
       continue;
     }
@@ -253,7 +273,7 @@ function processExtractedLines(lines, scriptTitle) {
     }
 
     // 5. Dialogue block continuation
-    if (inDialogueBlock && currentSpeaker) {
+    if (isPdfDialogueContinuation(inDialogueBlock, currentSpeaker, normalizedXRatio)) {
       pendingDialogueLines.push(text);
     } else {
       // Action / Description block

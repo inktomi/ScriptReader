@@ -193,7 +193,16 @@ export function createEngineSettingsModal({ audioManager, onClose, onEngineChang
     if (consentBox) {
       consentBox.addEventListener('change', (e) => {
         consented = e.target.checked;
-        if (consented) grantCloudConsent(); else revokeCloudConsent();
+        if (consented) {
+          grantCloudConsent();
+        } else {
+          revokeCloudConsent();
+          if (audioManager.engineId === ENGINE_IDS.OPENAI) {
+            audioManager.setEngine(ENGINE_IDS.KOKORO);
+            selectedEngine = ENGINE_IDS.KOKORO;
+            if (onEngineChanged) onEngineChanged(ENGINE_IDS.KOKORO);
+          }
+        }
         render();
       });
     }

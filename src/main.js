@@ -12,6 +12,7 @@ import { createHelpModal } from './ui/help-modal.js';
 import { createHfModelHubModal } from './ui/hf-model-hub.js';
 import { createVoiceConfigModal } from './ui/voice-config-modal.js';
 import { createEngineSettingsModal } from './ui/engine-settings-modal.js';
+import { createResumeToastElement } from './ui/resume-toast.js';
 import { escapeHtml } from './utils/escape-html.js';
 import { restoreCastBackup } from './utils/storage.js';
 
@@ -36,12 +37,12 @@ async function initApp() {
       audioManager,
       isInitialSetup,
       onSave: ({ narratorVoiceId, castAssignments }) => {
+        audioManager.setNarratorVoice(narratorVoiceId);
         audioManager.setScript(
           scriptStore.currentScript.elements,
           scriptStore.castAssignments,
           scriptStore.activeLineIndex
         );
-        audioManager.setNarratorVoice(narratorVoiceId);
         castPanel.render();
         teleprompter.renderScript();
         transportBar.updateProgress(scriptStore.activeLineIndex, scriptStore.currentScript.elements.length);
@@ -71,12 +72,12 @@ async function initApp() {
     onLoadSample: (sampleId) => {
       audioManager.stop();
       scriptStore.loadSample(sampleId, false);
+      audioManager.setNarratorVoice(scriptStore.getNarratorVoice(audioManager.engineId));
       audioManager.setScript(
         scriptStore.currentScript.elements,
         scriptStore.castAssignments,
         scriptStore.activeLineIndex
       );
-      audioManager.setNarratorVoice(scriptStore.narratorVoiceId);
       teleprompter.renderScript();
       castPanel.render();
       sceneDrawer.render();
@@ -236,6 +237,9 @@ async function initApp() {
       // in step with the jump even though no audio started.
       case 'lineChange':
         if (data.element) {
+          if (scriptStore.activeLineIndex !== data.index) {
+            scriptStore.setActiveLine(data.index);
+          }
           transportBar.updateProgress(data.index, scriptStore.currentScript.elements.length);
           transportBar.updateActiveSpeaker(
             data.element,
@@ -267,8 +271,8 @@ async function initApp() {
       onPdfSelected: async (file, onProgress) => {
         audioManager.stop();
         await scriptStore.loadPdf(file, onProgress);
+        audioManager.setNarratorVoice(scriptStore.getNarratorVoice(audioManager.engineId));
         audioManager.setScript(scriptStore.currentScript.elements, scriptStore.castAssignments, 0);
-        audioManager.setNarratorVoice(scriptStore.narratorVoiceId);
         teleprompter.renderScript();
         castPanel.render();
         sceneDrawer.render();
@@ -280,8 +284,8 @@ async function initApp() {
       onFountainTextSubmitted: (text, title) => {
         audioManager.stop();
         scriptStore.loadFountainText(text, title, true);
+        audioManager.setNarratorVoice(scriptStore.getNarratorVoice(audioManager.engineId));
         audioManager.setScript(scriptStore.currentScript.elements, scriptStore.castAssignments, 0);
-        audioManager.setNarratorVoice(scriptStore.narratorVoiceId);
         teleprompter.renderScript();
         castPanel.render();
         sceneDrawer.render();
@@ -297,6 +301,7 @@ async function initApp() {
   function openHfHubModal() {
     const modal = createHfModelHubModal({
       currentModelId: 'onnx-community/Kokoro-82M-v1.0-ONNX',
+      isModelBusy: () => audioManager.kokoroEngine.isLoading,
       onSelectModel: async (modelId) => {
         if (!audioManager.kokoroEngine.isReady && !audioManager.kokoroEngine.isLoading) {
           // The progress subscriber owns the toast for every phase, failure
@@ -320,12 +325,12 @@ async function initApp() {
       onEngineChanged: (engineId) => {
         // The cast is per-engine, so switching re-resolves every character's
         // voice; re-pushing the assignments is what makes that visible.
+        audioManager.setNarratorVoice(scriptStore.getNarratorVoice(engineId));
         audioManager.setScript(
           scriptStore.currentScript ? scriptStore.currentScript.elements : [],
           scriptStore.castAssignments,
           scriptStore.activeLineIndex
         );
-        audioManager.setNarratorVoice(scriptStore.narratorVoiceId);
         header.setEngineBadge(engineId);
         castPanel.render();
         showResumeToast(
@@ -343,13 +348,7 @@ async function initApp() {
     const existing = document.getElementById('app-resume-toast');
     if (existing) existing.remove();
 
-    const toast = document.createElement('div');
-    toast.id = 'app-resume-toast';
-    toast.className = 'resume-toast-pill';
-    toast.innerHTML = `
-      <span>🎬</span>
-      <span>${msg}</span>
-    `;
+    const toast = createResumeToastElement(msg);
     document.body.appendChild(toast);
 
     setTimeout(() => {
@@ -426,22 +425,67 @@ async function initApp() {
           customData: scriptStore.customScriptData,
           resetProgress: false
         });
+        audioManager.setNarratorVoice(scriptStore.getNarratorVoice(audioManager.engineId));
         audioManager.setScript(
           scriptStore.currentScript.elements,
           scriptStore.castAssignments,
           scriptStore.activeLineIndex
         );
-        audioManager.setNarratorVoice(scriptStore.narratorVoiceId);
         castPanel.render();
         showResumeToast('Original cast restored.');
       }
     );
   }
 
+  function surfaceLegacyCastOffer() {
+    const candidate = scriptStore.pendingLegacyConfig;
+    if (!candidate) return;
+    scriptStore.pendingLegacyConfig = null;
+
+    showActionToast(
+      `Found an older saved cast for "${candidate.scriptTitle}"`,
+      'Restore cast',
+      () => {
+        if (scriptStore.scriptKey !== candidate.scriptKey) return;
+        audioManager.stop();
+        scriptStore.setScriptData(scriptStore.currentScript, {
+          scriptKey: scriptStore.scriptKey,
+          scriptType: scriptStore.scriptType,
+          sampleId: scriptStore.sampleId,
+          customData: scriptStore.customScriptData,
+          resetProgress: false,
+          legacyConfigKey: candidate.legacyKey
+        });
+        audioManager.setNarratorVoice(scriptStore.getNarratorVoice(audioManager.engineId));
+        audioManager.setScript(
+          scriptStore.currentScript.elements,
+          scriptStore.castAssignments,
+          scriptStore.activeLineIndex
+        );
+        transportBar.updateProgress(
+          scriptStore.activeLineIndex,
+          scriptStore.currentScript.elements.length
+        );
+        const activeElem = scriptStore.currentScript.elements[scriptStore.activeLineIndex];
+        if (activeElem) {
+          transportBar.updateActiveSpeaker(
+            activeElem,
+            audioManager.getVoiceProfileForCharacter(activeElem.character),
+            activeElem.nuance
+          );
+        }
+      }
+    );
+  }
+
   scriptStore.subscribe(event => {
-    if (event === 'scriptLoaded') surfaceCastMigration();
+    if (event === 'scriptLoaded') {
+      surfaceLegacyCastOffer();
+      surfaceCastMigration();
+    }
   });
   // The first script may already have loaded before this subscription existed.
+  surfaceLegacyCastOffer();
   surfaceCastMigration();
 
   // Connect Kokoro Engine Progress to UI Toast and Header Badge.
@@ -581,7 +625,9 @@ async function initApp() {
     const target = e.target;
     const isTextInput = target && (
       target.tagName === 'TEXTAREA' ||
-      (target.tagName === 'INPUT' && ['text', 'search', 'password', 'email', 'number'].includes(target.type)) ||
+      target.tagName === 'INPUT' ||
+      target.tagName === 'SELECT' ||
+      target.tagName === 'BUTTON' ||
       target.isContentEditable
     );
     if (isTextInput) return;
@@ -625,12 +671,12 @@ async function initApp() {
 
   if (wasRestored) {
     const activeLine = scriptStore.activeLineIndex;
+    audioManager.setNarratorVoice(scriptStore.getNarratorVoice(audioManager.engineId));
     audioManager.setScript(
       scriptStore.currentScript.elements,
       scriptStore.castAssignments,
       activeLine
     );
-    audioManager.setNarratorVoice(scriptStore.narratorVoiceId);
 
     if (scriptStore.sampleId) {
       header.setSelectedSample(scriptStore.sampleId);
@@ -657,8 +703,8 @@ async function initApp() {
   } else {
     scriptStore.loadSample('neon-heist', false);
     header.setSelectedSample('neon-heist');
+    audioManager.setNarratorVoice(scriptStore.getNarratorVoice(audioManager.engineId));
     audioManager.setScript(scriptStore.currentScript.elements, scriptStore.castAssignments, 0);
-    audioManager.setNarratorVoice(scriptStore.narratorVoiceId);
     teleprompter.renderScript();
     castPanel.render();
     sceneDrawer.render();

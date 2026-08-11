@@ -69,7 +69,12 @@ export const HF_TTS_MODELS = [
   }
 ];
 
-export function createHfModelHubModal({ currentModelId, onSelectModel, onClose }) {
+export function createHfModelHubModal({
+  currentModelId,
+  onSelectModel,
+  onClose,
+  isModelBusy = () => false
+}) {
   const modal = document.createElement('div');
   modal.className = 'modal-overlay';
 
@@ -256,7 +261,13 @@ export function createHfModelHubModal({ currentModelId, onSelectModel, onClose }
   const progressFill = modal.querySelector('#cache-progress-fill');
 
   preloadBtn.addEventListener('click', async () => {
+    if (isModelBusy()) {
+      if (progressContainer) progressContainer.style.display = 'block';
+      if (progressMsg) progressMsg.textContent = 'The neural engine is already loading this model.';
+      return;
+    }
     preloadBtn.disabled = true;
+    clearBtn.disabled = true;
     preloadBtn.innerHTML = '<span>⏳ Downloading...</span>';
     if (progressContainer) progressContainer.style.display = 'block';
 
@@ -271,12 +282,14 @@ export function createHfModelHubModal({ currentModelId, onSelectModel, onClose }
       setTimeout(() => {
         if (progressContainer) progressContainer.style.display = 'none';
         preloadBtn.disabled = false;
+        clearBtn.disabled = false;
         preloadBtn.innerHTML = '<span>⚡ Re-verify Cache</span>';
       }, 2500);
     } catch (err) {
       console.error('Preload error:', err);
       if (progressMsg) progressMsg.textContent = `Preload failed: ${err.message}`;
       preloadBtn.disabled = false;
+      clearBtn.disabled = false;
       preloadBtn.innerHTML = '<span>⚡ Retry Preload</span>';
     }
   });
@@ -284,12 +297,15 @@ export function createHfModelHubModal({ currentModelId, onSelectModel, onClose }
   // Clear Cache Handler
   const clearBtn = modal.querySelector('#btn-clear-cache');
   clearBtn.addEventListener('click', async () => {
+    if (isModelBusy() || preloadBtn.disabled) return;
     if (confirm('Clear local Kokoro model cache? The model will re-download on next playback.')) {
       clearBtn.disabled = true;
+      preloadBtn.disabled = true;
       clearBtn.textContent = 'Clearing...';
       await ModelCacheManager.clearModelCache(DEFAULT_MODEL_ID);
       await refreshCacheUI();
       clearBtn.disabled = false;
+      preloadBtn.disabled = false;
       clearBtn.textContent = 'Clear Cache';
     }
   });
@@ -319,4 +335,3 @@ export function createHfModelHubModal({ currentModelId, onSelectModel, onClose }
 
   return modal;
 }
-

@@ -29,16 +29,21 @@ export function parseFountainScript(text) {
   // Check for Title Page metadata (e.g. Title: ..., Author: ...)
   let startLine = 0;
   let inTitlePage = true;
+  let sawTitlePageField = false;
   for (let i = 0; i < Math.min(lines.length, 15); i++) {
     const l = lines[i].trim();
     if (/^Title:\s*(.+)$/i.test(l)) {
       scriptTitle = l.replace(/^Title:\s*/i, '').trim();
     }
-    if (inTitlePage && l === '') {
+    if (/^(Title|Author|Authors|Credit|Source|Draft date|Contact|Copyright):/i.test(l)) {
+      sawTitlePageField = true;
+    }
+    if (inTitlePage && l === '' && sawTitlePageField) {
       startLine = i + 1;
       inTitlePage = false;
       break;
     }
+    if (inTitlePage && l === '' && !sawTitlePageField) break;
   }
 
   // Regex patterns for screenplay elements (fixed word boundary on dots)
@@ -205,6 +210,11 @@ export function parseFountainScript(text) {
     // 4. Character Cue (e.g. SARAH (O.S.))
     // Standard screenplay rules: Uppercase name, preceded by empty line, not a scene heading or transition
     const charMatch = trimmed.match(CHARACTER_REGEX);
+    const looksLikeInitials = /^(?:[A-Z]\.\s*){2,}(?:[A-Z][A-Z0-9_' -]*\.?)?$/.test(trimmed);
+    const looksLikeAbbreviatedName = (
+      /^(?:DR|MR|MRS|MS|PROF|CAPT|LT|SGT|GEN|COL|REV)\.$/.test(trimmed)
+      || /^(?:[A-Z][A-Z0-9_'-]*\s+){1,2}(?:JR|SR)\.$/.test(trimmed)
+    );
     const isLikelyCharacter = (
       charMatch &&
       !inDialogueBlock &&
@@ -212,6 +222,7 @@ export function parseFountainScript(text) {
       trimmed === trimmed.toUpperCase() &&
       !trimmed.includes('!') &&
       !trimmed.includes('?') &&
+      (!/\.$/.test(trimmed) || looksLikeInitials || looksLikeAbbreviatedName) &&
       !SCENE_REGEX.test(trimmed) &&
       !TRANSITION_REGEX.test(trimmed)
     );

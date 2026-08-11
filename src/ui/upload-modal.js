@@ -75,14 +75,27 @@ export function createUploadModal({
   const btnSubmitPaste = modal.querySelector('#btn-submit-paste');
   const pasteTitle = modal.querySelector('#paste-script-title');
   const pasteText = modal.querySelector('#paste-script-text');
+  let importing = false;
+
+  const setImporting = (value) => {
+    importing = value;
+    fileInput.disabled = value;
+    btnSubmitPaste.disabled = value;
+    pasteTitle.disabled = value;
+    pasteText.disabled = value;
+    btnClose.disabled = value;
+    dropzone.style.pointerEvents = value ? 'none' : '';
+  };
 
   btnClose.addEventListener('click', () => {
+    if (importing) return;
     modal.remove();
     if (onClose) onClose();
   });
 
   modal.addEventListener('click', (e) => {
     if (e.target === modal) {
+      if (importing) return;
       modal.remove();
       if (onClose) onClose();
     }
@@ -114,6 +127,8 @@ export function createUploadModal({
   });
 
   async function handleFile(file) {
+    if (importing) return;
+    setImporting(true);
     const isPdf = file.name.toLowerCase().endsWith('.pdf');
     if (isPdf) {
       progressArea.style.display = 'block';
@@ -127,16 +142,25 @@ export function createUploadModal({
       } catch (err) {
         progressMsg.textContent = `Error reading PDF: ${err.message}`;
         progressMsg.style.color = '#EF4444';
+        setImporting(false);
       }
     } else {
-      // Fountain / Text file
-      const text = await file.text();
-      onFountainTextSubmitted(text, file.name.replace(/\.[^/.]+$/, ''));
-      modal.remove();
+      try {
+        // Fountain / Text file
+        const text = await file.text();
+        onFountainTextSubmitted(text, file.name.replace(/\.[^/.]+$/, ''));
+        modal.remove();
+      } catch (err) {
+        progressArea.style.display = 'block';
+        progressMsg.textContent = `Error reading screenplay: ${err.message}`;
+        progressMsg.style.color = '#EF4444';
+        setImporting(false);
+      }
     }
   }
 
   btnSubmitPaste.addEventListener('click', () => {
+    if (importing) return;
     const text = pasteText.value.trim();
     if (text) {
       const title = pasteTitle.value.trim() || 'Custom Screenplay';

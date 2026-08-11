@@ -1,6 +1,6 @@
 import { getAudioContext } from './audio-context.js';
 import { ENGINE_IDS } from './engine-contract.js';
-import { loadOpenAIKey } from '../utils/credentials.js';
+import { hasCloudConsent, loadOpenAIKey } from '../utils/credentials.js';
 import { OPENAI_VOICE_CATALOG } from './voice-catalog.js';
 
 /**
@@ -92,8 +92,9 @@ function pcm16ToAudioBuffer(ctx, arrayBuffer, sampleRate) {
 }
 
 export class OpenAiTtsEngine {
-  constructor({ getApiKey = loadOpenAIKey } = {}) {
+  constructor({ getApiKey = loadOpenAIKey, hasConsent = hasCloudConsent } = {}) {
     this.getApiKey = getApiKey;
+    this.hasConsent = hasConsent;
 
     this.isLoading = false;
     this.isReady = false;
@@ -181,6 +182,19 @@ export class OpenAiTtsEngine {
       this.isLoading = true;
       this.notifyProgress(10, 'Checking OpenAI credentials…', 'loading');
 
+      if (!this.hasConsent()) {
+        this.isLoading = false;
+        this.isReady = false;
+        const error = new EngineError(
+          'no_consent',
+          'Cloud voice consent is required before screenplay text can be sent to OpenAI.',
+          { fatal: true }
+        );
+        this.lastError = error;
+        this.notifyProgress(0, error.message, 'error');
+        throw error;
+      }
+
       const key = this.getApiKey();
       if (!key) {
         this.isLoading = false;
@@ -192,7 +206,6 @@ export class OpenAiTtsEngine {
         );
         this.lastError = error;
         this.notifyProgress(0, error.message, 'error');
-        this.initPromise = null;
         throw error;
       }
 
@@ -205,7 +218,9 @@ export class OpenAiTtsEngine {
         'OpenAI voices ready — dialogue is sent to OpenAI to be spoken.',
         'ready'
       );
-    })();
+    })().finally(() => {
+      this.initPromise = null;
+    });
 
     return this.initPromise;
   }
@@ -301,12 +316,16 @@ export class OpenAiTtsEngine {
   async _run(entry) {
     try {
       const buffer = await this._synthesize(entry.unit, entry.controller.signal);
-      this.pending.delete(entry.unit.key);
+      if (this.pending.get(entry.unit.key) === entry) {
+        this.pending.delete(entry.unit.key);
+      }
       this._store(entry.unit.key, buffer);
       this.renderedSeconds += buffer.duration;
       entry.resolve(buffer);
     } catch (error) {
-      this.pending.delete(entry.unit.key);
+      if (this.pending.get(entry.unit.key) === entry) {
+        this.pending.delete(entry.unit.key);
+      }
 
       if (error && error.fatal) {
         // Stop the lookahead loop dead rather than burning further requests — and
@@ -314,6 +333,14 @@ export class OpenAiTtsEngine {
         this.isReady = false;
         this.lastError = error;
         this.notifyProgress(0, error.message, 'error');
+        this._rejectPending(error);
+      } else if (!error || error.name !== 'AbortError') {
+        this.lastError = error;
+        this.notifyProgress(
+          0,
+          (error && error.message) || 'OpenAI speech synthesis failed.',
+          'error'
+        );
       }
       entry.reject(error);
     } finally {
@@ -322,7 +349,23 @@ export class OpenAiTtsEngine {
     }
   }
 
+  /** Reject and abort every queued request after an engine-wide failure. */
+  _rejectPending(error) {
+    for (const [key, pendingEntry] of Array.from(this.pending)) {
+      this.pending.delete(key);
+      pendingEntry.controller.abort();
+      pendingEntry.reject(error);
+    }
+  }
+
   async _synthesize(unit, signal) {
+    if (!this.hasConsent()) {
+      throw new EngineError(
+        'no_consent',
+        'Cloud voice consent was revoked.',
+        { fatal: true }
+      );
+    }
     const key = this.getApiKey();
     if (!key) throw new EngineError('no_key', 'No OpenAI API key set.', { fatal: true });
 

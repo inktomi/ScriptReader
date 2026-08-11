@@ -7,7 +7,11 @@
  * - Saved custom and sample script state
  */
 
-import { DEFAULT_NARRATOR_VOICE_ID } from '../audio/voice-catalog.js';
+import {
+  DEFAULT_NARRATOR_VOICE_ID,
+  OPENAI_VOICE_CATALOG
+} from '../audio/voice-catalog.js';
+import { ENGINE_IDS } from '../audio/engine-contract.js';
 
 const STORAGE_PREFIX = 'scriptreader_';
 const APP_STATE_KEY = `${STORAGE_PREFIX}app_state_v2`;
@@ -26,7 +30,7 @@ export const CAST_VERSION = 2;
 /**
  * Generate a consistent, unique key for a script
  */
-export function generateScriptKey(script) {
+export function generateLegacyScriptKey(script) {
   if (!script) return 'default';
   if (script.id) {
     return `sample_${script.id}`;
@@ -37,10 +41,39 @@ export function generateScriptKey(script) {
   return `custom_${cleanTitle}_${signature}`;
 }
 
+function hashScript(script) {
+  const parts = [script.title || ''];
+  for (const element of script.elements || []) {
+    parts.push(element.type || '', element.character || '', element.text || '', element.parenthetical || '');
+  }
+
+  let hash = 0x811c9dc5;
+  const input = parts.join('\u001f');
+  for (let i = 0; i < input.length; i++) {
+    hash ^= input.charCodeAt(i);
+    hash = Math.imul(hash, 0x01000193);
+  }
+  return (hash >>> 0).toString(16).padStart(8, '0');
+}
+
+export function generateScriptKey(script) {
+  if (!script) return 'default';
+  if (script.id) return `sample_${script.id}`;
+  const cleanTitle = (script.title || 'untitled').toLowerCase().replace(/[^a-z0-9]/g, '_');
+  return `custom_${cleanTitle}_${hashScript(script)}`;
+}
+
 /**
  * Save character voice configuration and line position for a specific script
  */
-export function saveScriptCastConfig(scriptKey, { narratorVoiceId, castAssignments, activeLineIndex = 0, scriptTitle = '' }) {
+export function saveScriptCastConfig(scriptKey, {
+  narratorVoiceId,
+  narratorVoiceIds = null,
+  castAssignments,
+  activeLineIndex = 0,
+  scriptTitle = '',
+  castVersion = CAST_VERSION
+}) {
   try {
     const assignmentsObj = {};
     if (castAssignments instanceof Map) {
@@ -53,11 +86,12 @@ export function saveScriptCastConfig(scriptKey, { narratorVoiceId, castAssignmen
 
     const payload = {
       narratorVoiceId,
+      narratorVoiceIds,
       castAssignments: assignmentsObj,
       activeLineIndex,
       scriptTitle,
       configured: true,
-      castVersion: CAST_VERSION,
+      castVersion,
       updatedAt: Date.now()
     };
 
@@ -90,6 +124,13 @@ export function loadScriptCastConfig(scriptKey) {
       // Reading a saved config with no narrator recorded must not reinstate the
       // old default, or every load quietly undoes the narrator upgrade.
       narratorVoiceId: parsed.narratorVoiceId || DEFAULT_NARRATOR_VOICE_ID,
+      narratorVoiceIds: parsed.narratorVoiceIds || (() => {
+        const legacyId = parsed.narratorVoiceId || DEFAULT_NARRATOR_VOICE_ID;
+        const engineId = OPENAI_VOICE_CATALOG.some(voice => voice.id === legacyId)
+          ? ENGINE_IDS.OPENAI
+          : ENGINE_IDS.KOKORO;
+        return { [engineId]: legacyId };
+      })(),
       castAssignments: castMap,
       activeLineIndex: typeof parsed.activeLineIndex === 'number' ? parsed.activeLineIndex : 0,
       configured: Boolean(parsed.configured),
@@ -199,13 +240,6 @@ export function savePlaybackPosition(scriptKey, lineIndex) {
       saveScriptCastConfig(scriptKey, config);
     }
 
-    // 2. Update app state
-    const appState = loadAppState();
-    if (appState && appState.activeScriptKey === scriptKey) {
-      appState.activeLineIndex = lineIndex;
-      appState.savedAt = Date.now();
-      localStorage.setItem(APP_STATE_KEY, JSON.stringify(appState));
-    }
   } catch (err) {
     console.warn('Could not save playback position:', err);
   }

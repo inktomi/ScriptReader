@@ -7,6 +7,7 @@ import {
   getVoicesForEngine,
   getSuggestedVoiceForCharacter,
   getDefaultNarratorVoice,
+  mapVoiceAcrossEngines,
   makeDefaultAssignment
 } from '../audio/voice-catalog.js';
 import { ENGINE_IDS } from '../audio/engine-contract.js';
@@ -27,9 +28,14 @@ export function createVoiceConfigModal({
   const scriptTitle = script ? script.title : 'Screenplay';
   const totalLines = script ? script.elements.length : 0;
   const totalDialogue = characters.reduce((sum, c) => sum + c.lineCount, 0) || 1;
+  const engineId = audioManager.engineId;
+  const enginePool = getVoicesForEngine(engineId);
 
   // Local working copy of assignments so user can edit, preview, and cancel if desired
-  let workingNarratorVoiceId = scriptStore.narratorVoiceId || getDefaultNarratorVoice().id;
+  const storedNarratorVoiceId = scriptStore.getNarratorVoice(engineId);
+  let workingNarratorVoiceId = enginePool.some(v => v.id === storedNarratorVoiceId)
+    ? storedNarratorVoiceId
+    : audioManager.getVoiceProfileForCharacter('NARRATOR').id;
   const workingAssignments = new Map();
 
   for (const char of characters) {
@@ -43,11 +49,10 @@ export function createVoiceConfigModal({
   }
 
   let currentlyPlayingChar = null;
+  let auditionGeneration = 0;
 
   // The casting UI has to show the pool the *active* engine can actually speak
   // with; the two id spaces are disjoint.
-  const engineId = audioManager.engineId;
-  const enginePool = getVoicesForEngine(engineId);
   const supportsDirection = audioManager.capabilities.supportsInstructions;
 
   /** This character's voice under the active engine, falling back to the legacy field. */
@@ -104,7 +109,7 @@ export function createVoiceConfigModal({
                 <span class="brand-tag" style="font-size: 0.7rem;">${characters.length} CHARACTERS</span>
               </div>
               <div style="font-size: 0.8rem; color: var(--text-secondary); margin-top: 2px;">
-                <span style="color: #F59E0B; font-weight: 600;">${scriptTitle}</span> • ${totalLines} total elements • ${totalDialogue} dialogue cues
+                <span style="color: #F59E0B; font-weight: 600;">${escapeHtml(scriptTitle)}</span> • ${totalLines} total elements • ${totalDialogue} dialogue cues
               </div>
             </div>
           </div>
@@ -311,13 +316,6 @@ export function createVoiceConfigModal({
       btnCancel.addEventListener('click', handleClose);
     }
 
-    // Modal background overlay click
-    modal.addEventListener('click', (e) => {
-      if (e.target === modal) {
-        handleClose();
-      }
-    });
-
     // Save button
     const btnSave = modal.querySelector('#btn-modal-save');
     if (btnSave) {
@@ -328,22 +326,33 @@ export function createVoiceConfigModal({
     const btnAutoCast = modal.querySelector('#btn-modal-autocast');
     if (btnAutoCast) {
       btnAutoCast.addEventListener('click', () => {
-        // Re-run smart assignment
-        workingNarratorVoiceId = getDefaultNarratorVoice().id;
-        const usedVoices = new Set([workingNarratorVoiceId]);
+        const localNarrator = getDefaultNarratorVoice().id;
+        workingNarratorVoiceId = engineId === ENGINE_IDS.KOKORO
+          ? localNarrator
+          : mapVoiceAcrossEngines(localNarrator, engineId);
+        const usedLocalVoices = new Set([localNarrator]);
+        const usedEngineVoices = new Set([workingNarratorVoiceId]);
 
         for (const char of characters) {
-          const suggestedVoiceId = getSuggestedVoiceForCharacter(char.name, {
+          const localVoiceId = getSuggestedVoiceForCharacter(char.name, {
             sampleLine: char.sampleLine,
-            usedVoices
+            usedVoices: usedLocalVoices
           });
-          usedVoices.add(suggestedVoiceId);
+          usedLocalVoices.add(localVoiceId);
+          const suggestedVoiceId = engineId === ENGINE_IDS.KOKORO
+            ? localVoiceId
+            : mapVoiceAcrossEngines(localVoiceId, engineId, usedEngineVoices);
+          usedEngineVoices.add(suggestedVoiceId);
           const key = char.name.toUpperCase().trim();
+          const existing = workingAssignments.get(key) || makeDefaultAssignment(localVoiceId);
           workingAssignments.set(key, {
-            voiceId: suggestedVoiceId,
+            ...existing,
+            voiceId: engineId === ENGINE_IDS.KOKORO ? suggestedVoiceId : existing.voiceId,
+            voiceIds: { ...(existing.voiceIds || {}), [engineId]: suggestedVoiceId },
             pitchOffset: 0,
             speedMultiplier: 1.0,
-            tonePreset: 'natural'
+            tonePreset: 'natural',
+            auto: true
           });
         }
 
@@ -365,12 +374,14 @@ export function createVoiceConfigModal({
     if (narratorAuditionBtn) {
       narratorAuditionBtn.addEventListener('click', async () => {
         if (currentlyPlayingChar === 'NARRATOR') {
+          auditionGeneration++;
           audioManager.stop();
           currentlyPlayingChar = null;
           renderContent();
           return;
         }
 
+        const generation = ++auditionGeneration;
         currentlyPlayingChar = 'NARRATOR';
         renderContent();
 
@@ -379,6 +390,7 @@ export function createVoiceConfigModal({
           : "EXT. OMNICORP SPIRE - NIGHT. Torrential rain lashes against the glass as the city sleeps below.";
 
         await audioManager.previewVoice(workingNarratorVoiceId, sampleHeading, 0, 1.0);
+        if (generation !== auditionGeneration) return;
         currentlyPlayingChar = null;
         renderContent();
       });
@@ -424,12 +436,14 @@ export function createVoiceConfigModal({
         const charKey = charName.toUpperCase().trim();
 
         if (currentlyPlayingChar === charKey) {
+          auditionGeneration++;
           audioManager.stop();
           currentlyPlayingChar = null;
           renderContent();
           return;
         }
 
+        const generation = ++auditionGeneration;
         currentlyPlayingChar = charKey;
         renderContent();
 
@@ -451,6 +465,7 @@ export function createVoiceConfigModal({
           direction
         );
 
+        if (generation !== auditionGeneration) return;
         currentlyPlayingChar = null;
         renderContent();
       });
@@ -537,6 +552,9 @@ export function createVoiceConfigModal({
     }
   };
   window.addEventListener('keydown', onKeyDown);
+  modal.addEventListener('click', (e) => {
+    if (e.target === modal) handleClose();
+  });
 
   function handleClose() {
     window.removeEventListener('keydown', onKeyDown);
@@ -550,16 +568,16 @@ export function createVoiceConfigModal({
     audioManager.stop();
 
     // Commit to script store
-    scriptStore.updateNarratorVoice(workingNarratorVoiceId);
+    scriptStore.updateCast({
+      narratorVoiceId: workingNarratorVoiceId,
+      narratorEngineId: engineId,
+      castAssignments: workingAssignments
+    });
     audioManager.setNarratorVoice(workingNarratorVoiceId);
 
     for (const [charKey, assignment] of workingAssignments.entries()) {
-      scriptStore.updateCharacterVoice(charKey, assignment);
       audioManager.setVoiceAssignment(charKey, assignment);
     }
-
-    // Persist explicitly
-    scriptStore.saveCurrentState();
 
     modal.remove();
 

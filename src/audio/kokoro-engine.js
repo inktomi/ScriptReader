@@ -187,6 +187,26 @@ export class KokoroNeuralEngine {
     }
   }
 
+  _handleWorkerCrash(err) {
+    const error = new Error((err && err.message) || 'Neural worker stopped unexpectedly');
+    const pending = [...this.resolvers.values()];
+    this.resolvers.clear();
+    for (const { reject } of pending) reject(error);
+
+    this.isLoading = false;
+    this.isReady = false;
+    this.lastError = error;
+    this._clearStallWatchdog();
+
+    if (this.worker) {
+      this.worker.onmessage = null;
+      this.worker.onerror = null;
+      this.worker.terminate();
+      this.worker = null;
+    }
+    this.notifyProgress(0, `Neural engine failed: ${error.message}`, 'error');
+  }
+
   async init(device = 'auto') {
     if (this.isReady) return true;
     if (this.initPromise) return this.initPromise;
@@ -221,13 +241,7 @@ export class KokoroNeuralEngine {
       this.worker.onmessage = (e) => this.handleWorkerMessage(e);
       // A worker that fails to boot (bad import, blocked module fetch) otherwise
       // leaves the init promise pending forever with nothing on screen to say so.
-      this.worker.onerror = (err) => {
-        const pending = [...this.resolvers.values()];
-        this.resolvers.clear();
-        for (const { reject } of pending) {
-          reject(new Error(err.message || 'Neural worker failed to start'));
-        }
-      };
+      this.worker.onerror = (err) => this._handleWorkerCrash(err);
 
       const result = await new Promise((resolve, reject) => {
         const id = ++this.msgId;
