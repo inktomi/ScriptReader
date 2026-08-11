@@ -18,13 +18,16 @@ export function createVoiceConfigModal({
   audioManager,
   onSave,
   onCancel,
+  onOpenEngineSettings,
   isInitialSetup = false
 }) {
   const modal = document.createElement('div');
-  modal.className = 'modal-overlay voice-config-modal-overlay';
+  modal.className = isInitialSetup
+    ? 'casting-screen'
+    : 'modal-overlay voice-config-modal-overlay';
 
   const script = scriptStore.currentScript;
-  const characters = script ? script.characters : [];
+  const characters = script ? [...script.characters].sort((a, b) => b.lineCount - a.lineCount) : [];
   const scriptTitle = script ? script.title : 'Screenplay';
   const totalLines = script ? script.elements.length : 0;
   const totalDialogue = characters.reduce((sum, c) => sum + c.lineCount, 0) || 1;
@@ -50,6 +53,7 @@ export function createVoiceConfigModal({
 
   let currentlyPlayingChar = null;
   let auditionGeneration = 0;
+  let setupMode = isInitialSetup ? 'choice' : 'detailed';
 
   // The casting UI has to show the pool the *active* engine can actually speak
   // with; the two id spaces are disjoint.
@@ -85,55 +89,140 @@ export function createVoiceConfigModal({
       </optgroup>
     `;
 
-    return buildGroup('👩 Female Voices', femaleVoices)
-      + buildGroup('👨 Male Voices', maleVoices)
-      + buildGroup('◐ Neutral Voices', neutralVoices);
+    return buildGroup('Female voices', femaleVoices)
+      + buildGroup('Male voices', maleVoices)
+      + buildGroup('Neutral voices', neutralVoices);
+  }
+
+  function applyRecommendedCast() {
+    const localNarrator = getDefaultNarratorVoice().id;
+    workingNarratorVoiceId = engineId === ENGINE_IDS.KOKORO
+      ? localNarrator
+      : mapVoiceAcrossEngines(localNarrator, engineId);
+    const usedLocalVoices = new Set([localNarrator]);
+    const usedEngineVoices = new Set([workingNarratorVoiceId]);
+
+    for (const char of characters) {
+      const localVoiceId = getSuggestedVoiceForCharacter(char.name, {
+        sampleLine: char.sampleLine,
+        usedVoices: usedLocalVoices
+      });
+      usedLocalVoices.add(localVoiceId);
+      const suggestedVoiceId = engineId === ENGINE_IDS.KOKORO
+        ? localVoiceId
+        : mapVoiceAcrossEngines(localVoiceId, engineId, usedEngineVoices);
+      usedEngineVoices.add(suggestedVoiceId);
+      const key = char.name.toUpperCase().trim();
+      const existing = workingAssignments.get(key) || makeDefaultAssignment(localVoiceId);
+      workingAssignments.set(key, {
+        ...existing,
+        voiceId: engineId === ENGINE_IDS.KOKORO ? suggestedVoiceId : existing.voiceId,
+        voiceIds: { ...(existing.voiceIds || {}), [engineId]: suggestedVoiceId },
+        pitchOffset: 0,
+        speedMultiplier: 1.0,
+        tonePreset: 'natural',
+        auto: true
+      });
+    }
   }
 
   function renderContent() {
     const narratorProfile = getVoiceById(workingNarratorVoiceId, engineId);
 
     modal.innerHTML = `
+      ${isInitialSetup ? `
+        <div class="workflow-header">
+          <a class="wordmark" href="#" aria-label="ScriptReader">
+            <span class="wordmark-mark">${getIconSvg('book', 17)}</span>
+            <span>ScriptReader</span>
+          </a>
+          <nav class="workflow-steps" aria-label="Setup progress">
+            <span class="is-complete">${getIconSvg('check', 13)} Script</span>
+            <i></i>
+            <span class="is-active">2 Cast</span>
+            <i></i>
+            <span>3 Listen</span>
+          </nav>
+          <span class="workflow-privacy">Local by default</span>
+        </div>
+      ` : ''}
       <div class="modal-card voice-config-card">
         <!-- Header -->
         <div class="modal-header voice-config-header">
           <div style="display: flex; align-items: center; gap: 14px;">
             <div class="brand-badge" style="width: 44px; height: 44px; border-radius: 12px; font-size: 1.25rem;">
-              🎙️
+              ${getIconSvg('mic', 20)}
             </div>
             <div>
               <div style="display: flex; align-items: center; gap: 8px;">
                 <h2 style="font-size: 1.25rem; font-weight: 800; color: #FFFFFF; letter-spacing: -0.01em;">
-                  ${isInitialSetup ? 'Cast Voice Setup' : 'Cast Voice Studio'}
+                  ${isInitialSetup ? 'Cast your screenplay' : 'Edit voice cast'}
                 </h2>
-                <span class="brand-tag" style="font-size: 0.7rem;">${characters.length} CHARACTERS</span>
+                <span class="brand-tag" style="font-size: 0.7rem;">${characters.length} roles</span>
               </div>
               <div style="font-size: 0.8rem; color: var(--text-secondary); margin-top: 2px;">
-                <span style="color: #F59E0B; font-weight: 600;">${escapeHtml(scriptTitle)}</span> • ${totalLines} total elements • ${totalDialogue} dialogue cues
+                <span class="script-summary-title">${escapeHtml(scriptTitle)}</span> · ${totalLines} elements · ${totalDialogue} dialogue cues
               </div>
             </div>
           </div>
 
           <div style="display: flex; align-items: center; gap: 8px;">
-            <button id="btn-modal-autocast" class="btn btn-secondary" style="padding: 6px 12px; font-size: 0.8rem;" title="Auto-assign unique AI voices based on character names and context">
-              ${getIconSvg('sparkles', 14)}
-              <span>Smart Auto-Cast</span>
-            </button>
-            <button class="btn-icon btn-close-voice-modal" title="Close">
-              ${getIconSvg('close', 18)}
-            </button>
+            ${!isInitialSetup ? `
+              <button id="btn-modal-autocast" class="btn btn-secondary" style="padding: 6px 12px; font-size: 0.8rem;" title="Reset to recommended voices">
+                ${getIconSvg('replay', 14)}
+                <span>Recommended cast</span>
+              </button>
+              <button class="btn-icon btn-close-voice-modal" title="Close">
+                ${getIconSvg('close', 18)}
+              </button>
+            ` : ''}
           </div>
         </div>
 
         <!-- Body -->
         <div class="modal-body voice-config-body">
-          <div class="voice-config-instruction">
-            <span style="font-size: 1.1rem;">💡</span>
+          <div class="casting-engine">
             <div>
-              Audition and configure custom voices for each role. Your voice preferences and reading progress are 
-              <strong>automatically saved for this script</strong> in local storage.
+              ${getIconSvg('cpu', 17)}
+              <span>
+                <strong>${engineId === ENGINE_IDS.OPENAI ? 'OpenAI cloud voices' : 'Kokoro local voices'}</strong>
+                <small>${engineId === ENGINE_IDS.OPENAI ? 'Dialogue is sent to OpenAI for synthesis.' : 'Audio is generated on this device. Your screenplay stays local.'}</small>
+              </span>
             </div>
+            <button id="btn-casting-engine" class="btn btn-quiet" type="button">Change engine</button>
           </div>
+
+          ${setupMode === 'choice' ? `
+            <div class="casting-choice">
+              <div class="casting-choice-copy">
+                <div class="eyebrow">Choose your level of control</div>
+                <h3>Start quickly or direct every performance.</h3>
+                <p>Both paths can be adjusted later from the listening room.</p>
+              </div>
+              <div class="casting-choice-grid">
+                <button class="casting-path is-recommended" id="casting-path-recommended" type="button">
+                  <span class="path-icon">${getIconSvg('sparkles', 20)}</span>
+                  <span><strong>Use recommended cast</strong><small>Assign distinct voices automatically, then review them before listening.</small></span>
+                  <em>Fastest</em>
+                  ${getIconSvg('chevronRight', 18)}
+                </button>
+                <button class="casting-path" id="casting-path-custom" type="button">
+                  <span class="path-icon">${getIconSvg('sliders', 20)}</span>
+                  <span><strong>Customize every role</strong><small>Audition voices and fine-tune pitch, pace, tone, and direction.</small></span>
+                  ${getIconSvg('chevronRight', 18)}
+                </button>
+              </div>
+            </div>
+          ` : `
+            <div class="voice-config-instruction">
+              ${getIconSvg('volume', 16)}
+              <div>
+                ${setupMode === 'review'
+                  ? 'A recommended cast is ready. Audition any role, change a voice, or continue to the listening room.'
+                  : 'Audition each role and open Advanced only when you want to shape the performance.'}
+              </div>
+              ${isInitialSetup ? `<button id="casting-change-path" class="text-button" type="button">Choose another path</button>` : ''}
+            </div>
 
           <!-- NARRATOR SECTION -->
           <div class="voice-config-section-title">
@@ -143,11 +232,11 @@ export function createVoiceConfigModal({
           <div class="voice-card narrator-config-card ${currentlyPlayingChar === 'NARRATOR' ? 'is-previewing' : ''}">
             <div class="voice-card-header">
               <div class="char-avatar" style="background: linear-gradient(135deg, #F59E0B, #B45309); width: 44px; height: 44px; font-size: 1.2rem;">
-                🎙️
+                ${getIconSvg('mic', 18)}
               </div>
               <div style="flex: 1;">
                 <div style="display: flex; align-items: center; justify-content: space-between;">
-                  <span style="font-weight: 800; font-size: 1rem; color: #F59E0B;">THE NARRATOR</span>
+                  <span style="font-weight: 800; font-size: 1rem;">Narrator</span>
                   <span class="badge-voice" style="background: rgba(245, 158, 11, 0.15); color: #F59E0B; border: 1px solid rgba(245, 158, 11, 0.3);">
                     ${escapeHtml(qualityBadge(narratorProfile.id))}
                   </span>
@@ -164,7 +253,7 @@ export function createVoiceConfigModal({
                   ${buildVoiceOptions(workingNarratorVoiceId)}
                 </select>
                 <button class="btn btn-secondary btn-audition-narrator ${currentlyPlayingChar === 'NARRATOR' ? 'btn-active' : ''}" style="padding: 7px 14px;">
-                  ${currentlyPlayingChar === 'NARRATOR' ? '⏹️ Stop' : `${getIconSvg('volume', 15)} Listen`}
+                  ${currentlyPlayingChar === 'NARRATOR' ? `${getIconSvg('stop', 15)} Stop` : `${getIconSvg('volume', 15)} Listen`}
                 </button>
               </div>
 
@@ -226,16 +315,17 @@ export function createVoiceConfigModal({
                         ${buildVoiceOptions(voiceIdOf(assignment))}
                       </select>
                       <button class="btn btn-secondary btn-audition-char ${isPlaying ? 'btn-active' : ''}" data-char="${charAttr}" style="padding: 7px 12px; white-space: nowrap;">
-                        ${isPlaying ? '⏹️ Stop' : `${getIconSvg('volume', 14)} Listen`}
+                        ${isPlaying ? `${getIconSvg('stop', 14)} Stop` : `${getIconSvg('volume', 14)} Listen`}
                       </button>
                     </div>
 
-                    <!-- Voice Tone Tag -->
+                    <details class="voice-advanced">
+                      <summary>${getIconSvg('sliders', 13)} Advanced performance controls</summary>
+                      <div class="voice-advanced-body">
                     <div class="voice-tone-tag">
-                      <span>🎭 ${voiceProfile.tone}</span>
+                      <span>${voiceProfile.tone}</span>
                     </div>
 
-                    <!-- Sliders for Pitch and Speed -->
                     <div class="voice-sliders-container">
                       <div class="slider-group">
                         <span class="slider-label">Pitch:</span>
@@ -273,27 +363,31 @@ export function createVoiceConfigModal({
                         >${escapeHtml(assignment.direction || '')}</textarea>
                       </div>
                     ` : ''}
+                      </div>
+                    </details>
                   </div>
                 </div>
               `;
             }).join('')}
           </div>
+          `}
         </div>
 
         <!-- Footer -->
         <div class="modal-footer voice-config-footer">
           <div style="display: flex; align-items: center; gap: 8px; font-size: 0.8rem; color: var(--text-secondary);">
-            <span style="color: #10B981;">✓</span>
-            <span>Voices & playback progress automatically persist in LocalStorage</span>
+            ${getIconSvg('check', 14)}
+            <span>Voice choices and listening position are saved on this device.</span>
           </div>
 
           <div style="display: flex; align-items: center; gap: 12px;">
-            <button id="btn-modal-cancel" class="btn btn-secondary">
-              ${isInitialSetup ? 'Skip & Use Defaults' : 'Cancel'}
+            <button id="btn-modal-cancel" class="btn btn-quiet">
+              ${isInitialSetup ? 'Back to scripts' : 'Cancel'}
             </button>
-            <button id="btn-modal-save" class="btn btn-primary" style="padding: 10px 24px; font-size: 0.95rem; font-weight: 700;">
+            ${setupMode !== 'choice' ? `<button id="btn-reset-cast" class="btn btn-secondary" type="button">${getIconSvg('replay', 14)} Reset cast</button>` : ''}
+            <button id="btn-modal-save" class="btn btn-primary" style="padding: 10px 24px; font-size: 0.95rem; font-weight: 700;" ${setupMode === 'choice' ? 'disabled' : ''}>
               ${getIconSvg('play', 16)}
-              <span>${isInitialSetup ? 'Save & Start Reading' : 'Save Voice Cast'}</span>
+              <span>${isInitialSetup ? 'Save cast and open player' : 'Save voice cast'}</span>
             </button>
           </div>
         </div>
@@ -322,40 +416,33 @@ export function createVoiceConfigModal({
       btnSave.addEventListener('click', handleSave);
     }
 
+    modal.querySelector('.wordmark')?.addEventListener('click', event => event.preventDefault());
+    modal.querySelector('#casting-path-recommended')?.addEventListener('click', () => {
+      applyRecommendedCast();
+      setupMode = 'review';
+      renderContent();
+    });
+    modal.querySelector('#casting-path-custom')?.addEventListener('click', () => {
+      setupMode = 'detailed';
+      renderContent();
+    });
+    modal.querySelector('#casting-change-path')?.addEventListener('click', () => {
+      setupMode = 'choice';
+      renderContent();
+    });
+    modal.querySelector('#btn-casting-engine')?.addEventListener('click', () => {
+      if (onOpenEngineSettings) onOpenEngineSettings();
+    });
+    modal.querySelector('#btn-reset-cast')?.addEventListener('click', () => {
+      applyRecommendedCast();
+      renderContent();
+    });
+
     // Smart Auto-Cast button
     const btnAutoCast = modal.querySelector('#btn-modal-autocast');
     if (btnAutoCast) {
       btnAutoCast.addEventListener('click', () => {
-        const localNarrator = getDefaultNarratorVoice().id;
-        workingNarratorVoiceId = engineId === ENGINE_IDS.KOKORO
-          ? localNarrator
-          : mapVoiceAcrossEngines(localNarrator, engineId);
-        const usedLocalVoices = new Set([localNarrator]);
-        const usedEngineVoices = new Set([workingNarratorVoiceId]);
-
-        for (const char of characters) {
-          const localVoiceId = getSuggestedVoiceForCharacter(char.name, {
-            sampleLine: char.sampleLine,
-            usedVoices: usedLocalVoices
-          });
-          usedLocalVoices.add(localVoiceId);
-          const suggestedVoiceId = engineId === ENGINE_IDS.KOKORO
-            ? localVoiceId
-            : mapVoiceAcrossEngines(localVoiceId, engineId, usedEngineVoices);
-          usedEngineVoices.add(suggestedVoiceId);
-          const key = char.name.toUpperCase().trim();
-          const existing = workingAssignments.get(key) || makeDefaultAssignment(localVoiceId);
-          workingAssignments.set(key, {
-            ...existing,
-            voiceId: engineId === ENGINE_IDS.KOKORO ? suggestedVoiceId : existing.voiceId,
-            voiceIds: { ...(existing.voiceIds || {}), [engineId]: suggestedVoiceId },
-            pitchOffset: 0,
-            speedMultiplier: 1.0,
-            tonePreset: 'natural',
-            auto: true
-          });
-        }
-
+        applyRecommendedCast();
         renderContent();
       });
     }
@@ -553,7 +640,7 @@ export function createVoiceConfigModal({
   };
   window.addEventListener('keydown', onKeyDown);
   modal.addEventListener('click', (e) => {
-    if (e.target === modal) handleClose();
+    if (!isInitialSetup && e.target === modal) handleClose();
   });
 
   function handleClose() {

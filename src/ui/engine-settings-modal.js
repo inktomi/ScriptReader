@@ -23,7 +23,7 @@ import {
  * material change, and it has to be an explicit, informed choice rather than a
  * side effect of picking a nicer voice.
  */
-export function createEngineSettingsModal({ audioManager, onClose, onEngineChanged }) {
+export function createEngineSettingsModal({ audioManager, onClose, onEngineChanged, onOpenModelHub }) {
   const modal = document.createElement('div');
   modal.className = 'modal-overlay';
 
@@ -43,8 +43,8 @@ export function createEngineSettingsModal({ audioManager, onClose, onEngineChang
       <div class="modal-card" style="max-width: 640px;">
         <div class="modal-header">
           <div style="display: flex; align-items: center; gap: 10px;">
-            <span style="font-size: 1.25rem;">🎙️</span>
-            <h2 style="font-size: 1.15rem; font-weight: 700; color: #FFFFFF;">Voice Engine</h2>
+            ${getIconSvg('mic', 18)}
+            <h2 style="font-size: 1.15rem; font-weight: 700; color: #FFFFFF;">Voice engine</h2>
           </div>
           <button class="btn-icon btn-close-modal">${getIconSvg('close', 18)}</button>
         </div>
@@ -67,6 +67,12 @@ export function createEngineSettingsModal({ audioManager, onClose, onEngineChang
               Quality is limited by the model's size — noticeably synthetic on long reads.
             </div>
           </label>
+
+          ${selectedEngine === ENGINE_IDS.KOKORO && onOpenModelHub ? `
+            <button id="btn-manage-local-model" class="btn btn-secondary" type="button" style="align-self:flex-start;">
+              ${getIconSvg('cpu', 15)} Manage local model and cache
+            </button>
+          ` : ''}
 
           <label class="engine-option" data-engine="${ENGINE_IDS.OPENAI}" style="
             display: block; padding: 14px; border-radius: 10px; cursor: pointer;
@@ -114,7 +120,7 @@ export function createEngineSettingsModal({ audioManager, onClose, onEngineChang
                     ${consented ? '' : 'disabled'}
                     value="${escapeHtml(storedKey)}">
                   <button id="btn-reveal-key" class="btn btn-secondary" style="padding: 6px 10px;"
-                          ${consented ? '' : 'disabled'} title="Show key">👁</button>
+                          ${consented ? '' : 'disabled'} title="Show key">${getIconSvg('eye', 15)}</button>
                   <button id="btn-test-key" class="btn btn-secondary" style="white-space: nowrap;"
                           ${consented ? '' : 'disabled'}>
                     ${validating ? 'Testing…' : 'Test key'}
@@ -168,6 +174,10 @@ export function createEngineSettingsModal({ audioManager, onClose, onEngineChang
   function attach() {
     modal.querySelector('.btn-close-modal').addEventListener('click', close);
     modal.querySelector('#btn-engine-cancel').addEventListener('click', close);
+    modal.querySelector('#btn-manage-local-model')?.addEventListener('click', () => {
+      modal.remove();
+      onOpenModelHub();
+    });
 
     modal.querySelectorAll('input[name="engine"]').forEach(radio => {
       radio.addEventListener('change', (e) => {

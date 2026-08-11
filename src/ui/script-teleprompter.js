@@ -19,7 +19,7 @@ export function createScriptTeleprompter({
         <span style="display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: #10B981; box-shadow: 0 0 8px #10B981;"></span>
         <span id="teleprompter-title" style="font-weight: 600; color: #FFFFFF;">Screenplay Loaded</span>
         <span class="badge-voice" style="font-size: 0.7rem; padding: 2px 8px; background: rgba(245, 158, 11, 0.15); color: #F59E0B; border: 1px solid rgba(245, 158, 11, 0.3);">
-          🎭 Table Read Mode
+          Table read
         </span>
       </div>
 
@@ -62,7 +62,7 @@ export function createScriptTeleprompter({
     if (!script || !script.elements || script.elements.length === 0) {
       pageContent.innerHTML = `
         <div style="text-align: center; padding: 60px 20px; color: var(--text-secondary);">
-          <div style="font-size: 2.5rem; margin-bottom: 16px;">🎬</div>
+          <div style="margin-bottom: 16px; color: var(--brass);">${getIconSvg('book', 30)}</div>
           <div style="font-size: 1.25rem; font-weight: 700; color: #FFFFFF; margin-bottom: 8px;">No Screenplay Loaded</div>
           <p style="font-size: 0.9rem; max-width: 440px; margin: 0 auto 20px auto;">
             Import a PDF screenplay export, Fountain script, or select one of our pre-loaded cinematic sample scenes above.
@@ -77,7 +77,7 @@ export function createScriptTeleprompter({
     let html = `
       <div class="script-title-header">
         <div class="script-title-text">${escapeHtml(script.title.toUpperCase())}</div>
-        <div class="script-author-text">Formatted for Voice Model Readthrough • Standard Hollywood Layout</div>
+        <div class="script-author-text">Listening draft · screenplay format</div>
       </div>
     `;
 
@@ -117,7 +117,7 @@ export function createScriptTeleprompter({
 
           const emotionBadge = nuance.emotionKey && nuance.emotionKey !== 'neutral' ? `
             <span class="emotion-badge" style="background: ${nuance.badgeColor}22; border-color: ${nuance.badgeColor}66; color: ${nuance.badgeColor};">
-              ${nuance.emotionIcon || '🎭'} ${nuance.emotionLabel || nuance.emotionKey}
+              ${nuance.emotionLabel || nuance.emotionKey}
             </span>
           ` : '';
 
@@ -156,7 +156,7 @@ export function createScriptTeleprompter({
       // Mark where the pace changes, not every line that inherits it.
       const prevPace = index > 0 ? script.elements[index - 1].pace : 'natural';
       const paceMarker = elem.pace && elem.pace !== prevPace
-        ? `<div class="pace-marker">${PACE_PROFILES[elem.pace] ? PACE_PROFILES[elem.pace].icon : ''} ${PACE_PROFILES[elem.pace] ? PACE_PROFILES[elem.pace].label : elem.pace}</div>`
+        ? `<div class="pace-marker">${PACE_PROFILES[elem.pace] ? PACE_PROFILES[elem.pace].label : elem.pace}</div>`
         : '';
 
       html += `

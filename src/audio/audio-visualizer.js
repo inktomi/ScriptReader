@@ -1,7 +1,4 @@
-/**
- * Real-time Audio Spectrum & Soundwave Visualizer
- * Renders glowing multi-band audio waves, VU meters, and reactive emotion pulses
- */
+/** Compact, restrained stereo-style output meter for the transport console. */
 
 export class AudioVisualizer {
   constructor(canvasElement) {
@@ -11,8 +8,8 @@ export class AudioVisualizer {
     this.dataArray = null;
     this.animationId = null;
     this.isPlaying = false;
-    this.accentColor = '#F59E0B'; // Cinema Gold default
-    this.secondaryColor = '#06B6D4';
+    this.accentColor = '#C6A466';
+    this.secondaryColor = '#78977B';
     this.simulatedPhase = 0;
     this.simulatedIntensity = 0;
 
@@ -35,9 +32,10 @@ export class AudioVisualizer {
     return Math.max(8, Math.min(32, Math.floor(width / 7)));
   }
 
-  setColors(primary = '#F59E0B', secondary = '#06B6D4') {
-    this.accentColor = primary;
-    this.secondaryColor = secondary;
+  setColors() {
+    // Performance annotations should not turn the transport into a light show.
+    this.accentColor = '#C6A466';
+    this.secondaryColor = '#78977B';
   }
 
   start(analyser = null) {
@@ -68,9 +66,6 @@ export class AudioVisualizer {
 
   setSpeaking(isSpeaking, emotion = null) {
     this.isPlaying = isSpeaking;
-    if (emotion && emotion.badgeColor) {
-      this.accentColor = emotion.badgeColor;
-    }
     if (isSpeaking && !this.animationId) {
       this.animate();
     }
@@ -101,18 +96,7 @@ export class AudioVisualizer {
       }
     }
 
-    this.simulatedPhase += 0.15;
-
-    // Draw multi-bar spectrum
-    const barCount = this.barCountFor(width);
-    const gap = width / barCount > 6 ? 3 : 1;
-    const barWidth = Math.max(1, (width / barCount) - gap);
-    const centerY = height / 2;
-
-    const gradient = this.ctx.createLinearGradient(0, 0, width, height);
-    gradient.addColorStop(0, this.accentColor);
-    gradient.addColorStop(1, this.secondaryColor);
-    this.ctx.fillStyle = gradient;
+    this.simulatedPhase += 0.11;
 
     // Prefer real spectrum data when the scheduler has handed us an analyser;
     // fall back to the synthetic waveform when it hasn't.
@@ -122,32 +106,15 @@ export class AudioVisualizer {
       spectrum = this.dataArray;
     }
 
-    for (let i = 0; i < barCount; i++) {
-      const x = i * (barWidth + gap);
-
-      let normalizedHeight;
-      if (spectrum) {
-        // Sample logarithmically so speech energy spreads across the bars.
-        const t = i / (barCount - 1);
-        const bin = Math.min(spectrum.length - 1, Math.round(Math.pow(t, 1.8) * (spectrum.length - 1)));
-        normalizedHeight = (spectrum[bin] / 255) * this.simulatedIntensity;
-      } else {
-        const wave1 = Math.sin(this.simulatedPhase + i * 0.35);
-        const wave2 = Math.cos(this.simulatedPhase * 0.7 + i * 0.2);
-        const randomJitter = (Math.sin(i * 99 + this.simulatedPhase * 3) + 1) * 0.5;
-        normalizedHeight = Math.abs(wave1 * 0.6 + wave2 * 0.4) * randomJitter * this.simulatedIntensity;
-      }
-
-      const barHeight = Math.max(4, normalizedHeight * (height - 8));
-
-      const y = centerY - (barHeight / 2);
-      const radius = Math.max(0, Math.min(barWidth / 2, 2));
-
-      // Draw rounded bar
-      this.ctx.beginPath();
-      this.ctx.roundRect(x, y, barWidth, barHeight, radius);
-      this.ctx.fill();
+    let level = 0;
+    if (spectrum) {
+      const usefulBins = Math.min(96, spectrum.length);
+      for (let i = 0; i < usefulBins; i++) level += spectrum[i];
+      level = (level / usefulBins / 255) * this.simulatedIntensity;
+    } else {
+      level = (0.46 + Math.sin(this.simulatedPhase) * 0.16) * this.simulatedIntensity;
     }
+    this.renderMeter(width, height, level, Math.max(0, level * 0.9 + Math.sin(this.simulatedPhase * 1.4) * 0.06));
 
     if (this.isPlaying || this.simulatedIntensity > 0) {
       this.animationId = requestAnimationFrame(() => this.animate());
@@ -162,21 +129,25 @@ export class AudioVisualizer {
 
     this.ctx.clearRect(0, 0, width, height);
 
-    const barCount = this.barCountFor(width);
-    const gap = width / barCount > 6 ? 3 : 1;
-    const barWidth = Math.max(1, (width / barCount) - gap);
-    const centerY = height / 2;
+    this.renderMeter(width, height, 0, 0);
+  }
 
-    this.ctx.fillStyle = 'rgba(148, 163, 184, 0.25)';
+  renderMeter(width, height, leftLevel, rightLevel) {
+    const segments = Math.max(10, Math.min(22, Math.floor(width / 6)));
+    const gap = 2;
+    const segmentWidth = Math.max(2, (width - gap * (segments - 1)) / segments);
+    const rowHeight = Math.max(3, Math.min(5, (height - 5) / 2));
+    const levels = [leftLevel, rightLevel];
 
-    for (let i = 0; i < barCount; i++) {
-      const x = i * (barWidth + gap);
-      const barHeight = 4;
-      const y = centerY - (barHeight / 2);
-
-      this.ctx.beginPath();
-      this.ctx.roundRect(x, y, barWidth, barHeight, 2);
-      this.ctx.fill();
-    }
+    levels.forEach((level, row) => {
+      const y = row === 0 ? 2 : height - rowHeight - 2;
+      for (let i = 0; i < segments; i++) {
+        const active = i / segments <= level;
+        this.ctx.fillStyle = active
+          ? (i > segments * 0.82 ? this.accentColor : this.secondaryColor)
+          : 'rgba(167, 160, 149, 0.18)';
+        this.ctx.fillRect(i * (segmentWidth + gap), y, segmentWidth, rowHeight);
+      }
+    });
   }
 }

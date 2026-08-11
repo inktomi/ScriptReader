@@ -43,9 +43,9 @@ export function createCastPanel({
         </optgroup>
       `;
 
-      return buildGroup('👩 Female Voices', femaleVoices)
-        + buildGroup('👨 Male Voices', maleVoices)
-        + buildGroup('◐ Neutral Voices', neutralVoices);
+      return buildGroup('Female voices', femaleVoices)
+        + buildGroup('Male voices', maleVoices)
+        + buildGroup('Neutral voices', neutralVoices);
     };
 
     // Calculate total dialogue lines
@@ -73,7 +73,7 @@ export function createCastPanel({
         <div class="character-card" style="border-color: rgba(245, 158, 11, 0.4); background: rgba(245, 158, 11, 0.04);">
           <div class="char-header">
             <div class="char-avatar" style="background: linear-gradient(135deg, #F59E0B, #B45309);">
-              🎙️
+              ${getIconSvg('mic', 16)}
             </div>
             <div class="char-meta">
               <div class="char-name" style="color: #F59E0B;">THE NARRATOR</div>

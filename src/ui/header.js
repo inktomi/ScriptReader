@@ -1,14 +1,10 @@
 import { getIconSvg } from '../utils/icons.js';
-import { SAMPLE_SCRIPTS } from '../screenplay/sample-scripts.js';
 import { ENGINE_TYPES } from '../audio/audio-manager.js';
 
 export function createHeader({
-  onLoadSample,
-  onOpenUpload,
-  onOpenHfHub,
+  onChangeScript,
   onOpenVoiceConfig,
-  onToggleCast,
-  onToggleScenes,
+  onShowLibrary,
   onToggleHelp,
   onOpenEngineSettings,
   currentEngine = ENGINE_TYPES.KOKORO_NEURAL
@@ -16,143 +12,84 @@ export function createHeader({
   const header = document.createElement('header');
   header.className = 'app-header';
 
-  const samplesOptions = SAMPLE_SCRIPTS.map(s => 
-    `<option value="${s.id}">${s.title} (${s.genre})</option>`
-  ).join('');
-
   header.innerHTML = `
-    <div class="header-brand">
-      <div class="brand-badge">
-        ${getIconSvg('film', 22)}
-      </div>
-      <div>
-        <div class="brand-title">
-          ScriptReader <span class="brand-tag">PRO</span>
-        </div>
+    <div class="header-left">
+      <button id="btn-library" class="btn btn-quiet btn-library" type="button" title="Open library (C for cast, S for scenes)">
+        ${getIconSvg('layers', 17)}
+        <span>Library</span>
+      </button>
+      <div class="header-brand" aria-label="ScriptReader">
+        <span class="wordmark-mark">${getIconSvg('book', 17)}</span>
+        <span>ScriptReader</span>
       </div>
     </div>
 
+    <div class="header-script">
+      <strong id="header-script-title">No screenplay loaded</strong>
+      <span id="header-script-detail">Listening room</span>
+    </div>
+
     <div class="header-actions">
-      <!-- Sample Screenplay Picker -->
-      <div style="display: flex; align-items: center; gap: 8px;">
-        <select id="sample-script-select" class="voice-select" style="min-width: 200px; font-weight: 500;">
-          <option value="" disabled selected>✨ Load Sample Script...</option>
-          ${samplesOptions}
-        </select>
-      </div>
-
-      <!-- Import PDF / Script Button -->
-      <button id="btn-import-script" class="btn btn-secondary">
-        ${getIconSvg('upload', 16)}
-        <span>Import Script</span>
+      <button id="btn-change-script" class="btn btn-quiet" type="button">
+        ${getIconSvg('file', 15)}
+        <span>Change script</span>
       </button>
-
-      <!-- Voice Cast Setup Button -->
-      <button id="btn-voice-setup" class="btn btn-primary" title="Configure and test character voices for this script">
-        ${getIconSvg('sparkles', 15)}
-        <span>Voice Cast Setup</span>
-      </button>
-
-      <!-- Hugging Face Models Hub -->
-      <button id="btn-hf-hub" class="btn btn-secondary" title="Explore Hugging Face Open-Source TTS Models">
-        <span>🤗 Models</span>
-      </button>
-
-      <!-- Voice Engine Status Badge -->
-      <div class="engine-badge active" id="engine-status-badge" style="cursor: pointer;" title="Voice engine — click to switch between local and cloud">
-        ${getIconSvg('cpu', 14)}
-        <span id="engine-badge-text">Kokoro Neural</span>
-      </div>
-
-      <!-- Sidebar Toggle Buttons -->
-      <button id="btn-toggle-cast" class="btn btn-secondary btn-active" title="Toggle Cast Studio (C)">
-        ${getIconSvg('users', 16)}
+      <button id="btn-voice-setup" class="btn btn-secondary" type="button" title="Edit voice cast (V)">
+        ${getIconSvg('users', 15)}
         <span>Cast</span>
       </button>
-
-      <button id="btn-toggle-scenes" class="btn btn-secondary" title="Scene Index (S)">
-        ${getIconSvg('layers', 16)}
-        <span>Scenes</span>
+      <button id="engine-status-badge" class="engine-badge" type="button" title="Voice engine settings">
+        ${getIconSvg('cpu', 14)}
+        <span id="engine-badge-text">Local voices</span>
       </button>
-
-      <!-- Help Button -->
-      <button id="btn-help" class="btn-icon" title="Keyboard Shortcuts & Help (?)">
-        ${getIconSvg('help', 18)}
+      <button id="btn-help" class="btn-icon" type="button" title="Help and keyboard shortcuts (?)">
+        ${getIconSvg('help', 17)}
       </button>
     </div>
   `;
 
-  // Attach event listeners
-  const sampleSelect = header.querySelector('#sample-script-select');
-  sampleSelect.addEventListener('change', (e) => {
-    if (e.target.value) {
-      onLoadSample(e.target.value);
-      e.target.blur();
-    }
-  });
-
-  header.querySelector('#btn-import-script').addEventListener('click', onOpenUpload);
+  header.querySelector('#btn-change-script').addEventListener('click', onChangeScript);
   header.querySelector('#btn-voice-setup').addEventListener('click', onOpenVoiceConfig);
-  header.querySelector('#btn-hf-hub').addEventListener('click', onOpenHfHub);
+  header.querySelector('#btn-library').addEventListener('click', () => onShowLibrary('cast'));
   header.querySelector('#engine-status-badge').addEventListener('click', onOpenEngineSettings);
-  header.querySelector('#btn-toggle-cast').addEventListener('click', onToggleCast);
-  header.querySelector('#btn-toggle-scenes').addEventListener('click', onToggleScenes);
   header.querySelector('#btn-help').addEventListener('click', onToggleHelp);
 
-  function setSelectedSample(sampleId) {
-    if (sampleSelect) {
-      sampleSelect.value = sampleId || '';
-    }
+  function setScript(script) {
+    const title = header.querySelector('#header-script-title');
+    const detail = header.querySelector('#header-script-detail');
+    title.textContent = script ? script.title : 'No screenplay loaded';
+    detail.textContent = script
+      ? `${script.scenes.length} scenes · ${script.characters.length} speaking roles`
+      : 'Listening room';
   }
 
-  /**
-   * Cloud mode is amber, not red: it is a legitimate choice and the better-sounding
-   * one. But it must never look like the safe default, because it is the mode in
-   * which the script leaves the machine.
-   */
   function setEngineBadge(engineId) {
     const badgeText = header.querySelector('#engine-badge-text');
     const badge = header.querySelector('#engine-status-badge');
     if (!badgeText || !badge) return false;
 
-    if (engineId === ENGINE_TYPES.OPENAI) {
-      badgeText.textContent = '☁ OpenAI (Cloud)';
-      badge.style.color = '#F59E0B';
-      badge.style.borderColor = 'rgba(245, 158, 11, 0.45)';
-      badge.style.background = 'rgba(245, 158, 11, 0.12)';
-      badge.title = 'OpenAI gpt-4o-mini-tts — your dialogue is sent to OpenAI to be spoken. Click to change.';
-      return true;
-    }
-    return false;
+    const isCloud = engineId === ENGINE_TYPES.OPENAI;
+    badgeText.textContent = isCloud ? 'Cloud voices' : 'Local voices';
+    badge.classList.toggle('is-cloud', isCloud);
+    badge.title = isCloud
+      ? 'OpenAI voices — dialogue is sent to OpenAI. Click to change.'
+      : 'Kokoro voices — screenplay audio is generated on this device. Click to change.';
+    return isCloud;
   }
 
-  function updateEngineCacheBadge({ isModelCached, formattedSize, isFullyCached, engineId }) {
-    // The cache badge describes Kokoro's weights, which mean nothing in cloud mode.
+  function updateEngineCacheBadge({ isModelCached, isFullyCached, engineId }) {
     if (setEngineBadge(engineId)) return;
-
     const badgeText = header.querySelector('#engine-badge-text');
-    const badge = header.querySelector('#engine-status-badge');
-    if (badgeText && badge) {
-      if (isFullyCached || isModelCached) {
-        badgeText.textContent = `⚡ Kokoro (Local Cache)`;
-        badge.style.color = '#10B981';
-        badge.style.borderColor = 'rgba(16, 185, 129, 0.4)';
-        badge.style.background = 'rgba(16, 185, 129, 0.12)';
-        badge.title = `Kokoro-82M ONNX model cached locally (${formattedSize}) • 28/28 Voices Ready • Offline Capable`;
-      } else {
-        badgeText.textContent = `Kokoro Neural`;
-        badge.style.color = '#06B6D4';
-        badge.style.borderColor = 'rgba(6, 182, 212, 0.25)';
-        badge.style.background = 'rgba(6, 182, 212, 0.08)';
-        badge.title = `Kokoro-82M Neural Engine (Click to view local cache)`;
-      }
-    }
+    if (badgeText && (isFullyCached || isModelCached)) badgeText.textContent = 'Local · ready offline';
   }
+
+  setEngineBadge(currentEngine);
 
   return {
     element: header,
-    setSelectedSample,
+    setScript,
     updateEngineCacheBadge,
-    setEngineBadge
+    setEngineBadge,
+    setSelectedSample: () => {}
   };
 }

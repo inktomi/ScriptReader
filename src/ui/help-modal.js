@@ -8,72 +8,48 @@ export function createHelpModal({ onClose }) {
     <div class="modal-card" style="max-width: 640px;">
       <div class="modal-header">
         <div style="display: flex; align-items: center; gap: 10px;">
-          <span style="font-size: 1.25rem;">✨</span>
-          <h2 style="font-size: 1.15rem; font-weight: 700; color: #FFFFFF;">ScriptReader Pro Guide</h2>
+          ${getIconSvg('book', 18)}
+          <h2 style="font-size: 1.15rem; font-weight: 700;">ScriptReader guide</h2>
         </div>
-        <button class="btn-icon btn-close-modal">
+        <button class="btn-icon btn-close-modal" aria-label="Close guide">
           ${getIconSvg('close', 18)}
         </button>
       </div>
 
-      <div class="modal-body" style="display: flex; flex-direction: column; gap: 20px;">
-        <div>
-          <h3 style="font-size: 0.95rem; font-weight: 700; color: #F59E0B; margin-bottom: 8px;">
-            🎙️ Kokoro Neural 82M Speech Engine
-          </h3>
-          <p style="font-size: 0.85rem; color: var(--text-secondary); line-height: 1.5;">
-            State-of-the-art open-source neural TTS running locally in your browser with ONNX & WebAssembly/WebGPU. Delivers 20+ distinct, studio-quality human voices with lookahead pre-buffering for gapless table reads.
-          </p>
-        </div>
+      <div class="modal-body help-sections">
+        <section>
+          <h3>${getIconSvg('cpu', 16)} Private by default</h3>
+          <p>Kokoro generates the table read on this device. If you choose OpenAI voices, ScriptReader clearly asks for consent before sending dialogue for synthesis.</p>
+        </section>
 
-        <div>
-          <h3 style="font-size: 0.95rem; font-weight: 700; color: #06B6D4; margin-bottom: 8px;">
-            🎭 Emotion & Direction Recognition
-          </h3>
-          <p style="font-size: 0.85rem; color: var(--text-secondary); line-height: 1.5;">
-            The engine automatically recognizes parentheticals like <code>(whispering)</code>, <code>(angry)</code>, <code>(sobbing)</code>, <code>(beat)</code>, <code>(sarcastic)</code>, and modulates voice pitch, cadence, pauses, and volume dynamically.
-          </p>
-        </div>
+        <section>
+          <h3>${getIconSvg('sliders', 16)} Direction-aware performances</h3>
+          <p>Parentheticals such as <code>(whispering)</code>, <code>(angry)</code>, and <code>(beat)</code> shape cadence, pitch, pause, and level. Character settings can add more specific direction.</p>
+        </section>
 
-        <div>
-          <h3 style="font-size: 0.95rem; font-weight: 700; color: #F43F5E; margin-bottom: 8px;">
-            ⌨️ Keyboard Shortcuts
-          </h3>
-          <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 8px; font-size: 0.8rem; font-family: var(--font-mono);">
-            <div style="background: rgba(255,255,255,0.03); padding: 8px 12px; border-radius: 6px; border: 1px solid var(--border-glass);">
-              <strong style="color: #F59E0B;">Spacebar:</strong> Play / Pause
-            </div>
-            <div style="background: rgba(255,255,255,0.03); padding: 8px 12px; border-radius: 6px; border: 1px solid var(--border-glass);">
-              <strong style="color: #F59E0B;">Left Arrow:</strong> Previous Line
-            </div>
-            <div style="background: rgba(255,255,255,0.03); padding: 8px 12px; border-radius: 6px; border: 1px solid var(--border-glass);">
-              <strong style="color: #F59E0B;">Right Arrow:</strong> Next Line
-            </div>
-            <div style="background: rgba(255,255,255,0.03); padding: 8px 12px; border-radius: 6px; border: 1px solid var(--border-glass);">
-              <strong style="color: #F59E0B;">C Key:</strong> Toggle Cast Studio
-            </div>
-            <div style="background: rgba(255,255,255,0.03); padding: 8px 12px; border-radius: 6px; border: 1px solid var(--border-glass);">
-              <strong style="color: #F59E0B;">S Key:</strong> Toggle Scenes Drawer
-            </div>
-            <div style="background: rgba(255,255,255,0.03); padding: 8px 12px; border-radius: 6px; border: 1px solid var(--border-glass);">
-              <strong style="color: #F59E0B;">? Key:</strong> Open this Help Guide
-            </div>
+        <section>
+          <h3>${getIconSvg('book', 16)} Keyboard shortcuts</h3>
+          <div class="shortcut-grid">
+            <span><kbd>Space</kbd> Play or pause</span>
+            <span><kbd>←</kbd> Previous line</span>
+            <span><kbd>→</kbd> Next line</span>
+            <span><kbd>C</kbd> Open cast library</span>
+            <span><kbd>S</kbd> Open scene library</span>
+            <span><kbd>V</kbd> Edit voice cast</span>
+            <span><kbd>?</kbd> Open this guide</span>
           </div>
-        </div>
+        </section>
       </div>
     </div>
   `;
 
-  modal.querySelector('.btn-close-modal').addEventListener('click', () => {
+  const close = () => {
     modal.remove();
     if (onClose) onClose();
-  });
-
-  modal.addEventListener('click', (e) => {
-    if (e.target === modal) {
-      modal.remove();
-      if (onClose) onClose();
-    }
+  };
+  modal.querySelector('.btn-close-modal').addEventListener('click', close);
+  modal.addEventListener('click', event => {
+    if (event.target === modal) close();
   });
 
   return modal;

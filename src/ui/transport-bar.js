@@ -16,22 +16,10 @@ export function createTransportBar({
   container.className = 'transport-container';
 
   container.innerHTML = `
-    <!-- Top Scrub Row -->
-    <div class="transport-scrub-row">
-      <span id="transport-line-counter">Line 0 / 0</span>
-      <div class="scrub-track" id="scrub-track" title="Click to jump line in screenplay">
-        <div class="scrub-fill" id="scrub-fill"></div>
-      </div>
-      <span id="transport-buffer-status" class="transport-buffer-status"></span>
-      <span id="transport-progress-percent">0%</span>
-    </div>
-
-    <!-- Main Controls Row -->
     <div class="transport-main-row">
-      <!-- Left: Active Character & Emotion -->
       <div class="current-reading-info">
-        <div class="speaker-avatar-tiny" id="active-speaker-avatar" style="background: linear-gradient(135deg, #F59E0B, #D97706);">
-          🎙️
+        <div class="speaker-avatar-tiny" id="active-speaker-avatar">
+          ${getIconSvg('mic', 15)}
         </div>
         <div class="speaker-info-text">
           <div class="speaker-title" id="active-speaker-name">Ready</div>
@@ -39,7 +27,6 @@ export function createTransportBar({
         </div>
       </div>
 
-      <!-- Center: Transport Buttons -->
       <div class="playback-controls">
         <button id="btn-transport-prev" class="btn-transport" title="Previous Line (Left Arrow)">
           ${getIconSvg('skipBack', 20)}
@@ -52,40 +39,55 @@ export function createTransportBar({
         <button id="btn-transport-next" class="btn-transport" title="Next Line (Right Arrow)">
           ${getIconSvg('skipForward', 20)}
         </button>
-
-        <button id="btn-transport-stop" class="btn-transport" title="Stop & Reset">
-          ${getIconSvg('stop', 18)}
-        </button>
       </div>
 
-      <!-- Right: Spectrum Visualizer, Pacing Mode & Speed Multiplier -->
       <div class="transport-right">
-        <!-- Theatrical Pacing Selector -->
-        <div class="pacing-selector" title="Theatrical Cue Timing & Pause Mode">
-          <button class="pacing-chip active" data-pacing="natural" title="Authentic human table read timing">🎭 Natural</button>
-          <button class="pacing-chip" data-pacing="dramatic" title="Rich dramatic breathing and suspense pauses">🎬 Dramatic</button>
-          <button class="pacing-chip" data-pacing="snappy" title="Fast-paced banter and rapid rehearsal">⚡ Snappy</button>
+        <div class="level-meter" title="Stereo output level">
+          <span>L</span>
+          <canvas class="visualizer-canvas" id="audio-visualizer-canvas"></canvas>
+          <span>R</span>
         </div>
-
-        <!-- Canvas Visualizer -->
-        <canvas class="visualizer-canvas" id="audio-visualizer-canvas" title="Real-time Audio Spectrum"></canvas>
-
-        <!-- Volume -->
         <div class="volume-control" title="Volume">
           <button id="btn-transport-mute" class="btn-transport" style="width: 32px; height: 32px;">
             ${getIconSvg('volume', 16)}
           </button>
           <input type="range" id="transport-volume" class="slider-input" min="0" max="100" value="100" style="width: 76px;">
         </div>
-
-        <!-- Speed Chips -->
-        <div class="speed-chips" title="Playback Speed">
-          <button class="speed-chip" data-speed="0.75">0.75x</button>
-          <button class="speed-chip active" data-speed="1.0">1.0x</button>
-          <button class="speed-chip" data-speed="1.25">1.25x</button>
-          <button class="speed-chip" data-speed="1.5">1.5x</button>
-        </div>
+        <details class="transport-options">
+          <summary class="btn btn-quiet">${getIconSvg('sliders', 15)} Options</summary>
+          <div class="transport-options-popover">
+            <div class="transport-option-row">
+              <span>Pacing</span>
+              <div class="pacing-selector" title="Theatrical cue timing">
+                <button class="pacing-chip active" data-pacing="natural">Natural</button>
+                <button class="pacing-chip" data-pacing="dramatic">Dramatic</button>
+                <button class="pacing-chip" data-pacing="snappy">Snappy</button>
+              </div>
+            </div>
+            <div class="transport-option-row">
+              <span>Speed</span>
+              <div class="speed-chips" title="Playback speed">
+                <button class="speed-chip" data-speed="0.75">0.75×</button>
+                <button class="speed-chip active" data-speed="1.0">1.0×</button>
+                <button class="speed-chip" data-speed="1.25">1.25×</button>
+                <button class="speed-chip" data-speed="1.5">1.5×</button>
+              </div>
+            </div>
+            <button id="btn-transport-stop" class="btn btn-quiet transport-reset" title="Stop and return to the beginning">
+              ${getIconSvg('stop', 15)} Stop and reset
+            </button>
+          </div>
+        </details>
       </div>
+    </div>
+
+    <div class="transport-scrub-row">
+      <span id="transport-line-counter">Line 0 / 0</span>
+      <div class="scrub-track" id="scrub-track" title="Click to jump to a line in the screenplay">
+        <div class="scrub-fill" id="scrub-fill"></div>
+      </div>
+      <span id="transport-buffer-status" class="transport-buffer-status"></span>
+      <span id="transport-progress-percent">0%</span>
     </div>
   `;
 
@@ -174,20 +176,14 @@ export function createTransportBar({
   function updatePlaybackState(state) {
     const isBuffering = state === PLAYBACK_STATES.BUFFERING;
     container.classList.toggle('is-buffering', isBuffering);
-    bufferStatus.textContent = isBuffering ? '⏳ Rendering voices…' : '';
+    bufferStatus.textContent = isBuffering ? 'Rendering voices…' : '';
 
     if (state === PLAYBACK_STATES.PLAYING || isBuffering) {
       btnPlay.innerHTML = getIconSvg('pause', 24);
-      btnPlay.style.background = isBuffering
-        ? 'linear-gradient(135deg, #64748B, #475569)'
-        : 'linear-gradient(135deg, #06B6D4, #3B82F6)';
-      btnPlay.style.boxShadow = isBuffering
-        ? '0 0 18px rgba(100, 116, 139, 0.4)'
-        : '0 0 24px rgba(6, 182, 212, 0.5)';
+      btnPlay.dataset.state = isBuffering ? 'buffering' : 'playing';
     } else {
       btnPlay.innerHTML = getIconSvg('play', 24);
-      btnPlay.style.background = 'linear-gradient(135deg, #F59E0B, #D97706)';
-      btnPlay.style.boxShadow = '0 0 20px rgba(245, 158, 11, 0.4)';
+      btnPlay.dataset.state = 'idle';
     }
   }
 
@@ -195,8 +191,8 @@ export function createTransportBar({
     if (!element) {
       speakerName.textContent = 'Ready';
       speakerEmotion.textContent = 'Press Play to begin readthrough';
-      speakerAvatar.innerHTML = '🎙️';
-      speakerAvatar.style.background = 'linear-gradient(135deg, #F59E0B, #D97706)';
+      speakerAvatar.innerHTML = getIconSvg('mic', 15);
+      speakerAvatar.style.background = '';
       return;
     }
 
@@ -209,15 +205,15 @@ export function createTransportBar({
       : name;
 
     const emotionText = alsoSpeaking.length > 0
-      ? '🗣️ Talking over each other'
+      ? 'Talking over each other'
       : (nuance && nuance.emotionKey && nuance.emotionKey !== 'neutral'
-          ? `${nuance.emotionIcon || '🎭'} ${nuance.emotionLabel} (${nuance.description})`
+          ? `${nuance.emotionLabel} (${nuance.description})`
           : 'Natural Delivery');
     speakerEmotion.textContent = emotionText;
 
     if (element.character === 'NARRATOR') {
-      speakerAvatar.innerHTML = '🎙️';
-      speakerAvatar.style.background = 'linear-gradient(135deg, #F59E0B, #B45309)';
+      speakerAvatar.innerHTML = getIconSvg('mic', 15);
+      speakerAvatar.style.background = '';
     } else {
       speakerAvatar.innerHTML = element.character.substring(0, 2).toUpperCase();
       speakerAvatar.style.background = voice.avatarBg || 'linear-gradient(135deg, #8B5CF6, #6366F1)';
