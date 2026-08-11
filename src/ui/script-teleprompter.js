@@ -1,4 +1,5 @@
 import { getIconSvg } from '../utils/icons.js';
+import { escapeHtml } from '../utils/escape-html.js';
 import { PACE_PROFILES } from '../screenplay/overlap-pacing.js';
 
 export function createScriptTeleprompter({
@@ -73,7 +74,7 @@ export function createScriptTeleprompter({
 
     let html = `
       <div class="script-title-header">
-        <div class="script-title-text">${script.title.toUpperCase()}</div>
+        <div class="script-title-text">${escapeHtml(script.title.toUpperCase())}</div>
         <div class="script-author-text">Formatted for Voice Model Readthrough • Standard Hollywood Layout</div>
       </div>
     `;
@@ -88,7 +89,7 @@ export function createScriptTeleprompter({
           lineClass += ' scene-heading';
           contentHtml = `
             <div style="display: flex; align-items: center; justify-content: space-between;">
-              <span>${elem.text}</span>
+              <span>${escapeHtml(elem.text)}</span>
               <span style="font-size: 0.7rem; font-family: var(--font-ui); color: #0284C7; font-weight: 600;">SCENE ${elem.sceneNumber}</span>
             </div>
           `;
@@ -96,7 +97,7 @@ export function createScriptTeleprompter({
 
         case 'ACTION':
           lineClass += ' action';
-          contentHtml = elem.text;
+          contentHtml = escapeHtml(elem.text);
           break;
 
         case 'CHARACTER':
@@ -108,7 +109,7 @@ export function createScriptTeleprompter({
 
           const directionTag = elem.parenthetical ? `
             <div class="script-line parenthetical" style="padding-left: 0; padding-right: 0;">
-              (${elem.parenthetical})
+              (${escapeHtml(elem.parenthetical)})
             </div>
           ` : '';
 
@@ -130,23 +131,23 @@ export function createScriptTeleprompter({
 
           contentHtml = `
             <div class="script-line character-cue" style="padding-left: 0; padding-right: 0; margin-top: 0;">
-              <span>${elem.characterOriginal || elem.character}</span>
+              <span>${escapeHtml(elem.characterOriginal || elem.character)}</span>
               ${emotionBadge}
               ${overlapBadge}
             </div>
             ${directionTag}
-            <div>${elem.text}${cutMark}</div>
+            <div>${escapeHtml(elem.text)}${cutMark}</div>
           `;
           break;
 
         case 'TRANSITION':
           lineClass += ' transition';
-          contentHtml = elem.text;
+          contentHtml = escapeHtml(elem.text);
           break;
 
         default:
           lineClass += ' action';
-          contentHtml = elem.text;
+          contentHtml = escapeHtml(elem.text);
       }
 
       // Mark where the pace changes, not every line that inherits it.

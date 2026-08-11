@@ -1,4 +1,6 @@
 import { analyzeLineNuance } from '../screenplay/emotion-analyzer.js';
+import { composeInstructions } from './instruction-composer.js';
+import { ENGINE_IDS, makeCacheKey } from './engine-contract.js';
 import {
   resolvePacing,
   interruptTrimSec,
@@ -26,13 +28,41 @@ import {
 const MAX_CHUNK_CHARS = 190;
 const MIN_CHUNK_CHARS = 45;
 
+// `playbackRate` resamples, which moves the formants along with the pitch — the
+// tape-speed effect. Past roughly ±12% that stops reading as "a different person"
+// and starts reading as "something is wrong with the audio", so every pitch input
+// below is scaled and clamped to stay inside that window.
+//
+// The two inputs are not treated equally, because a *constant* shift and a
+// *per-line* shift cost very different amounts. A character who always sits 7%
+// low just sounds like a bigger person; a line that jumps 7% mid-scene sounds
+// broken. So the per-character budget stays generous and the per-line ones are
+// cut.
+
 // Per-voice pitch character from the catalog, at half strength: enough to hear
-// Onyx sit below Lily, not enough to sound resampled.
+// Onyx sit below Lily, not enough to sound resampled. Constant per character,
+// so it is the cheapest place to spend pitch.
 const VOICE_PITCH_STRENGTH = 0.5;
 
-// The cast studio's pitch slider is ±50; mapping it at half strength keeps the
-// extremes expressive rather than cartoonish.
-const USER_PITCH_STRENGTH = 0.5;
+// The cast studio's pitch slider is ±50. At the old 0.5 the top half of the
+// slider's travel bought nothing — it ran straight into the clamp — while
+// sounding progressively more resampled. At 0.22 the full ±50 maps to ±11% and
+// lands just inside the window, so every position on the slider does something
+// and none of them sound artificial.
+const USER_PITCH_STRENGTH = 0.22;
+
+// Bounds on the final pitch ratio, asymmetric on purpose: a downward shift reads
+// as a larger person, which is plausible, while an upward shift reads as a child
+// or a cartoon and becomes objectionable sooner.
+const PITCH_MIN = 0.88;
+const PITCH_MAX = 1.12;
+
+// Kokoro's `speed` is well behaved over roughly this range. Below 0.8 it
+// over-lengthens phones and smears transients — the "mushy" failure that the
+// old 0.55 floor allowed whenever a raised pitch made the director ask for
+// `tempo / pitch` well under 1.
+const SYNTH_SPEED_MIN = 0.80;
+const SYNTH_SPEED_MAX = 2.00;
 
 // Gap *between* lines, before the line's own emotional lead-in is added.
 const CUE_GAPS_MS = {
@@ -54,13 +84,25 @@ function clamp(value, min, max) {
 }
 
 /**
+ * Render a cast-studio pitch slider position as the shift it actually produces.
+ *
+ * The slider runs ±50 and used to be printed as "+50%", which was never true —
+ * it was +25% before this change and is +11% after. Showing the real figure
+ * keeps the control honest and stops anyone reading the extremes as broken.
+ */
+export function formatPitchOffset(sliderValue) {
+  const percent = Math.round((sliderValue || 0) * USER_PITCH_STRENGTH);
+  return `${percent > 0 ? '+' : ''}${percent}%`;
+}
+
+/**
  * Split spoken text at sentence boundaries, greedily packing into chunks.
  * Falls back to clause boundaries for runaway sentences.
  */
-export function chunkSpeech(text) {
+export function chunkSpeech(text, maxChars = MAX_CHUNK_CHARS) {
   const trimmed = (text || '').trim();
   if (!trimmed) return [];
-  if (trimmed.length <= MAX_CHUNK_CHARS) return [trimmed];
+  if (trimmed.length <= maxChars) return [trimmed];
 
   const sentences = trimmed.match(/[^.!?]+[.!?]+["')\]]*\s*|[^.!?]+$/g) || [trimmed];
 
@@ -77,14 +119,14 @@ export function chunkSpeech(text) {
     const piece = sentence.trim();
     if (!piece) continue;
 
-    if (piece.length > MAX_CHUNK_CHARS) {
+    if (piece.length > maxChars) {
       flush();
       // Break an over-long sentence on commas rather than mid-phrase.
       const clauses = piece.split(/,\s*/);
       let clauseBuffer = '';
       for (let i = 0; i < clauses.length; i++) {
         const clause = clauses[i] + (i < clauses.length - 1 ? ',' : '');
-        if (clauseBuffer && (clauseBuffer.length + clause.length + 1) > MAX_CHUNK_CHARS) {
+        if (clauseBuffer && (clauseBuffer.length + clause.length + 1) > maxChars) {
           chunks.push(clauseBuffer.trim());
           clauseBuffer = clause;
         } else {
@@ -95,12 +137,12 @@ export function chunkSpeech(text) {
       continue;
     }
 
-    if (current && (current.length + piece.length + 1) > MAX_CHUNK_CHARS) {
+    if (current && (current.length + piece.length + 1) > maxChars) {
       flush();
     }
     current = current ? `${current} ${piece}` : piece;
 
-    if (current.length >= MAX_CHUNK_CHARS - MIN_CHUNK_CHARS) {
+    if (current.length >= maxChars - MIN_CHUNK_CHARS) {
       flush();
     }
   }
@@ -159,7 +201,7 @@ export function computeCueGapMs(prevElement, element, pacing = DEFAULT_PACE, mas
 /**
  * Resolve the synthesis + playback parameters for one line.
  */
-function resolveDelivery({ nuance, voiceProfile, tuning, masterSpeed, paceTempo = 1.0 }) {
+function resolveDelivery({ nuance, voiceProfile, tuning, masterSpeed, paceTempo = 1.0, caps = null }) {
   const charSpeed = tuning && tuning.speedMultiplier ? tuning.speedMultiplier : 1.0;
   const pitchOffset = tuning && tuning.pitchOffset ? tuning.pitchOffset : 0;
 
@@ -170,7 +212,11 @@ function resolveDelivery({ nuance, voiceProfile, tuning, masterSpeed, paceTempo 
   // the user's controls are layered on. Wide enough to hear a whisper differ
   // from a shout; narrow enough that no line ever outruns the listener.
   const emotionSpeed = clamp(nuance.speedMod || 1, 0.82, 1.15);
-  const emotionPitch = clamp(nuance.pitchMod || 1, 0.90, 1.10);
+  // Tighter than the speed bound. Emotion already reaches the listener through
+  // tempo, level, lead-in pause and the punctuation Kokoro reads; per-line pitch
+  // wobble is the most audible of those inputs and the least informative, so it
+  // gets the smallest share of the resampling budget.
+  const emotionPitch = clamp(nuance.pitchMod || 1, 0.94, 1.06);
 
   // Perceived tempo the listener should hear. Pace is a separate multiplier
   // rather than part of `emotionSpeed`, so an authored fast passage is not
@@ -182,27 +228,81 @@ function resolveDelivery({ nuance, voiceProfile, tuning, masterSpeed, paceTempo 
   );
 
   // Perceived pitch relative to the voice's natural register.
-  const pitch = clamp(voicePitch * userPitch * emotionPitch, 0.72, 1.35);
+  const pitch = clamp(voicePitch * userPitch * emotionPitch, PITCH_MIN, PITCH_MAX);
 
-  // Ask Kokoro for a tempo that, once the pitch shift stretches it, lands on `tempo`.
-  const kokoroSpeed = clamp(tempo / pitch, 0.55, 2.2);
+  // A model that acts on "whisper" itself has already dropped its level. Applying
+  // the full mix cut on top lands the line at ~30% instead of ~55%. Halve the
+  // deviation rather than discarding it — the direction still shapes the mix, it
+  // just is not applied twice.
+  const rawGain = nuance.gainMod || 1;
+  const gain = caps && caps.supportsInstructions
+    ? clamp(1 + (rawGain - 1) * 0.5, 0.25, 1.6)
+    : clamp(rawGain, 0.25, 1.6);
 
-  return {
-    kokoroSpeed,
-    playbackRate: pitch,
-    gain: clamp(nuance.gainMod, 0.25, 1.6),
-    filter: nuance.filter || null,
-    tempo
-  };
+  // `gain`, `filter`, and `pan` are engine-agnostic on purpose: PlaybackScheduler
+  // applies them to the Web Audio graph after synthesis. So "(over comms)" keeps
+  // its radio band-limit and "(whispering)" keeps its level drop on every engine.
+  // Only the *speed and pitch* half of a direction moves into words below; the
+  // mix half never does.
+  const common = { gain, filter: nuance.filter || null, pitch };
+
+  if (!caps || caps.supportsSpeed) {
+    // Kokoro: `speed` moves tempo while preserving pitch, `playbackRate` moves
+    // both. Synthesise at tempo/pitch and play at pitch — they cancel on tempo
+    // and compound on pitch.
+    const synthSpeed = clamp(tempo / pitch, SYNTH_SPEED_MIN, SYNTH_SPEED_MAX);
+    // What the listener will actually hear, which is not what was asked for
+    // whenever either clamp engaged. The lookahead budget is built from this, so
+    // reporting the *requested* tempo made the runway estimate wrong in exactly
+    // the cases where the estimate mattered most.
+    return { ...common, synthSpeed, playbackRate: pitch, tempo: synthSpeed * pitch };
+  }
+
+  // gpt-4o-mini-tts has no working speed parameter, and its output already sits
+  // in the register the chosen voice implies. Resampling would be the only way to
+  // move either — and resampling a cloud render to chase a 3% pitch idea is
+  // exactly the artefact the Kokoro path spends its whole speed budget avoiding.
+  // So `playbackRate` is pinned to 1.0 and nothing is resampled at all; tempo and
+  // register are handed to the model as words instead.
+  //
+  // `tempo` and `pitch` still ride on the return value: they are what the
+  // instruction bands read, and what keeps estimatedDuration honest.
+  return { ...common, synthSpeed: 1.0, playbackRate: 1.0, tempo };
 }
 
-function makeKey(voiceId, kokoroSpeed, text) {
-  return `${voiceId}|${kokoroSpeed.toFixed(3)}|${text}`;
+/**
+ * Rough spoken duration, used only to budget lookahead before audio exists.
+ *
+ * On an engine with no speed control, tempo is a request phrased in words and
+ * the model honours it only loosely, so the estimate tracks reality better when
+ * the tempo term is damped rather than taken at face value.
+ */
+function estimateDuration(text, tempo, honoursTempo = true) {
+  const effective = honoursTempo ? tempo : 1 + (tempo - 1) * 0.4;
+  return Math.max(0.5, (text.length / 14.5) / Math.max(0.5, effective));
 }
 
-/** Rough spoken duration, used only to budget lookahead before audio exists. */
-function estimateDuration(text, tempo) {
-  return Math.max(0.5, (text.length / 14.5) / Math.max(0.5, tempo));
+/**
+ * Capabilities used when no engine is supplied. Matches Kokoro, which keeps every
+ * existing caller — and every test that builds units without an engine —
+ * behaving exactly as before.
+ */
+const DEFAULT_CAPS = {
+  id: ENGINE_IDS.KOKORO,
+  supportsSpeed: true,
+  supportsInstructions: false,
+  maxChunkChars: MAX_CHUNK_CHARS
+};
+
+function capsFor(engine) {
+  return (engine && engine.capabilities) || DEFAULT_CAPS;
+}
+
+function voiceIdFor(engine, voiceProfile) {
+  if (engine && typeof engine.resolveVoiceId === 'function') {
+    return engine.resolveVoiceId(voiceProfile);
+  }
+  return voiceProfile.kokoroId || voiceProfile.id || 'af_heart';
 }
 
 /**
@@ -218,10 +318,12 @@ export function buildLineUnits({
   tuning = null,
   pan = 0,
   masterSpeed = 1.0,
-  pacing = DEFAULT_PACE
+  pacing = DEFAULT_PACE,
+  engine = null
 }) {
   if (!element) return [];
 
+  const caps = capsFor(engine);
   const nuance = element.nuance || analyzeLineNuance({
     text: element.text,
     parenthetical: element.parenthetical || '',
@@ -229,7 +331,7 @@ export function buildLineUnits({
   });
 
   const spoken = nuance.cleanSpeech || element.text || '';
-  const chunks = chunkSpeech(spoken);
+  const chunks = chunkSpeech(spoken, caps.maxChunkChars);
   if (chunks.length === 0) return [];
 
   const pace = resolvePacing({
@@ -239,9 +341,23 @@ export function buildLineUnits({
   });
 
   const delivery = resolveDelivery({
-    nuance, voiceProfile, tuning, masterSpeed, paceTempo: pace.tempoFactor
+    nuance, voiceProfile, tuning, masterSpeed, paceTempo: pace.tempoFactor, caps
   });
-  const voiceId = voiceProfile.kokoroId || voiceProfile.id || 'af_heart';
+  const voiceId = voiceIdFor(engine, voiceProfile);
+
+  // Composed once per line, not per chunk: the direction is a property of the
+  // character and the line, so every chunk of a speech must carry the identical
+  // string or the model re-invents the delivery halfway through.
+  const instructions = caps.supportsInstructions
+    ? composeInstructions({
+        direction: (tuning && tuning.direction) || '',
+        nuance,
+        tempo: delivery.tempo,
+        pitch: delivery.pitch,
+        persona: voiceProfile.tone || '',
+        isNarration: element.type !== 'DIALOGUE'
+      })
+    : null;
 
   const overlapMode = (element.overlap && element.overlap.mode) || 'sequential';
   const isOverlapping = overlapMode !== 'sequential';
@@ -282,7 +398,9 @@ export function buildLineUnits({
 
     text,
     voiceId,
-    kokoroSpeed: delivery.kokoroSpeed,
+    engineId: caps.id,
+    synthSpeed: delivery.synthSpeed,
+    instructions,
     playbackRate: delivery.playbackRate,
     gain,
     filter: delivery.filter,
@@ -294,8 +412,14 @@ export function buildLineUnits({
     leadPause: chunkIndex === 0 ? firstLead : chunkGap / 1000,
     trimTailSec: chunkIndex === chunks.length - 1 ? trimTailSec : 0,
 
-    estimatedDuration: estimateDuration(text, delivery.tempo),
-    key: makeKey(voiceId, delivery.kokoroSpeed, text),
+    estimatedDuration: estimateDuration(text, delivery.tempo, caps.supportsSpeed),
+    key: makeCacheKey({
+      engineId: caps.id,
+      voiceId,
+      synthSpeed: delivery.synthSpeed,
+      instructions,
+      text
+    }),
 
     nuance,
     character: element.character
@@ -305,14 +429,32 @@ export function buildLineUnits({
 /**
  * Units for a one-off audition in the Cast Studio — no cue gaps, no lead-in.
  */
-export function buildPreviewUnits({ text, voiceProfile, tuning = null, nuance = null, masterSpeed = 1.0 }) {
+export function buildPreviewUnits({
+  text,
+  voiceProfile,
+  tuning = null,
+  nuance = null,
+  masterSpeed = 1.0,
+  engine = null
+}) {
+  const caps = capsFor(engine);
   const resolvedNuance = nuance || analyzeLineNuance({ text, speakerType: 'CHARACTER' });
   const spoken = resolvedNuance.cleanSpeech || text || '';
-  const chunks = chunkSpeech(spoken);
+  const chunks = chunkSpeech(spoken, caps.maxChunkChars);
   if (chunks.length === 0) return [];
 
-  const delivery = resolveDelivery({ nuance: resolvedNuance, voiceProfile, tuning, masterSpeed });
-  const voiceId = voiceProfile.kokoroId || voiceProfile.id || 'af_heart';
+  const delivery = resolveDelivery({ nuance: resolvedNuance, voiceProfile, tuning, masterSpeed, caps });
+  const voiceId = voiceIdFor(engine, voiceProfile);
+
+  const instructions = caps.supportsInstructions
+    ? composeInstructions({
+        direction: (tuning && tuning.direction) || '',
+        nuance: resolvedNuance,
+        tempo: delivery.tempo,
+        pitch: delivery.pitch,
+        persona: voiceProfile.tone || ''
+      })
+    : null;
 
   return chunks.map((chunkText, chunkIndex) => ({
     lineIndex: -1,
@@ -323,7 +465,9 @@ export function buildPreviewUnits({ text, voiceProfile, tuning = null, nuance = 
 
     text: chunkText,
     voiceId,
-    kokoroSpeed: delivery.kokoroSpeed,
+    engineId: caps.id,
+    synthSpeed: delivery.synthSpeed,
+    instructions,
     playbackRate: delivery.playbackRate,
     gain: delivery.gain,
     filter: delivery.filter,
@@ -334,8 +478,14 @@ export function buildPreviewUnits({ text, voiceProfile, tuning = null, nuance = 
     overlapMode: 'sequential',
     trimTailSec: 0,
     leadPause: chunkIndex === 0 ? 0 : CHUNK_GAP_MS / 1000,
-    estimatedDuration: estimateDuration(chunkText, delivery.tempo),
-    key: makeKey(voiceId, delivery.kokoroSpeed, chunkText),
+    estimatedDuration: estimateDuration(chunkText, delivery.tempo, caps.supportsSpeed),
+    key: makeCacheKey({
+      engineId: caps.id,
+      voiceId,
+      synthSpeed: delivery.synthSpeed,
+      instructions,
+      text: chunkText
+    }),
 
     nuance: resolvedNuance,
     character: 'PREVIEW'

@@ -1,14 +1,23 @@
 import { parseFountainScript } from './fountain-parser.js';
 import { parsePdfScreenplay } from './pdf-parser.js';
 import { SAMPLE_SCRIPTS } from './sample-scripts.js';
-import { getSuggestedVoiceForCharacter, getDefaultNarratorVoice } from '../audio/voice-catalog.js';
+import { ENGINE_IDS as ENGINE_ID_MAP } from '../audio/engine-contract.js';
+import {
+  getSuggestedVoiceForCharacter,
+  getDefaultNarratorVoice,
+  makeDefaultAssignment,
+  isCastable,
+  DEFAULT_NARRATOR_VOICE_ID
+} from '../audio/voice-catalog.js';
 import {
   generateScriptKey,
   saveScriptCastConfig,
   loadScriptCastConfig,
   saveAppState,
   loadAppState,
-  savePlaybackPosition
+  savePlaybackPosition,
+  backupCastConfig,
+  CAST_VERSION
 } from '../utils/storage.js';
 
 export class ScriptStore {
@@ -20,7 +29,9 @@ export class ScriptStore {
     this.customScriptData = null;
 
     this.castAssignments = new Map(); // characterName -> { voiceId, pitchOffset, speedMultiplier, tonePreset }
-    this.narratorVoiceId = 'bm_george';
+    this.narratorVoiceId = DEFAULT_NARRATOR_VOICE_ID;
+    // Set by the cast migration, consumed once by the UI to offer an undo.
+    this.pendingCastMigration = null;
     this.activeLineIndex = 0;
     this.selectedScene = null;
     this.characterFilter = null;
@@ -180,6 +191,12 @@ export class ScriptStore {
         }
       }
 
+      // Casts saved before voices were ranked may hold voices the auto-caster
+      // would never pick today.
+      if ((savedConfig.castVersion || 1) < CAST_VERSION) {
+        this._migrateCastToCurrentVersion(parsedScript);
+      }
+
       // Check if any new characters were detected that weren't in saved config
       const usedVoices = new Set([this.narratorVoiceId]);
       for (const assignment of this.castAssignments.values()) {
@@ -194,12 +211,7 @@ export class ScriptStore {
             usedVoices
           });
           usedVoices.add(suggestedVoiceId);
-          this.castAssignments.set(key, {
-            voiceId: suggestedVoiceId,
-            pitchOffset: 0,
-            speedMultiplier: 1.0,
-            tonePreset: 'natural'
-          });
+          this.castAssignments.set(key, makeDefaultAssignment(suggestedVoiceId));
         }
       }
 
@@ -222,12 +234,7 @@ export class ScriptStore {
           usedVoices
         });
         usedVoices.add(suggestedVoiceId);
-        this.castAssignments.set(char.name.toUpperCase().trim(), {
-          voiceId: suggestedVoiceId,
-          pitchOffset: 0,
-          speedMultiplier: 1.0,
-          tonePreset: 'natural'
-        });
+        this.castAssignments.set(char.name.toUpperCase().trim(), makeDefaultAssignment(suggestedVoiceId));
       }
 
       this.activeLineIndex = 0;
@@ -278,15 +285,106 @@ export class ScriptStore {
     });
   }
 
-  updateCharacterVoice(characterName, { voiceId, pitchOffset, speedMultiplier, tonePreset }) {
+  /**
+   * Lift a pre-ranking cast onto voices that clear the quality floor.
+   *
+   * Only assignments that are *both* automatic and below the floor are touched.
+   * Two deliberate omissions:
+   *
+   *  - A voice someone chose is left alone even if it grades badly. Nothing in v1
+   *    data distinguishes "auto-assigned" from "chosen" directly, so a moved
+   *    slider or a tone chip is taken as evidence somebody cared. Silently
+   *    replacing a villain deliberately cast as Onyx would be worse than leaving
+   *    a rough voice in place.
+   *  - An automatic assignment that already clears the floor is left alone too.
+   *    It is not the defect, and re-casting it would churn a listener's familiar
+   *    cast for no audible gain.
+   *
+   * Characters are walked in the parser's order — descending line count — so the
+   * best remaining voices go to the largest parts.
+   *
+   * Records `pendingCastMigration` for the UI to offer an undo; the backup it
+   * refers to is written before anything changes.
+   */
+  _migrateCastToCurrentVersion(parsedScript) {
+    backupCastConfig(this.scriptKey);
+
+    const isDeliberate = (a) =>
+      a.auto === false ||
+      (a.pitchOffset || 0) !== 0 ||
+      (a.speedMultiplier || 1.0) !== 1.0 ||
+      (a.tonePreset && a.tonePreset !== 'natural');
+
+    const changed = [];
+
+    // Only upgrade the narrator if it is still literally the old default; anything
+    // else is a choice.
+    if (this.narratorVoiceId === 'bm_george') {
+      this.narratorVoiceId = DEFAULT_NARRATOR_VOICE_ID;
+      changed.push('NARRATOR');
+    }
+
+    // Reserve every voice that is staying put, so a re-cast cannot collide with
+    // one and produce two characters sharing a voice.
+    const usedVoices = new Set([this.narratorVoiceId]);
+    for (const assignment of this.castAssignments.values()) {
+      if (!assignment.voiceId) continue;
+      if (isDeliberate(assignment) || isCastable(assignment.voiceId)) {
+        usedVoices.add(assignment.voiceId);
+      }
+    }
+
+    for (const char of parsedScript.characters) {
+      const key = char.name.toUpperCase().trim();
+      const existing = this.castAssignments.get(key);
+      if (!existing || isDeliberate(existing) || isCastable(existing.voiceId)) continue;
+
+      const replacement = getSuggestedVoiceForCharacter(char.name, {
+        sampleLine: char.sampleLine,
+        usedVoices
+      });
+      usedVoices.add(replacement);
+      this.castAssignments.set(key, { ...existing, voiceId: replacement, auto: true });
+      changed.push(key);
+    }
+
+    this.pendingCastMigration = changed.length > 0
+      ? { scriptKey: this.scriptKey, changed, count: changed.length }
+      : null;
+
+    // Stamp the new version even when nothing changed, so this does not re-run
+    // on every load of an already-fine cast.
+    this.saveCurrentState();
+  }
+
+  updateCharacterVoice(characterName, { voiceId, pitchOffset, speedMultiplier, tonePreset, direction, engineId }) {
     const key = characterName.toUpperCase().trim();
-    const existing = this.castAssignments.get(key) || { voiceId: 'am_adam', pitchOffset: 0, speedMultiplier: 1.0, tonePreset: 'natural' };
+    // This runs for slider drags too, so a character with no assignment yet had
+    // `am_adam` — the worst-graded voice in the set — written to localStorage
+    // simply because someone nudged their pitch.
+    const existing = this.castAssignments.get(key) || makeDefaultAssignment();
     
+    // A voice choice belongs to the engine it was made under. Writing it into
+    // that engine's slot is what lets a listener keep a Kokoro cast and an OpenAI
+    // cast for the same script and switch between them without losing either.
+    const voiceIds = { ...(existing.voiceIds || {}) };
+    if (voiceId !== undefined && engineId) voiceIds[engineId] = voiceId;
+
     this.castAssignments.set(key, {
-      voiceId: voiceId !== undefined ? voiceId : existing.voiceId,
+      // The legacy flat field tracks the local engine, which is what saved
+      // configs and any older code still expect to find here.
+      voiceId: (voiceId !== undefined && (!engineId || engineId === ENGINE_ID_MAP.KOKORO))
+        ? voiceId
+        : existing.voiceId,
+      voiceIds,
+      direction: direction !== undefined ? direction : (existing.direction || ''),
       pitchOffset: pitchOffset !== undefined ? pitchOffset : existing.pitchOffset,
       speedMultiplier: speedMultiplier !== undefined ? speedMultiplier : existing.speedMultiplier,
-      tonePreset: tonePreset !== undefined ? tonePreset : (existing.tonePreset || 'natural')
+      tonePreset: tonePreset !== undefined ? tonePreset : (existing.tonePreset || 'natural'),
+      // Every path into here is a human touching a control, so this assignment
+      // is now a decision. The cast migration reads this to know what it may
+      // safely re-cast and what it must leave alone.
+      auto: false
     });
 
     this.saveCurrentState();

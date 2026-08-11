@@ -1,5 +1,6 @@
 import { ModelCacheManager, DEFAULT_MODEL_ID } from './model-cache-manager.js';
 import { getAudioContext } from './audio-context.js';
+import { ENGINE_IDS } from './engine-contract.js';
 
 /**
  * Neural synthesis service.
@@ -48,6 +49,32 @@ export class KokoroNeuralEngine {
     this.pending = new Map();         // key -> { promise, priority }
     this.progressListeners = new Set();
     this.initPromise = null;
+  }
+
+  get capabilities() {
+    return {
+      id: ENGINE_IDS.KOKORO,
+      label: 'Kokoro 82M (local)',
+      // `speed` moves tempo while preserving pitch, which is what makes the
+      // tempo/pitch cancellation in the director possible.
+      supportsSpeed: true,
+      supportsInstructions: false,
+      isLocal: true,
+      metered: false,
+      nativeSampleRate: 24000,
+      // Small, so playback can start before a long speech has finished rendering
+      // and so no single request approaches the model's token ceiling.
+      maxChunkChars: 190,
+      // One ONNX session, one inference at a time.
+      concurrency: 1,
+      // A failed local download is exactly the case the browser's built-in voice
+      // exists to cover.
+      onUnavailable: 'webspeech'
+    };
+  }
+
+  resolveVoiceId(voiceProfile) {
+    return (voiceProfile && (voiceProfile.kokoroId || voiceProfile.id)) || 'af_heart';
   }
 
   onProgress(callback) {
@@ -323,7 +350,7 @@ export class KokoroNeuralEngine {
           key: unit.key,
           text: unit.text,
           voiceId: unit.voiceId,
-          speed: unit.kokoroSpeed,
+          speed: unit.synthSpeed,
           priority
         }
       });

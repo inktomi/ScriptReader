@@ -1,5 +1,16 @@
 import { getIconSvg } from '../utils/icons.js';
-import { VOICE_CATALOG, getVoiceById, getSuggestedVoiceForCharacter, getDefaultNarratorVoice } from '../audio/voice-catalog.js';
+import { formatPitchOffset } from '../audio/performance-director.js';
+import { escapeHtml } from '../utils/escape-html.js';
+import {
+  VOICE_CATALOG,
+  getVoiceById,
+  getVoicesForEngine,
+  getSuggestedVoiceForCharacter,
+  getDefaultNarratorVoice,
+  makeDefaultAssignment
+} from '../audio/voice-catalog.js';
+import { ENGINE_IDS } from '../audio/engine-contract.js';
+import { KOKORO_GRADES, gradeLabel, gradeColor } from '../audio/voice-grades.js';
 
 export function createVoiceConfigModal({
   scriptStore,
@@ -27,22 +38,39 @@ export function createVoiceConfigModal({
     if (existing) {
       workingAssignments.set(key, { ...existing });
     } else {
-      workingAssignments.set(key, {
-        voiceId: 'am_adam',
-        pitchOffset: 0,
-        speedMultiplier: 1.0,
-        tonePreset: 'natural'
-      });
+      workingAssignments.set(key, makeDefaultAssignment());
     }
   }
 
   let currentlyPlayingChar = null;
 
-  function buildVoiceOptions(selectedId) {
-    const femaleVoices = VOICE_CATALOG.filter(v => v.sex === 'Female');
-    const maleVoices = VOICE_CATALOG.filter(v => v.sex === 'Male');
+  // The casting UI has to show the pool the *active* engine can actually speak
+  // with; the two id spaces are disjoint.
+  const engineId = audioManager.engineId;
+  const enginePool = getVoicesForEngine(engineId);
+  const supportsDirection = audioManager.capabilities.supportsInstructions;
 
-    const buildGroup = (label, voices) => `
+  /** This character's voice under the active engine, falling back to the legacy field. */
+  function voiceIdOf(assignment) {
+    return (assignment.voiceIds && assignment.voiceIds[engineId]) || assignment.voiceId;
+  }
+
+  /**
+   * Honest quality badge, derived from upstream's grade rather than from a stored
+   * label. The Kokoro pool is graded; the OpenAI pool is not, so it says what it
+   * is instead of inventing a tier.
+   */
+  function qualityBadge(voiceId) {
+    const grade = KOKORO_GRADES[voiceId];
+    return grade ? `${gradeLabel(voiceId)} · ${grade}` : 'Cloud';
+  }
+
+  function buildVoiceOptions(selectedId) {
+    const femaleVoices = enginePool.filter(v => v.sex === 'Female');
+    const maleVoices = enginePool.filter(v => v.sex === 'Male');
+    const neutralVoices = enginePool.filter(v => v.sex === 'Neutral');
+
+    const buildGroup = (label, voices) => voices.length === 0 ? '' : `
       <optgroup label="${label}">
         ${voices.map(v => `
           <option value="${v.id}" ${v.id === selectedId ? 'selected' : ''}>
@@ -52,11 +80,13 @@ export function createVoiceConfigModal({
       </optgroup>
     `;
 
-    return buildGroup('👩 Female Voices', femaleVoices) + buildGroup('👨 Male Voices', maleVoices);
+    return buildGroup('👩 Female Voices', femaleVoices)
+      + buildGroup('👨 Male Voices', maleVoices)
+      + buildGroup('◐ Neutral Voices', neutralVoices);
   }
 
   function renderContent() {
-    const narratorProfile = getVoiceById(workingNarratorVoiceId);
+    const narratorProfile = getVoiceById(workingNarratorVoiceId, engineId);
 
     modal.innerHTML = `
       <div class="modal-card voice-config-card">
@@ -114,7 +144,7 @@ export function createVoiceConfigModal({
                 <div style="display: flex; align-items: center; justify-content: space-between;">
                   <span style="font-weight: 800; font-size: 1rem; color: #F59E0B;">THE NARRATOR</span>
                   <span class="badge-voice" style="background: rgba(245, 158, 11, 0.15); color: #F59E0B; border: 1px solid rgba(245, 158, 11, 0.3);">
-                    ${narratorProfile.qualityGrade}
+                    ${escapeHtml(qualityBadge(narratorProfile.id))}
                   </span>
                 </div>
                 <div style="font-size: 0.78rem; color: var(--text-secondary); margin-top: 2px;">
@@ -147,45 +177,50 @@ export function createVoiceConfigModal({
           <div class="voice-cards-grid">
             ${characters.map(char => {
               const charKey = char.name.toUpperCase().trim();
-              const assignment = workingAssignments.get(charKey) || {
-                voiceId: 'am_adam',
-                pitchOffset: 0,
-                speedMultiplier: 1.0,
-                tonePreset: 'natural'
-              };
-              const voiceProfile = getVoiceById(assignment.voiceId);
+              const assignment = workingAssignments.get(charKey) || makeDefaultAssignment();
+              const voiceProfile = getVoiceById(voiceIdOf(assignment), engineId);
               const percent = Math.round((char.lineCount / totalDialogue) * 100);
               const isPlaying = currentlyPlayingChar === charKey;
 
+              // Character name and sample line both come from the uploaded
+              // script. Escaped in `data-char` too, where an unescaped quote
+              // would close the attribute and let the rest of the cue become
+              // markup; the parser decodes it back, so `dataset.char` still
+              // matches the key the assignments map uses.
+              const charAttr = escapeHtml(char.name);
+
               return `
-                <div class="voice-card ${isPlaying ? 'is-previewing' : ''}" data-char="${char.name}">
+                <div class="voice-card ${isPlaying ? 'is-previewing' : ''}" data-char="${charAttr}">
                   <div class="voice-card-header">
                     <div class="char-avatar" style="background: ${voiceProfile.avatarBg}; width: 42px; height: 42px;">
-                      ${char.name.substring(0, 2).toUpperCase()}
+                      ${escapeHtml(char.name.substring(0, 2).toUpperCase())}
                     </div>
                     <div style="flex: 1; min-width: 0;">
                       <div style="display: flex; align-items: center; justify-content: space-between;">
-                        <span class="char-name" style="font-size: 0.95rem;">${char.name}</span>
+                        <span class="char-name" style="font-size: 0.95rem;">${escapeHtml(char.name)}</span>
                         <span class="badge-lines">${char.lineCount} lines (${percent}%)</span>
                       </div>
                       <div style="font-size: 0.75rem; color: #06B6D4; font-weight: 600; margin-top: 1px;">
                         ${voiceProfile.name} • ${voiceProfile.sex} ${voiceProfile.accent}
+                        <span style="color: ${gradeColor(voiceProfile.id)}; font-weight: 700;">
+                          · ${escapeHtml(qualityBadge(voiceProfile.id))}
+                        </span>
                       </div>
                     </div>
                   </div>
 
                   <!-- Character Sample Line Quote -->
                   <div class="char-sample-quote" title="Excerpt from screenplay">
-                    "${char.sampleLine || 'Ready for readthrough.'}"
+                    "${escapeHtml(char.sampleLine || 'Ready for readthrough.')}"
                   </div>
 
                   <!-- Voice Selection Row -->
                   <div class="voice-card-controls">
                     <div class="voice-select-row">
-                      <select class="voice-select modal-char-select" data-char="${char.name}">
-                        ${buildVoiceOptions(assignment.voiceId)}
+                      <select class="voice-select modal-char-select" data-char="${charAttr}">
+                        ${buildVoiceOptions(voiceIdOf(assignment))}
                       </select>
-                      <button class="btn btn-secondary btn-audition-char ${isPlaying ? 'btn-active' : ''}" data-char="${char.name}" style="padding: 7px 12px; white-space: nowrap;">
+                      <button class="btn btn-secondary btn-audition-char ${isPlaying ? 'btn-active' : ''}" data-char="${charAttr}" style="padding: 7px 12px; white-space: nowrap;">
                         ${isPlaying ? '⏹️ Stop' : `${getIconSvg('volume', 14)} Listen`}
                       </button>
                     </div>
@@ -199,13 +234,13 @@ export function createVoiceConfigModal({
                     <div class="voice-sliders-container">
                       <div class="slider-group">
                         <span class="slider-label">Pitch:</span>
-                        <input type="range" class="slider-input modal-pitch-slider" data-char="${char.name}" min="-50" max="50" value="${assignment.pitchOffset || 0}">
-                        <span class="slider-val modal-pitch-val">${assignment.pitchOffset > 0 ? '+' : ''}${assignment.pitchOffset || 0}%</span>
+                        <input type="range" class="slider-input modal-pitch-slider" data-char="${charAttr}" min="-50" max="50" value="${assignment.pitchOffset || 0}">
+                        <span class="slider-val modal-pitch-val">${formatPitchOffset(assignment.pitchOffset)}</span>
                       </div>
 
                       <div class="slider-group">
                         <span class="slider-label">Speed:</span>
-                        <input type="range" class="slider-input modal-speed-slider" data-char="${char.name}" min="50" max="150" value="${Math.round((assignment.speedMultiplier || 1.0) * 100)}">
+                        <input type="range" class="slider-input modal-speed-slider" data-char="${charAttr}" min="50" max="150" value="${Math.round((assignment.speedMultiplier || 1.0) * 100)}">
                         <span class="slider-val modal-speed-val">${(assignment.speedMultiplier || 1.0).toFixed(1)}x</span>
                       </div>
                     </div>
@@ -213,11 +248,26 @@ export function createVoiceConfigModal({
                     <!-- Tone Presets -->
                     <div class="tone-presets-row">
                       <span style="font-size: 0.7rem; color: var(--text-muted); font-weight: 600;">Style:</span>
-                      <button class="btn-tone-chip ${assignment.tonePreset === 'natural' ? 'active' : ''}" data-char="${char.name}" data-preset="natural">Natural</button>
-                      <button class="btn-tone-chip ${assignment.tonePreset === 'dramatic' ? 'active' : ''}" data-char="${char.name}" data-preset="dramatic">Dramatic</button>
-                      <button class="btn-tone-chip ${assignment.tonePreset === 'urgent' ? 'active' : ''}" data-char="${char.name}" data-preset="urgent">Urgent</button>
-                      <button class="btn-tone-chip ${assignment.tonePreset === 'whispering' ? 'active' : ''}" data-char="${char.name}" data-preset="whispering">Intimate</button>
+                      <button class="btn-tone-chip ${assignment.tonePreset === 'natural' ? 'active' : ''}" data-char="${charAttr}" data-preset="natural">Natural</button>
+                      <button class="btn-tone-chip ${assignment.tonePreset === 'dramatic' ? 'active' : ''}" data-char="${charAttr}" data-preset="dramatic">Dramatic</button>
+                      <button class="btn-tone-chip ${assignment.tonePreset === 'urgent' ? 'active' : ''}" data-char="${charAttr}" data-preset="urgent">Urgent</button>
+                      <button class="btn-tone-chip ${assignment.tonePreset === 'whispering' ? 'active' : ''}" data-char="${charAttr}" data-preset="whispering">Intimate</button>
                     </div>
+
+                    ${supportsDirection ? `
+                      <div style="margin-top: 10px;">
+                        <label style="font-size: 0.7rem; color: var(--text-muted); font-weight: 600;">
+                          Direction — describe the voice in your own words
+                        </label>
+                        <textarea class="modal-direction-input" data-char="${charAttr}" rows="2"
+                          placeholder="e.g. Gravelly ex-cop, late fifties, world-weary. Never raises his voice."
+                          style="width: 100%; margin-top: 4px; padding: 7px 9px; border-radius: 6px; resize: vertical;
+                                 background: rgba(255,255,255,0.04); color: var(--text-primary, #fff);
+                                 border: 1px solid rgba(255,255,255,0.12); font-size: 0.78rem;
+                                 font-family: inherit; line-height: 1.45;"
+                        >${escapeHtml(assignment.direction || '')}</textarea>
+                      </div>
+                    ` : ''}
                   </div>
                 </div>
               `;
@@ -342,9 +392,28 @@ export function createVoiceConfigModal({
         const existing = workingAssignments.get(charKey) || {};
         workingAssignments.set(charKey, {
           ...existing,
-          voiceId: e.target.value
+          // Written into this engine's slot so the character's casting on the
+          // other engine survives. `voiceId` stays mirrored for the local engine
+          // because saved configs and older code still read it.
+          voiceIds: { ...(existing.voiceIds || {}), [engineId]: e.target.value },
+          voiceId: engineId === ENGINE_IDS.KOKORO ? e.target.value : existing.voiceId,
+          auto: false
         });
         renderContent();
+      });
+    });
+
+    // Per-character direction. Applied on blur rather than per keystroke: the
+    // text feeds the composed instructions, which feed the cache key, so saving
+    // mid-word would invalidate — and on a metered engine re-buy — every one of
+    // this character's rendered lines on the way to a finished sentence.
+    modal.querySelectorAll('.modal-direction-input').forEach(field => {
+      field.addEventListener('blur', (e) => {
+        const charKey = field.dataset.char.toUpperCase().trim();
+        const existing = workingAssignments.get(charKey) || {};
+        const next = e.target.value.trim();
+        if ((existing.direction || '') === next) return;
+        workingAssignments.set(charKey, { ...existing, direction: next, auto: false });
       });
     });
 
@@ -364,15 +433,22 @@ export function createVoiceConfigModal({
         currentlyPlayingChar = charKey;
         renderContent();
 
-        const assignment = workingAssignments.get(charKey) || { voiceId: 'am_adam', pitchOffset: 0, speedMultiplier: 1.0 };
+        const assignment = workingAssignments.get(charKey) || makeDefaultAssignment();
         const charObj = characters.find(c => c.name.toUpperCase().trim() === charKey);
         const sampleText = charObj ? charObj.sampleLine : null;
 
+        // Read the direction out of the live field rather than the working copy:
+        // auditioning without leaving the textarea first is the normal way to try
+        // a direction out, and blur has not fired yet at that point.
+        const liveDirection = modal.querySelector(`.modal-direction-input[data-char="${CSS.escape(charName)}"]`);
+        const direction = liveDirection ? liveDirection.value.trim() : (assignment.direction || '');
+
         await audioManager.previewVoice(
-          assignment.voiceId,
+          voiceIdOf(assignment),
           sampleText,
           assignment.pitchOffset || 0,
-          assignment.speedMultiplier || 1.0
+          assignment.speedMultiplier || 1.0,
+          direction
         );
 
         currentlyPlayingChar = null;
@@ -389,9 +465,9 @@ export function createVoiceConfigModal({
         const card = slider.closest('.voice-card');
         if (card) {
           const label = card.querySelector('.modal-pitch-val');
-          if (label) label.textContent = `${val > 0 ? '+' : ''}${val}%`;
+          if (label) label.textContent = formatPitchOffset(val);
         }
-        const existing = workingAssignments.get(charKey) || { voiceId: 'am_adam' };
+        const existing = workingAssignments.get(charKey) || makeDefaultAssignment();
         workingAssignments.set(charKey, { ...existing, pitchOffset: val });
       });
     });
@@ -407,7 +483,7 @@ export function createVoiceConfigModal({
           const label = card.querySelector('.modal-speed-val');
           if (label) label.textContent = `${val.toFixed(1)}x`;
         }
-        const existing = workingAssignments.get(charKey) || { voiceId: 'am_adam' };
+        const existing = workingAssignments.get(charKey) || makeDefaultAssignment();
         workingAssignments.set(charKey, { ...existing, speedMultiplier: val });
       });
     });
@@ -418,7 +494,7 @@ export function createVoiceConfigModal({
         const charName = chip.dataset.char;
         const charKey = charName.toUpperCase().trim();
         const preset = chip.dataset.preset;
-        const existing = workingAssignments.get(charKey) || { voiceId: 'am_adam' };
+        const existing = workingAssignments.get(charKey) || makeDefaultAssignment();
 
         let pitchOffset = 0;
         let speedMultiplier = 1.0;

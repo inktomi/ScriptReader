@@ -1,4 +1,5 @@
 import { getIconSvg } from '../utils/icons.js';
+import { escapeHtml } from '../utils/escape-html.js';
 
 export function createSceneDrawer({
   scriptStore,
@@ -37,7 +38,7 @@ export function createSceneDrawer({
                 #${s.number}
               </span>
               <div style="flex: 1;">
-                <div style="font-weight: 700; font-size: 0.85rem; color: #FFFFFF;">${s.title}</div>
+                <div style="font-weight: 700; font-size: 0.85rem; color: #FFFFFF;">${escapeHtml(s.title)}</div>
                 <div style="font-size: 0.7rem; color: var(--text-muted); margin-top: 4px;">Line ${s.lineIndex + 1}</div>
               </div>
             </div>

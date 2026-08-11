@@ -10,7 +10,7 @@ export function createHeader({
   onToggleCast,
   onToggleScenes,
   onToggleHelp,
-  onEngineChange,
+  onOpenEngineSettings,
   currentEngine = ENGINE_TYPES.KOKORO_NEURAL
 }) {
   const header = document.createElement('header');
@@ -58,8 +58,8 @@ export function createHeader({
         <span>🤗 Models</span>
       </button>
 
-      <!-- Neural Engine Status Badge -->
-      <div class="engine-badge active" id="engine-status-badge" style="cursor: pointer;" title="Kokoro-82M High-Fidelity Local Neural Voice Engine (Click to view local cache & model hub)">
+      <!-- Voice Engine Status Badge -->
+      <div class="engine-badge active" id="engine-status-badge" style="cursor: pointer;" title="Voice engine — click to switch between local and cloud">
         ${getIconSvg('cpu', 14)}
         <span id="engine-badge-text">Kokoro Neural</span>
       </div>
@@ -94,7 +94,7 @@ export function createHeader({
   header.querySelector('#btn-import-script').addEventListener('click', onOpenUpload);
   header.querySelector('#btn-voice-setup').addEventListener('click', onOpenVoiceConfig);
   header.querySelector('#btn-hf-hub').addEventListener('click', onOpenHfHub);
-  header.querySelector('#engine-status-badge').addEventListener('click', onOpenHfHub);
+  header.querySelector('#engine-status-badge').addEventListener('click', onOpenEngineSettings);
   header.querySelector('#btn-toggle-cast').addEventListener('click', onToggleCast);
   header.querySelector('#btn-toggle-scenes').addEventListener('click', onToggleScenes);
   header.querySelector('#btn-help').addEventListener('click', onToggleHelp);
@@ -105,7 +105,31 @@ export function createHeader({
     }
   }
 
-  function updateEngineCacheBadge({ isModelCached, formattedSize, isFullyCached }) {
+  /**
+   * Cloud mode is amber, not red: it is a legitimate choice and the better-sounding
+   * one. But it must never look like the safe default, because it is the mode in
+   * which the script leaves the machine.
+   */
+  function setEngineBadge(engineId) {
+    const badgeText = header.querySelector('#engine-badge-text');
+    const badge = header.querySelector('#engine-status-badge');
+    if (!badgeText || !badge) return false;
+
+    if (engineId === ENGINE_TYPES.OPENAI) {
+      badgeText.textContent = '☁ OpenAI (Cloud)';
+      badge.style.color = '#F59E0B';
+      badge.style.borderColor = 'rgba(245, 158, 11, 0.45)';
+      badge.style.background = 'rgba(245, 158, 11, 0.12)';
+      badge.title = 'OpenAI gpt-4o-mini-tts — your dialogue is sent to OpenAI to be spoken. Click to change.';
+      return true;
+    }
+    return false;
+  }
+
+  function updateEngineCacheBadge({ isModelCached, formattedSize, isFullyCached, engineId }) {
+    // The cache badge describes Kokoro's weights, which mean nothing in cloud mode.
+    if (setEngineBadge(engineId)) return;
+
     const badgeText = header.querySelector('#engine-badge-text');
     const badge = header.querySelector('#engine-status-badge');
     if (badgeText && badge) {
@@ -128,6 +152,7 @@ export function createHeader({
   return {
     element: header,
     setSelectedSample,
-    updateEngineCacheBadge
+    updateEngineCacheBadge,
+    setEngineBadge
   };
 }

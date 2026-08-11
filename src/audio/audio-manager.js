@@ -1,14 +1,28 @@
 import { WebSpeechEngine } from './web-speech-engine.js';
 import { KokoroNeuralEngine } from './kokoro-engine.js';
 import { ModelCacheManager, DEFAULT_MODEL_ID } from './model-cache-manager.js';
-import { getVoiceById } from './voice-catalog.js';
+import {
+  getVoiceById,
+  getVoicesForEngine,
+  mapVoiceAcrossEngines,
+  DEFAULT_VOICE_ID,
+  DEFAULT_NARRATOR_VOICE_ID
+} from './voice-catalog.js';
 import { PlaybackScheduler } from './playback-scheduler.js';
 import { buildLineUnits, buildPreviewUnits, computeCueGapMs } from './performance-director.js';
 import { getAudioContext, resumeAudioContext, suspendAudioContext } from './audio-context.js';
+import { ENGINE_IDS } from './engine-contract.js';
+import { OpenAiTtsEngine } from './openai-engine.js';
+import { loadEngineSettings, saveEngineSettings } from '../utils/credentials.js';
 
+/**
+ * Retained so existing imports keep resolving; `ENGINE_IDS` in engine-contract.js
+ * is the real registry now.
+ */
 export const ENGINE_TYPES = {
-  KOKORO_NEURAL: 'kokoro_neural',
-  WEB_SPEECH: 'web_speech'
+  KOKORO_NEURAL: ENGINE_IDS.KOKORO,
+  OPENAI: ENGINE_IDS.OPENAI,
+  WEB_SPEECH: ENGINE_IDS.WEB_SPEECH
 };
 
 export const PLAYBACK_STATES = {
@@ -56,15 +70,28 @@ const PLAYHEAD_RETAIN_SEC = 5;
 export class ScreenplayAudioManager {
   constructor() {
     this.webSpeechEngine = new WebSpeechEngine();
-    this.kokoroEngine = new KokoroNeuralEngine();
     this.modelCacheManager = ModelCacheManager;
-    this.activeEngineType = ENGINE_TYPES.KOKORO_NEURAL;
+
+    // Constructed eagerly but inert until init(): the OpenAI engine holds nothing
+    // but a key lookup, and Kokoro does not touch the network until asked.
+    this._engines = new Map([
+      [ENGINE_IDS.KOKORO, new KokoroNeuralEngine()],
+      [ENGINE_IDS.OPENAI, new OpenAiTtsEngine()]
+    ]);
+
+    const saved = loadEngineSettings();
+    this.engineId = this._engines.has(saved.engineId) ? saved.engineId : ENGINE_IDS.KOKORO;
+    this.engine = this._engines.get(this.engineId);
+
+    this._progressListeners = new Set();
+    this._unbindProgress = null;
+    this._bindEngineProgress();
 
     this.scheduler = null;
 
     this.scriptElements = [];
     this.characterAssignments = new Map();
-    this.narratorVoiceId = 'bm_george';
+    this.narratorVoiceId = DEFAULT_NARRATOR_VOICE_ID;
 
     this.currentIndex = 0;
     this.playbackState = PLAYBACK_STATES.IDLE;
@@ -110,12 +137,56 @@ export class ScreenplayAudioManager {
     this.usingWebSpeechFallback = false;
   }
 
+  /**
+   * The Kokoro instance specifically — *not* "whichever engine is active".
+   *
+   * The HF model hub and the download toast are about model *weights*: a cache
+   * badge, a byte-progress bar, a retry button. Pointing those at the active
+   * engine would make the hub's Retry button initialise OpenAI, which has no
+   * weights to retry. This accessor is the correct shape for those callers and
+   * stays after the migration.
+   */
+  get kokoroEngine() {
+    return this._engines.get(ENGINE_IDS.KOKORO);
+  }
+
+  get capabilities() {
+    return this.engine.capabilities;
+  }
+
+  /**
+   * Subscribe to progress from whichever engine is active. Indirected through the
+   * manager because a direct `engine.onProgress` subscription would stay bound to
+   * whichever engine existed at boot and go silent after a switch.
+   */
+  onEngineProgress(callback) {
+    this._progressListeners.add(callback);
+    return () => this._progressListeners.delete(callback);
+  }
+
+  _bindEngineProgress() {
+    if (this._unbindProgress) this._unbindProgress();
+    this._unbindProgress = this.engine.onProgress((payload) => {
+      for (const cb of this._progressListeners) {
+        try {
+          cb({ ...payload, engineId: this.engineId });
+        } catch (err) {
+          console.error('Engine progress subscriber error:', err);
+        }
+      }
+    });
+  }
+
   async init() {
     await this.webSpeechEngine.init();
-    // Warm the neural model in the background so the first Play is instant.
-    this.kokoroEngine.init().catch(err => {
-      console.warn('Kokoro background preload notice:', err);
-    });
+    // Only warm the neural weights when they are what will actually be used.
+    // Pulling a few hundred megabytes in the background for a listener who has
+    // chosen cloud voices is a wait they never benefit from.
+    if (this.engineId === ENGINE_IDS.KOKORO) {
+      this.engine.init().catch(err => {
+        console.warn('Kokoro background preload notice:', err);
+      });
+    }
   }
 
   async getCacheStatus() {
@@ -167,11 +238,34 @@ export class ScreenplayAudioManager {
     this._restartIfPlaying();
   }
 
-  setEngineType(engineType) {
-    if (engineType === this.activeEngineType) return;
+  /**
+   * Switch synthesis engines.
+   *
+   * `_invalidateUnits()` is mandatory here, not defensive. Every cache key carries
+   * the engine id, the engine-native voice id, and a hash of the instruction text,
+   * so memoised units from the previous engine reference keys the new one will
+   * never populate — scheduling would simply wait forever for audio that is not
+   * coming. The old `setEngineType` omitted this, which is why it could never
+   * safely have been called.
+   */
+  setEngine(engineId) {
+    if (!this._engines.has(engineId) || engineId === this.engineId) return;
+
     this.stop();
-    this.activeEngineType = engineType;
-    this.emit('engineChange', { engineType });
+    this.engineId = engineId;
+    this.engine = this._engines.get(engineId);
+    this._ensureEngineVoices();
+    this._invalidateUnits();
+    this._bindEngineProgress();
+    this.usingWebSpeechFallback = false;
+    saveEngineSettings({ engineId });
+
+    this.emit('engineChange', { engineId, capabilities: this.engine.capabilities });
+  }
+
+  /** @deprecated Use setEngine(). Kept so older callers keep working. */
+  setEngineType(engineType) {
+    this.setEngine(engineType);
   }
 
   setScript(elements, characterMap = new Map(), startIndex = 0) {
@@ -180,6 +274,7 @@ export class ScreenplayAudioManager {
     this.characterAssignments = characterMap;
     this.currentIndex = Math.max(0, Math.min(this.scriptElements.length - 1, startIndex || 0));
     this._buildStageOrder();
+    this._ensureEngineVoices();
     this._invalidateUnits();
     this.emit('scriptLoaded', {
       totalLines: this.scriptElements.length,
@@ -190,12 +285,86 @@ export class ScreenplayAudioManager {
 
   setVoiceAssignment(characterName, assignment) {
     this.characterAssignments.set(characterName.toUpperCase().trim(), assignment);
+    this._ensureEngineVoices();
     this._invalidateUnits();
+  }
+
+  /**
+   * Give every character a voice the *active* engine can actually speak with.
+   *
+   * A cast is recorded per engine, because the two voice-id spaces are disjoint
+   * and neither is a translation of the other. Without this step a Kokoro cast
+   * viewed under OpenAI resolves every single character to the first voice in the
+   * pool — the whole cast collapsing to one voice, silently, because
+   * `getVoiceById` has to return *something*.
+   *
+   * Seeded ids are persisted onto the assignment objects the store owns, so the
+   * mapping is decided once and stays stable rather than being re-derived (and
+   * possibly re-shuffled) on every render.
+   */
+  /**
+   * The narrator voice translated into the active engine's pool. Stored so the
+   * choice is stable across renders, and reserved before the cast is seeded so no
+   * character is handed the narrator's voice.
+   */
+  _narratorVoiceForEngine() {
+    const saved = this.narratorVoiceId || DEFAULT_NARRATOR_VOICE_ID;
+    if (getVoicesForEngine(this.engineId).some(v => v.id === saved)) return saved;
+
+    if (!this._narratorByEngine) this._narratorByEngine = {};
+    if (!this._narratorByEngine[this.engineId]) {
+      this._narratorByEngine[this.engineId] = mapVoiceAcrossEngines(saved, this.engineId);
+    }
+    return this._narratorByEngine[this.engineId];
+  }
+
+  _ensureEngineVoices() {
+    if (this.characterAssignments.size === 0) return;
+
+    const narrator = this._narratorVoiceForEngine();
+    const used = new Set();
+
+    // Reserve what is already correct for this engine before filling gaps, so
+    // seeding can never hand out a voice another character already holds.
+    for (const assignment of this.characterAssignments.values()) {
+      const existing = assignment.voiceIds && assignment.voiceIds[this.engineId];
+      if (existing) used.add(existing);
+    }
+    if (getVoicesForEngine(this.engineId).some(v => v.id === narrator)) used.add(narrator);
+
+    // Stage order is biggest-part-first, so leads are mapped before bit parts and
+    // get first refusal on their preferred counterpart voice.
+    const order = [
+      ...this.stageOrder.filter(name => this.characterAssignments.has(name)),
+      ...[...this.characterAssignments.keys()].filter(name => !this.stageOrder.includes(name))
+    ];
+
+    for (const name of order) {
+      const assignment = this.characterAssignments.get(name);
+      if (!assignment) continue;
+      if (!assignment.voiceIds) assignment.voiceIds = {};
+
+      if (assignment.voiceIds[this.engineId]) continue;
+
+      // The legacy single-engine field is always a Kokoro id; treat it as this
+      // character's Kokoro casting rather than reinterpreting it under whichever
+      // engine happens to be active.
+      if (!assignment.voiceIds[ENGINE_IDS.KOKORO] && assignment.voiceId) {
+        assignment.voiceIds[ENGINE_IDS.KOKORO] = assignment.voiceId;
+      }
+
+      const source = assignment.voiceIds[ENGINE_IDS.KOKORO] || assignment.voiceId;
+      const mapped = mapVoiceAcrossEngines(source, this.engineId, used);
+      assignment.voiceIds[this.engineId] = mapped;
+      used.add(mapped);
+    }
   }
 
   setNarratorVoice(voiceId) {
     if (this.narratorVoiceId === voiceId) return;
     this.narratorVoiceId = voiceId;
+    // Drop the cached cross-engine translation; it was derived from the old id.
+    this._narratorByEngine = {};
     this._invalidateUnits();
   }
 
@@ -223,14 +392,22 @@ export class ScreenplayAudioManager {
   getVoiceProfileForCharacter(characterName) {
     const cleanName = (characterName || '').toUpperCase().trim();
     if (this._isNarratorName(cleanName)) {
-      return getVoiceById(this.narratorVoiceId || 'bm_george');
+      return getVoiceById(this._narratorVoiceForEngine(), this.engineId);
     }
 
     const assignment = this.characterAssignments.get(cleanName);
-    if (assignment && assignment.voiceId) {
-      return getVoiceById(assignment.voiceId);
+    if (assignment) {
+      // Assignments carry one voice per engine, so switching engines keeps each
+      // character's casting on both sides rather than overwriting one with the
+      // other. `voiceId` is the legacy single-engine field.
+      const perEngine = assignment.voiceIds && assignment.voiceIds[this.engineId];
+      const chosen = perEngine || assignment.voiceId;
+      if (chosen) return getVoiceById(chosen, this.engineId);
     }
-    return getVoiceById('am_adam');
+    // Reached whenever a line's speaker has no assignment — a character the
+    // parser found late, or a cast that failed to load. It used to hand back the
+    // worst-graded voice in the set.
+    return getVoiceById(DEFAULT_VOICE_ID);
   }
 
   getCharacterSettings(characterName) {
@@ -238,7 +415,12 @@ export class ScreenplayAudioManager {
     const assignment = this.characterAssignments.get(cleanName);
     return {
       pitchOffset: assignment ? (assignment.pitchOffset || 0) : 0,
-      speedMultiplier: assignment ? (assignment.speedMultiplier || 1.0) : 1.0
+      speedMultiplier: assignment ? (assignment.speedMultiplier || 1.0) : 1.0,
+      // Free-text direction for this character. Only instruction-following
+      // engines read it; Kokoro ignores it, and because it feeds the cache key
+      // only through the composed instructions, writing one changes nothing at
+      // all on the local engine.
+      direction: assignment ? (assignment.direction || '') : ''
     };
   }
 
@@ -324,7 +506,8 @@ export class ScreenplayAudioManager {
       tuning: this.getCharacterSettings(element.character),
       pan: this.getPanForCharacter(element.character),
       masterSpeed: this.masterSpeed,
-      pacing: this.pacingMode
+      pacing: this.pacingMode,
+      engine: this.engine
     });
 
     this.unitCache.set(lineIndex, units);
@@ -356,7 +539,7 @@ export class ScreenplayAudioManager {
   }
 
   _clusterReady(units) {
-    return units.every(unit => !!this.kokoroEngine.getCached(unit.key));
+    return units.every(unit => !!this.engine.getCached(unit.key));
   }
 
   /** Unit at the scheduling cursor, skipping over lines with nothing to say. */
@@ -388,7 +571,7 @@ export class ScreenplayAudioManager {
    * order the listener will actually need it.
    */
   _pumpRequests() {
-    if (!this.kokoroEngine.isReady) return;
+    if (!this.engine.isReady) return;
 
     let line = this.cursorLine;
     let unit = this.cursorUnit;
@@ -406,11 +589,11 @@ export class ScreenplayAudioManager {
       }
 
       const u = units[unit];
-      const cached = this.kokoroEngine.getCached(u.key);
+      const cached = this.engine.getCached(u.key);
       if (cached) {
         seconds += cached.duration / (u.playbackRate || 1);
       } else {
-        this.kokoroEngine.request(u, count);
+        this.engine.request(u, count);
         seconds += u.estimatedDuration;
       }
 
@@ -437,7 +620,7 @@ export class ScreenplayAudioManager {
       }
 
       const u = units[unit];
-      const cached = this.kokoroEngine.getCached(u.key);
+      const cached = this.engine.getCached(u.key);
       if (!cached) return { seconds, hitEnd: false };
 
       seconds += cached.duration / (u.playbackRate || 1);
@@ -482,7 +665,7 @@ export class ScreenplayAudioManager {
         this.clusterRemaining = cluster.length;
       }
 
-      const buffer = this.kokoroEngine.getCached(unit.key);
+      const buffer = this.engine.getCached(unit.key);
       if (!buffer) break;
 
       if (!this.primed) {
@@ -699,7 +882,7 @@ export class ScreenplayAudioManager {
    * Render a few units ahead without playing, so the first Play has no wait.
    */
   prewarm() {
-    if (!this.kokoroEngine.isReady || this.scriptElements.length === 0) return;
+    if (!this.engine.isReady || this.scriptElements.length === 0) return;
     if (this.playbackState === PLAYBACK_STATES.PLAYING) return;
 
     this.cursorLine = this.currentIndex;
@@ -718,7 +901,7 @@ export class ScreenplayAudioManager {
         unit = 0;
         continue;
       }
-      this.kokoroEngine.request(units[unit], count);
+      this.engine.request(units[unit], count);
       count++;
       unit++;
     }
@@ -746,16 +929,34 @@ export class ScreenplayAudioManager {
       return;
     }
 
-    if (!this.kokoroEngine.isReady && !this.kokoroEngine.isLoading) {
+    let initError = null;
+    if (!this.engine.isReady && !this.engine.isLoading) {
       try {
-        await this.kokoroEngine.init();
+        await this.engine.init();
       } catch (err) {
-        console.warn('Kokoro unavailable, falling back to browser speech:', err);
+        initError = err;
+        console.warn(`Engine ${this.engineId} unavailable:`, err);
       }
       if (generation !== this.playGeneration) return;
     }
 
-    if (!this.kokoroEngine.isReady && !this.kokoroEngine.isLoading) {
+    if (!this.engine.isReady && !this.engine.isLoading) {
+      // A failed local model download is exactly what the browser's built-in
+      // voice exists to cover. A missing or rejected API key is not: quietly
+      // dropping someone who chose paid cloud voices onto the robotic fallback
+      // would hide the one thing they need to be told, and they would conclude
+      // the cloud engine simply sounds bad.
+      if (this.engine.capabilities.onUnavailable === 'error') {
+        this._setState(PLAYBACK_STATES.IDLE);
+        this.emit('engineError', {
+          engineId: this.engineId,
+          code: (initError && initError.code) || 'unavailable',
+          message: (initError && initError.message)
+            || 'This voice engine is not available. Check Voice Engine settings.'
+        });
+        return;
+      }
+
       this.usingWebSpeechFallback = true;
       this._setState(PLAYBACK_STATES.PLAYING);
       this._runWebSpeech();
@@ -850,7 +1051,7 @@ export class ScreenplayAudioManager {
     this.cursorUnit = 0;
 
     // Abandon lookahead the jump made irrelevant, keeping only what we now need.
-    this.kokoroEngine.dropPendingExcept(this._upcomingKeys(target, 8));
+    this.engine.dropPendingExcept(this._upcomingKeys(target, 8));
 
     this.emit('lineChange', {
       index: this.currentIndex,
@@ -909,18 +1110,20 @@ export class ScreenplayAudioManager {
    * Audition a voice in the Cast Studio. Resolves when playback actually ends,
    * so the calling UI can flip its button back at the right moment.
    */
-  async previewVoice(voiceId, sampleText = null, pitchOffset = 0, speedMultiplier = 1.0) {
+  async previewVoice(voiceId, sampleText = null, pitchOffset = 0, speedMultiplier = 1.0, direction = '') {
     this.stop();
 
     const token = ++this.previewToken;
-    const profile = getVoiceById(voiceId);
+    // Auditions have to resolve against the pool the *active* engine can speak
+    // with, or a cloud voice id would fall through to a Kokoro profile.
+    const profile = getVoiceById(voiceId, this.engineId);
     const text = sampleText || profile.sampleLine;
 
     await this._ensureAudio();
 
-    if (!this.kokoroEngine.isReady && !this.kokoroEngine.isLoading) {
+    if (!this.engine.isReady && !this.engine.isLoading) {
       try {
-        await this.kokoroEngine.init();
+        await this.engine.init();
       } catch (err) {
         console.warn('Kokoro init fallback for preview:', err);
       }
@@ -931,20 +1134,22 @@ export class ScreenplayAudioManager {
       this.visualizer.setSpeaking(true, { badgeColor: '#F59E0B' });
     }
 
-    if (this.kokoroEngine.isReady && this.scheduler) {
+    if (this.engine.isReady && this.scheduler) {
       try {
         const units = buildPreviewUnits({
           text,
           voiceProfile: profile,
-          tuning: { pitchOffset, speedMultiplier },
-          masterSpeed: this.masterSpeed
+          tuning: { pitchOffset, speedMultiplier, direction },
+          masterSpeed: this.masterSpeed,
+          engine: this.engine
         });
 
-        const buffers = [];
-        for (let i = 0; i < units.length; i++) {
-          buffers.push(await this.kokoroEngine.request(units[i], i));
-          if (token !== this.previewToken) return;
-        }
+        // Requested together rather than one after the next: on a cloud engine a
+        // serial loop would cost one full round trip per chunk, turning a
+        // two-sentence audition into several seconds of silence. Playback order
+        // is unaffected — the scheduler places them by index afterwards.
+        const buffers = await Promise.all(units.map((unit, i) => this.engine.request(unit, i)));
+        if (token !== this.previewToken) return;
 
         this.scheduler.resetTimeline(this.scheduler.currentTime + 0.06);
         let endAt = this.scheduler.currentTime;

@@ -7,9 +7,21 @@
  * - Saved custom and sample script state
  */
 
+import { DEFAULT_NARRATOR_VOICE_ID } from '../audio/voice-catalog.js';
+
 const STORAGE_PREFIX = 'scriptreader_';
 const APP_STATE_KEY = `${STORAGE_PREFIX}app_state_v2`;
 const CAST_PREFIX = `${STORAGE_PREFIX}cast_`;
+const CAST_BACKUP_SUFFIX = '_v1_backup';
+
+/**
+ * Cast schema version.
+ *
+ * 1 — voices auto-assigned without regard to quality; `am_adam` (upstream grade
+ *     F+) was the fallback and `bm_george` (C) the narrator.
+ * 2 — grade-ranked assignment, and `auto` records whether a human chose a voice.
+ */
+export const CAST_VERSION = 2;
 
 /**
  * Generate a consistent, unique key for a script
@@ -45,6 +57,7 @@ export function saveScriptCastConfig(scriptKey, { narratorVoiceId, castAssignmen
       activeLineIndex,
       scriptTitle,
       configured: true,
+      castVersion: CAST_VERSION,
       updatedAt: Date.now()
     };
 
@@ -74,15 +87,59 @@ export function loadScriptCastConfig(scriptKey) {
     }
 
     return {
-      narratorVoiceId: parsed.narratorVoiceId || 'bm_george',
+      // Reading a saved config with no narrator recorded must not reinstate the
+      // old default, or every load quietly undoes the narrator upgrade.
+      narratorVoiceId: parsed.narratorVoiceId || DEFAULT_NARRATOR_VOICE_ID,
       castAssignments: castMap,
       activeLineIndex: typeof parsed.activeLineIndex === 'number' ? parsed.activeLineIndex : 0,
       configured: Boolean(parsed.configured),
+      // Anything written before versioning existed is v1 by definition.
+      castVersion: parsed.castVersion || 1,
       updatedAt: parsed.updatedAt || 0
     };
   } catch (err) {
     console.warn('Could not load script cast config from LocalStorage:', err);
     return null;
+  }
+}
+
+/**
+ * Copy a cast config aside before migrating it, so the change is undoable.
+ * No-op when a backup already exists — re-running a migration must never
+ * overwrite the original with an already-migrated copy.
+ */
+export function backupCastConfig(scriptKey) {
+  try {
+    const backupKey = `${CAST_PREFIX}${scriptKey}${CAST_BACKUP_SUFFIX}`;
+    if (localStorage.getItem(backupKey)) return true;
+    const raw = localStorage.getItem(`${CAST_PREFIX}${scriptKey}`);
+    if (!raw) return false;
+    localStorage.setItem(backupKey, raw);
+    return true;
+  } catch (err) {
+    console.warn('Could not back up cast config:', err);
+    return false;
+  }
+}
+
+/**
+ * Restore the pre-migration cast, then stamp it as current so the migration
+ * does not immediately re-fire and undo the undo.
+ */
+export function restoreCastBackup(scriptKey) {
+  try {
+    const backupKey = `${CAST_PREFIX}${scriptKey}${CAST_BACKUP_SUFFIX}`;
+    const raw = localStorage.getItem(backupKey);
+    if (!raw) return false;
+
+    const parsed = JSON.parse(raw);
+    parsed.castVersion = CAST_VERSION;
+    localStorage.setItem(`${CAST_PREFIX}${scriptKey}`, JSON.stringify(parsed));
+    localStorage.removeItem(backupKey);
+    return true;
+  } catch (err) {
+    console.warn('Could not restore cast backup:', err);
+    return false;
   }
 }
 

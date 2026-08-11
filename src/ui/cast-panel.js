@@ -1,5 +1,7 @@
 import { getIconSvg } from '../utils/icons.js';
-import { VOICE_CATALOG, getVoiceById } from '../audio/voice-catalog.js';
+import { formatPitchOffset } from '../audio/performance-director.js';
+import { escapeHtml } from '../utils/escape-html.js';
+import { getVoiceById, getVoicesForEngine, makeDefaultAssignment } from '../audio/voice-catalog.js';
 
 export function createCastPanel({
   scriptStore,
@@ -15,13 +17,21 @@ export function createCastPanel({
     const narratorVoiceId = scriptStore.narratorVoiceId;
     const narratorProfile = getVoiceById(narratorVoiceId);
 
+    // The sidebar has to offer the pool the active engine can speak with; the
+    // Kokoro and OpenAI id spaces are disjoint.
+    const engineId = audioManager.engineId;
+    const enginePool = getVoicesForEngine(engineId);
+    const voiceIdOf = (assignment) =>
+      (assignment.voiceIds && assignment.voiceIds[engineId]) || assignment.voiceId;
+
     // Build options for voice select
     const voiceOptionsHtml = (selectedId) => {
       // Group voices by sex / category
-      const femaleVoices = VOICE_CATALOG.filter(v => v.sex === 'Female');
-      const maleVoices = VOICE_CATALOG.filter(v => v.sex === 'Male');
+      const femaleVoices = enginePool.filter(v => v.sex === 'Female');
+      const maleVoices = enginePool.filter(v => v.sex === 'Male');
+      const neutralVoices = enginePool.filter(v => v.sex === 'Neutral');
 
-      const buildGroup = (label, voices) => `
+      const buildGroup = (label, voices) => voices.length === 0 ? '' : `
         <optgroup label="${label}">
           ${voices.map(v => `
             <option value="${v.id}" ${v.id === selectedId ? 'selected' : ''}>
@@ -31,7 +41,9 @@ export function createCastPanel({
         </optgroup>
       `;
 
-      return buildGroup('👩 Female Voices', femaleVoices) + buildGroup('👨 Male Voices', maleVoices);
+      return buildGroup('👩 Female Voices', femaleVoices)
+        + buildGroup('👨 Male Voices', maleVoices)
+        + buildGroup('◐ Neutral Voices', neutralVoices);
     };
 
     // Calculate total dialogue lines
@@ -88,22 +100,27 @@ export function createCastPanel({
         </div>
 
         ${characters.map(char => {
-          const assignment = scriptStore.castAssignments.get(char.name.toUpperCase().trim()) || {
-            voiceId: 'am_adam',
-            pitchOffset: 0,
-            speedMultiplier: 1.0
-          };
-          const voiceProfile = getVoiceById(assignment.voiceId);
+          const assignment = scriptStore.castAssignments.get(char.name.toUpperCase().trim())
+            || makeDefaultAssignment();
+          const voiceProfile = getVoiceById(voiceIdOf(assignment), engineId);
           const percent = Math.round((char.lineCount / totalDialogueLines) * 100);
 
+          // The character name comes from the uploaded script, so it is escaped
+          // everywhere it appears — including in `data-char`, where a bare quote
+          // would otherwise close the attribute and let the rest of the cue
+          // become markup. Escaped attributes round-trip cleanly: the parser
+          // turns `&quot;` back into `"`, so `dataset.char` still matches the
+          // name the store is keyed by.
+          const charAttr = escapeHtml(char.name);
+
           return `
-            <div class="character-card" data-char="${char.name}">
+            <div class="character-card" data-char="${charAttr}">
               <div class="char-header">
                 <div class="char-avatar" style="background: ${voiceProfile.avatarBg};">
-                  ${char.name.substring(0, 2).toUpperCase()}
+                  ${escapeHtml(char.name.substring(0, 2).toUpperCase())}
                 </div>
                 <div class="char-meta">
-                  <div class="char-name">${char.name}</div>
+                  <div class="char-name">${escapeHtml(char.name)}</div>
                   <div class="char-badges">
                     <span class="badge-lines">${char.lineCount} lines (${percent}%)</span>
                     <span class="badge-voice">${voiceProfile.name}</span>
@@ -113,10 +130,10 @@ export function createCastPanel({
 
               <div class="char-controls">
                 <div class="voice-select-row">
-                  <select class="voice-select char-voice-select" data-char="${char.name}">
-                    ${voiceOptionsHtml(assignment.voiceId)}
+                  <select class="voice-select char-voice-select" data-char="${charAttr}">
+                    ${voiceOptionsHtml(voiceIdOf(assignment))}
                   </select>
-                  <button class="btn btn-secondary btn-test-voice" data-char="${char.name}" style="padding: 6px 10px;" title="Test Assigned Voice">
+                  <button class="btn btn-secondary btn-test-voice" data-char="${charAttr}" style="padding: 6px 10px;" title="Test Assigned Voice">
                     ${getIconSvg('volume', 14)}
                   </button>
                 </div>
@@ -124,13 +141,13 @@ export function createCastPanel({
                 <!-- Pitch & Speed Fine-tuning -->
                 <div class="slider-group">
                   <span class="slider-label">Pitch:</span>
-                  <input type="range" class="slider-input char-pitch-slider" data-char="${char.name}" min="-50" max="50" value="${assignment.pitchOffset || 0}">
-                  <span class="slider-val char-pitch-val">${assignment.pitchOffset > 0 ? '+' : ''}${assignment.pitchOffset || 0}%</span>
+                  <input type="range" class="slider-input char-pitch-slider" data-char="${charAttr}" min="-50" max="50" value="${assignment.pitchOffset || 0}">
+                  <span class="slider-val char-pitch-val">${formatPitchOffset(assignment.pitchOffset)}</span>
                 </div>
 
                 <div class="slider-group">
                   <span class="slider-label">Speed:</span>
-                  <input type="range" class="slider-input char-speed-slider" data-char="${char.name}" min="50" max="150" value="${Math.round((assignment.speedMultiplier || 1.0) * 100)}">
+                  <input type="range" class="slider-input char-speed-slider" data-char="${charAttr}" min="50" max="150" value="${Math.round((assignment.speedMultiplier || 1.0) * 100)}">
                   <span class="slider-val char-speed-val">${(assignment.speedMultiplier || 1.0).toFixed(1)}x</span>
                 </div>
               </div>
@@ -170,8 +187,9 @@ export function createCastPanel({
     panel.querySelectorAll('.char-voice-select').forEach(select => {
       select.addEventListener('change', (e) => {
         const charName = select.dataset.char;
-        const voiceId = e.target.value;
-        scriptStore.updateCharacterVoice(charName, { voiceId });
+        // Recorded against the active engine so the character's casting on the
+        // other engine is not overwritten by a choice made here.
+        scriptStore.updateCharacterVoice(charName, { voiceId: e.target.value, engineId });
         audioManager.setVoiceAssignment(charName, scriptStore.castAssignments.get(charName.toUpperCase().trim()));
         render(); // update avatar & badge
       });
@@ -186,10 +204,11 @@ export function createCastPanel({
         const sampleText = charObj ? charObj.sampleLine : null;
         
         audioManager.previewVoice(
-          assignment.voiceId,
+          voiceIdOf(assignment),
           sampleText,
           assignment.pitchOffset || 0,
-          assignment.speedMultiplier || 1.0
+          assignment.speedMultiplier || 1.0,
+          assignment.direction || ''
         );
       });
     });
@@ -201,7 +220,7 @@ export function createCastPanel({
         const val = parseInt(e.target.value, 10);
         const card = slider.closest('.character-card');
         if (card) {
-          card.querySelector('.char-pitch-val').textContent = `${val > 0 ? '+' : ''}${val}%`;
+          card.querySelector('.char-pitch-val').textContent = formatPitchOffset(val);
         }
         scriptStore.updateCharacterVoice(charName, { pitchOffset: val });
         audioManager.setVoiceAssignment(charName, scriptStore.castAssignments.get(charName.toUpperCase().trim()));

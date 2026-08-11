@@ -11,6 +11,9 @@ import { createUploadModal } from './ui/upload-modal.js';
 import { createHelpModal } from './ui/help-modal.js';
 import { createHfModelHubModal } from './ui/hf-model-hub.js';
 import { createVoiceConfigModal } from './ui/voice-config-modal.js';
+import { createEngineSettingsModal } from './ui/engine-settings-modal.js';
+import { escapeHtml } from './utils/escape-html.js';
+import { restoreCastBackup } from './utils/storage.js';
 
 // Application Orchestrator
 async function initApp() {
@@ -102,7 +105,8 @@ async function initApp() {
       if (btn) btn.classList.toggle('btn-active', isOpen);
     },
     onToggleHelp: () => openHelpModal(),
-    currentEngine: ENGINE_TYPES.KOKORO_NEURAL
+    onOpenEngineSettings: () => openEngineSettingsModal(),
+    currentEngine: audioManager.engineId
   });
 
   const castPanel = createCastPanel({
@@ -245,6 +249,15 @@ async function initApp() {
         transportBar.updatePlaybackState(PLAYBACK_STATES.IDLE);
         transportBar.updateActiveSpeaker(null, null, null);
         break;
+
+      // A cloud engine that will not start is a problem the listener has to act
+      // on — usually a missing, wrong, or unfunded key. Say so and open the place
+      // where it gets fixed, rather than falling through to the browser's robotic
+      // fallback voice and letting them conclude the engine sounds bad.
+      case 'engineError':
+        transportBar.updatePlaybackState(PLAYBACK_STATES.IDLE);
+        showActionToast(data.message, 'Settings', () => openEngineSettingsModal());
+        break;
     }
   });
 
@@ -301,6 +314,30 @@ async function initApp() {
     document.body.appendChild(modal);
   }
 
+  function openEngineSettingsModal() {
+    const modal = createEngineSettingsModal({
+      audioManager,
+      onEngineChanged: (engineId) => {
+        // The cast is per-engine, so switching re-resolves every character's
+        // voice; re-pushing the assignments is what makes that visible.
+        audioManager.setScript(
+          scriptStore.currentScript ? scriptStore.currentScript.elements : [],
+          scriptStore.castAssignments,
+          scriptStore.activeLineIndex
+        );
+        audioManager.setNarratorVoice(scriptStore.narratorVoiceId);
+        header.setEngineBadge(engineId);
+        castPanel.render();
+        showResumeToast(
+          engineId === ENGINE_TYPES.OPENAI
+            ? 'Cloud voices on — dialogue is sent to OpenAI to be spoken.'
+            : 'Local Kokoro voices on — nothing leaves this device.'
+        );
+      }
+    });
+    document.body.appendChild(modal);
+  }
+
   // Toast Notification
   function showResumeToast(msg) {
     const existing = document.getElementById('app-resume-toast');
@@ -322,6 +359,90 @@ async function initApp() {
       }
     }, 4000);
   }
+
+  /**
+   * A toast that offers to undo itself.
+   *
+   * Held four times longer than the plain one and never auto-dismissed while the
+   * pointer is over it — an undo the reader never got a chance to click is the
+   * same as no undo at all.
+   */
+  function showActionToast(msg, actionLabel, onAction) {
+    const existing = document.getElementById('app-resume-toast');
+    if (existing) existing.remove();
+
+    const toast = document.createElement('div');
+    toast.id = 'app-resume-toast';
+    toast.className = 'resume-toast-pill';
+    toast.innerHTML = `
+      <span>🎬</span>
+      <span>${escapeHtml(msg)}</span>
+      <button id="toast-action-btn" class="btn btn-secondary" style="padding: 3px 10px; font-size: 0.72rem; margin-left: 6px;">
+        ${escapeHtml(actionLabel)}
+      </button>
+    `;
+    document.body.appendChild(toast);
+
+    let dismissTimer = null;
+    const dismiss = () => {
+      if (!toast.parentNode) return;
+      toast.classList.add('toast-fadeout');
+      setTimeout(() => toast.remove(), 300);
+    };
+    const arm = () => { dismissTimer = setTimeout(dismiss, 16000); };
+
+    toast.addEventListener('mouseenter', () => clearTimeout(dismissTimer));
+    toast.addEventListener('mouseleave', arm);
+    toast.querySelector('#toast-action-btn').addEventListener('click', () => {
+      clearTimeout(dismissTimer);
+      toast.remove();
+      onAction();
+    });
+    arm();
+  }
+
+  /**
+   * Tell the reader when a saved cast was lifted onto better voices, and let them
+   * put it back. The change is worth making without being asked — the old
+   * auto-caster could hand a lead the worst-graded voice in the set — but it is
+   * still their cast, so it is never silent and never one-way.
+   */
+  function surfaceCastMigration() {
+    const migration = scriptStore.pendingCastMigration;
+    if (!migration) return;
+    scriptStore.pendingCastMigration = null;
+
+    const roleWord = migration.count === 1 ? 'role' : 'roles';
+    showActionToast(
+      `Recast ${migration.count} ${roleWord} with higher-quality voices`,
+      'Undo',
+      () => {
+        if (!restoreCastBackup(migration.scriptKey)) return;
+        audioManager.stop();
+        scriptStore.setScriptData(scriptStore.currentScript, {
+          scriptKey: scriptStore.scriptKey,
+          scriptType: scriptStore.scriptType,
+          sampleId: scriptStore.sampleId,
+          customData: scriptStore.customScriptData,
+          resetProgress: false
+        });
+        audioManager.setScript(
+          scriptStore.currentScript.elements,
+          scriptStore.castAssignments,
+          scriptStore.activeLineIndex
+        );
+        audioManager.setNarratorVoice(scriptStore.narratorVoiceId);
+        castPanel.render();
+        showResumeToast('Original cast restored.');
+      }
+    );
+  }
+
+  scriptStore.subscribe(event => {
+    if (event === 'scriptLoaded') surfaceCastMigration();
+  });
+  // The first script may already have loaded before this subscription existed.
+  surfaceCastMigration();
 
   // Connect Kokoro Engine Progress to UI Toast and Header Badge.
   //
@@ -361,7 +482,9 @@ async function initApp() {
 
   function refreshEngineCacheBadge() {
     audioManager.getCacheStatus()
-      .then(status => header.updateEngineCacheBadge(status))
+      // The engine id rides along so a cloud session's badge is not overwritten
+      // by a status report about Kokoro's weights.
+      .then(status => header.updateEngineCacheBadge({ ...status, engineId: audioManager.engineId }))
       .catch(err => console.warn('Cache status notice:', err));
   }
 
