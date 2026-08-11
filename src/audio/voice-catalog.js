@@ -15,6 +15,7 @@ import {
   CASTABLE_SCORE
 } from './voice-grades.js';
 import { ENGINE_IDS } from './engine-contract.js';
+import { listChatterboxVoices } from './chatterbox-voice-store.js';
 
 export { KOKORO_GRADES, gradeScore, isCastable, CASTABLE_SCORE };
 
@@ -549,9 +550,27 @@ export const VOICE_CATALOG = [...VOICE_PROFILES].sort(byGradeDesc);
 
 export const OPENAI_VOICE_CATALOG = OPENAI_VOICE_PROFILES;
 
+export const MISSING_CHATTERBOX_VOICE = Object.freeze({
+  id: '',
+  chatterboxId: '',
+  name: 'Reference voice needed',
+  sex: 'Neutral',
+  ageGroup: 'Not configured',
+  accent: 'Studio Local',
+  tone: 'Add a clear 5–10 second recording to create a private character voice',
+  description: 'No recording is assigned. Add a voice you have permission to clone.',
+  avatarBg: '#343027',
+  suggestedRoles: [],
+  defaultPitch: 1,
+  defaultSpeed: 1,
+  sampleLine: 'Add a reference recording before auditioning this voice.'
+});
+
 /** Every voice the given engine can actually speak with. */
 export function getVoicesForEngine(engineId) {
-  return engineId === ENGINE_IDS.OPENAI ? OPENAI_VOICE_CATALOG : VOICE_CATALOG;
+  if (engineId === ENGINE_IDS.OPENAI) return OPENAI_VOICE_CATALOG;
+  if (engineId === ENGINE_IDS.CHATTERBOX) return listChatterboxVoices();
+  return VOICE_CATALOG;
 }
 
 /**
@@ -577,6 +596,11 @@ export const CROSS_ENGINE_VOICE_MAP = Object.freeze({
 export function mapVoiceAcrossEngines(voiceId, targetEngineId, usedVoices = new Set()) {
   const pool = getVoicesForEngine(targetEngineId);
 
+  if (targetEngineId === ENGINE_IDS.CHATTERBOX) {
+    const unused = pool.find(voice => !usedVoices.has(voice.id));
+    return unused?.id || pool[0]?.id || '';
+  }
+
   const mapped = targetEngineId === ENGINE_IDS.OPENAI
     ? CROSS_ENGINE_VOICE_MAP[voiceId]
     : Object.keys(CROSS_ENGINE_VOICE_MAP).find(k => CROSS_ENGINE_VOICE_MAP[k] === voiceId);
@@ -584,7 +608,8 @@ export function mapVoiceAcrossEngines(voiceId, targetEngineId, usedVoices = new 
   if (mapped && pool.some(v => v.id === mapped) && !usedVoices.has(mapped)) return mapped;
 
   const source = VOICE_CATALOG.find(v => v.id === voiceId)
-    || OPENAI_VOICE_CATALOG.find(v => v.id === voiceId);
+    || OPENAI_VOICE_CATALOG.find(v => v.id === voiceId)
+    || listChatterboxVoices().find(v => v.id === voiceId);
   const sex = source ? source.sex : 'Female';
 
   const sameSex = pool.filter(v => v.sex === sex && !usedVoices.has(v.id));
@@ -641,10 +666,13 @@ export function makeDefaultAssignment(voiceId = DEFAULT_VOICE_ID) {
 export function getVoiceById(id, engineId = null) {
   if (engineId) {
     const pool = getVoicesForEngine(engineId);
-    return pool.find(v => v.id === id) || pool[0];
+    return pool.find(v => v.id === id)
+      || pool[0]
+      || (engineId === ENGINE_IDS.CHATTERBOX ? MISSING_CHATTERBOX_VOICE : VOICE_CATALOG[0]);
   }
   return VOICE_CATALOG.find(v => v.id === id)
     || OPENAI_VOICE_CATALOG.find(v => v.id === id)
+    || listChatterboxVoices().find(v => v.id === id)
     || VOICE_CATALOG[0];
 }
 

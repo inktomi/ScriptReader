@@ -1,6 +1,7 @@
 import { getIconSvg } from '../utils/icons.js';
 import { escapeHtml } from '../utils/escape-html.js';
 import { ENGINE_IDS } from '../audio/engine-contract.js';
+import { CHATTERBOX_DOWNLOAD_BYTES } from '../audio/chatterbox-engine.js';
 import {
   loadOpenAIKey,
   saveOpenAIKey,
@@ -32,8 +33,15 @@ export function createEngineSettingsModal({ audioManager, onClose, onEngineChang
   let validating = false;
   let validationMessage = '';
   let validationOk = null;
+  let studioStatus = { installed: false, persisted: false, fileCount: 0 };
+  let studioStatusReady = false;
+  let installingStudio = false;
+  let studioProgress = 0;
+  let studioMessage = '';
+  let unsubscribeStudioProgress = null;
 
   const isCloud = () => selectedEngine === ENGINE_IDS.OPENAI;
+  const isStudio = () => selectedEngine === ENGINE_IDS.CHATTERBOX;
 
   function render() {
     const storedKey = loadOpenAIKey();
@@ -72,6 +80,44 @@ export function createEngineSettingsModal({ audioManager, onClose, onEngineChang
             <button id="btn-manage-local-model" class="btn btn-secondary" type="button" style="align-self:flex-start;">
               ${getIconSvg('cpu', 15)} Manage local model and cache
             </button>
+          ` : ''}
+
+          <label class="engine-option ${isStudio() ? 'selected' : ''}" data-engine="${ENGINE_IDS.CHATTERBOX}" style="
+            display: block; padding: 14px; border-radius: 10px; cursor: pointer;
+            border: 1px solid ${isStudio() ? 'var(--brass)' : 'var(--border)'};
+            background: ${isStudio() ? 'var(--brass-soft)' : 'transparent'};">
+            <div style="display: flex; align-items: center; gap: 10px;">
+              <input type="radio" name="engine" value="${ENGINE_IDS.CHATTERBOX}"
+                ${isStudio() ? 'checked' : ''} style="accent-color: var(--brass);">
+              <span style="font-weight: 700; color: var(--text-primary);">Studio Local</span>
+              <span class="badge-voice">Chatterbox · Highest local quality</span>
+              ${studioStatusReady ? `<span class="engine-install-state ${studioStatus.installed ? 'is-installed' : ''}">
+                ${studioStatus.installed ? 'Installed' : '1.5 GB download'}
+              </span>` : ''}
+            </div>
+            <div style="font-size: 0.8rem; color: var(--text-secondary); margin-top: 6px; line-height: 1.5;">
+              More natural, expressive character performances using private 5–10 second
+              reference recordings. Runs entirely on this device after a one-time model download.
+              Best on a desktop browser with WebGPU.
+            </div>
+          </label>
+
+          ${isStudio() ? `
+            <div class="studio-install-panel" role="status" aria-live="polite">
+              <div>
+                <strong>${studioStatus.installed ? 'Available offline' : 'Install only when you choose'}</strong>
+                <span>${studioStatus.installed
+                  ? `${studioStatus.persisted ? 'Persistent browser storage granted.' : 'Saved in this browser; the browser may evict it under storage pressure.'}`
+                  : 'About 1.5 GB. The screenplay and voice references never leave this device.'}</span>
+              </div>
+              ${installingStudio ? `
+                <div class="studio-install-progress">
+                  <div><span style="width:${Math.max(2, studioProgress)}%"></span></div>
+                  <small>${escapeHtml(studioMessage || 'Preparing download…')}</small>
+                </div>
+              ` : ''}
+              <p>Use only recordings you own or have permission to clone.</p>
+            </div>
           ` : ''}
 
           <label class="engine-option" data-engine="${ENGINE_IDS.OPENAI}" style="
@@ -151,13 +197,19 @@ export function createEngineSettingsModal({ audioManager, onClose, onEngineChang
                 </button>` : ''}
             </div>
           ` : ''}
+
+          ${validationMessage && !isCloud() ? `
+            <div class="engine-settings-message ${validationOk ? 'is-success' : 'is-error'}" role="alert">
+              ${escapeHtml(validationMessage)}
+            </div>
+          ` : ''}
         </div>
 
         <div class="modal-footer" style="display: flex; justify-content: flex-end; gap: 10px;">
           <button id="btn-engine-cancel" class="btn btn-secondary">Cancel</button>
           <button id="btn-engine-apply" class="btn btn-primary"
-            ${isCloud() && (!consented || !keyReady) ? 'disabled style="opacity:0.5;cursor:not-allowed;"' : ''}>
-            Use this engine
+            ${(isCloud() && (!consented || !keyReady)) || installingStudio ? 'disabled style="opacity:0.5;cursor:not-allowed;"' : ''}>
+            ${installingStudio ? 'Installing…' : (isStudio() && !studioStatus.installed ? 'Install Studio Local' : 'Use this engine')}
           </button>
         </div>
       </div>
@@ -167,6 +219,7 @@ export function createEngineSettingsModal({ audioManager, onClose, onEngineChang
   }
 
   function close() {
+    if (unsubscribeStudioProgress) unsubscribeStudioProgress();
     modal.remove();
     if (onClose) onClose();
   }
@@ -266,7 +319,44 @@ export function createEngineSettingsModal({ audioManager, onClose, onEngineChang
       });
     }
 
-    modal.querySelector('#btn-engine-apply').addEventListener('click', () => {
+    modal.querySelector('#btn-engine-apply').addEventListener('click', async () => {
+      if (isStudio()) {
+        const estimate = await audioManager.modelCacheManager.getStorageEstimate();
+        const available = Math.max(0, estimate.quota - estimate.usage);
+        if (!studioStatus.installed && estimate.quota > 0 && available < CHATTERBOX_DOWNLOAD_BYTES * 1.1) {
+          validationMessage = `Studio Local needs about 1.7 GB free in browser storage; this browser reports ${audioManager.modelCacheManager.formatBytes(available)} available.`;
+          validationOk = false;
+          render();
+          return;
+        }
+
+        installingStudio = true;
+        studioProgress = 2;
+        studioMessage = studioStatus.installed ? 'Loading the installed model…' : 'Preparing the one-time download…';
+        validationMessage = '';
+        const studioEngine = audioManager.getEngine(ENGINE_IDS.CHATTERBOX);
+        unsubscribeStudioProgress = studioEngine.onProgress(payload => {
+          studioProgress = payload.progress || studioProgress;
+          studioMessage = payload.message || studioMessage;
+          render();
+        });
+        render();
+        try {
+          await audioManager.prepareEngine(ENGINE_IDS.CHATTERBOX);
+          studioStatus = await audioManager.getChatterboxCacheStatus();
+          studioStatusReady = true;
+          installingStudio = false;
+        } catch (error) {
+          installingStudio = false;
+          validationMessage = error.message || 'Studio Local could not be installed.';
+          validationOk = false;
+          render();
+          return;
+        } finally {
+          unsubscribeStudioProgress?.();
+          unsubscribeStudioProgress = null;
+        }
+      }
       if (selectedEngine !== audioManager.engineId) {
         audioManager.setEngine(selectedEngine);
         if (onEngineChanged) onEngineChanged(selectedEngine);
@@ -280,5 +370,15 @@ export function createEngineSettingsModal({ audioManager, onClose, onEngineChang
   });
 
   render();
+  const readStudioStatus = audioManager.getChatterboxCacheStatus
+    ? audioManager.getChatterboxCacheStatus()
+    : Promise.resolve({ installed: false, persisted: false, fileCount: 0 });
+  readStudioStatus.then(status => {
+    studioStatus = status;
+    studioStatusReady = true;
+    if (modal.isConnected || !modal.parentNode) render();
+  }).catch(() => {
+    studioStatusReady = true;
+  });
   return modal;
 }

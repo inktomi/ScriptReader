@@ -13,6 +13,7 @@ import { buildLineUnits, buildPreviewUnits, computeCueGapMs } from './performanc
 import { getAudioContext, resumeAudioContext, suspendAudioContext } from './audio-context.js';
 import { ENGINE_IDS } from './engine-contract.js';
 import { OpenAiTtsEngine } from './openai-engine.js';
+import { ChatterboxStudioEngine, getChatterboxCacheStatus } from './chatterbox-engine.js';
 import { loadEngineSettings, saveEngineSettings } from '../utils/credentials.js';
 
 /**
@@ -21,6 +22,7 @@ import { loadEngineSettings, saveEngineSettings } from '../utils/credentials.js'
  */
 export const ENGINE_TYPES = {
   KOKORO_NEURAL: ENGINE_IDS.KOKORO,
+  CHATTERBOX: ENGINE_IDS.CHATTERBOX,
   OPENAI: ENGINE_IDS.OPENAI,
   WEB_SPEECH: ENGINE_IDS.WEB_SPEECH
 };
@@ -76,6 +78,7 @@ export class ScreenplayAudioManager {
     // but a key lookup, and Kokoro does not touch the network until asked.
     this._engines = new Map([
       [ENGINE_IDS.KOKORO, new KokoroNeuralEngine()],
+      [ENGINE_IDS.CHATTERBOX, new ChatterboxStudioEngine()],
       [ENGINE_IDS.OPENAI, new OpenAiTtsEngine()]
     ]);
 
@@ -148,6 +151,21 @@ export class ScreenplayAudioManager {
    */
   get kokoroEngine() {
     return this._engines.get(ENGINE_IDS.KOKORO);
+  }
+
+  getEngine(engineId) {
+    return this._engines.get(engineId) || null;
+  }
+
+  async prepareEngine(engineId) {
+    const engine = this._engines.get(engineId);
+    if (!engine) throw new Error('Unknown voice engine.');
+    await engine.init();
+    return engine;
+  }
+
+  async getChatterboxCacheStatus() {
+    return getChatterboxCacheStatus();
   }
 
   get capabilities() {
@@ -267,7 +285,13 @@ export class ScreenplayAudioManager {
   setEngine(engineId) {
     if (!this._engines.has(engineId) || engineId === this.engineId) return;
 
+    const previousEngine = this.engine;
     this.stop();
+    // Chatterbox is a multi-session model of roughly 1.5 GB. Keep its files on
+    // disk, but release the worker and GPU allocations when the listener moves
+    // to another engine. Returning to Studio Local reloads from the browser
+    // cache instead of keeping both neural stacks resident in memory.
+    previousEngine.release?.();
     this.engineId = engineId;
     this.engine = this._engines.get(engineId);
     this._ensureEngineVoices();
@@ -425,7 +449,7 @@ export class ScreenplayAudioManager {
     // Reached whenever a line's speaker has no assignment — a character the
     // parser found late, or a cast that failed to load. It used to hand back the
     // worst-graded voice in the set.
-    return getVoiceById(DEFAULT_VOICE_ID);
+    return getVoiceById('', this.engineId);
   }
 
   getCharacterSettings(characterName) {

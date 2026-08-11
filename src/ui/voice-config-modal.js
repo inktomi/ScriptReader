@@ -12,6 +12,7 @@ import {
 } from '../audio/voice-catalog.js';
 import { ENGINE_IDS } from '../audio/engine-contract.js';
 import { KOKORO_GRADES, gradeLabel, gradeColor } from '../audio/voice-grades.js';
+import { saveChatterboxVoice } from '../audio/chatterbox-voice-store.js';
 
 export function createVoiceConfigModal({
   scriptStore,
@@ -32,7 +33,8 @@ export function createVoiceConfigModal({
   const totalLines = script ? script.elements.length : 0;
   const totalDialogue = characters.reduce((sum, c) => sum + c.lineCount, 0) || 1;
   const engineId = audioManager.engineId;
-  const enginePool = getVoicesForEngine(engineId);
+  const isStudio = engineId === ENGINE_IDS.CHATTERBOX;
+  let enginePool = getVoicesForEngine(engineId);
 
   // Local working copy of assignments so user can edit, preview, and cancel if desired
   const storedNarratorVoiceId = scriptStore.getNarratorVoice(engineId);
@@ -54,6 +56,8 @@ export function createVoiceConfigModal({
   let currentlyPlayingChar = null;
   let auditionGeneration = 0;
   let setupMode = isInitialSetup ? 'choice' : 'detailed';
+  let studioVoiceError = '';
+  let addingStudioVoice = false;
 
   // The casting UI has to show the pool the *active* engine can actually speak
   // with; the two id spaces are disjoint.
@@ -61,7 +65,9 @@ export function createVoiceConfigModal({
 
   /** This character's voice under the active engine, falling back to the legacy field. */
   function voiceIdOf(assignment) {
-    return (assignment.voiceIds && assignment.voiceIds[engineId]) || assignment.voiceId;
+    const candidate = (assignment.voiceIds && assignment.voiceIds[engineId]) || assignment.voiceId;
+    if (isStudio && !enginePool.some(voice => voice.id === candidate)) return enginePool[0]?.id || '';
+    return candidate;
   }
 
   /**
@@ -70,11 +76,15 @@ export function createVoiceConfigModal({
    * is instead of inventing a tier.
    */
   function qualityBadge(voiceId) {
+    if (isStudio) return voiceId ? 'Studio reference' : 'Reference needed';
     const grade = KOKORO_GRADES[voiceId];
     return grade ? `${gradeLabel(voiceId)} · ${grade}` : 'Cloud';
   }
 
   function buildVoiceOptions(selectedId) {
+    if (enginePool.length === 0) {
+      return '<option value="">Add a reference voice first</option>';
+    }
     const femaleVoices = enginePool.filter(v => v.sex === 'Female');
     const maleVoices = enginePool.filter(v => v.sex === 'Male');
     const neutralVoices = enginePool.filter(v => v.sex === 'Neutral');
@@ -83,7 +93,7 @@ export function createVoiceConfigModal({
       <optgroup label="${label}">
         ${voices.map(v => `
           <option value="${v.id}" ${v.id === selectedId ? 'selected' : ''}>
-            ${v.name} (${v.sex} ${v.ageGroup} • ${v.accent}) - ${v.tone.split(',')[0]}
+            ${escapeHtml(v.name)} (${escapeHtml(v.sex)} ${escapeHtml(v.ageGroup)} • ${escapeHtml(v.accent)}) - ${escapeHtml(v.tone.split(',')[0])}
           </option>
         `).join('')}
       </optgroup>
@@ -95,6 +105,7 @@ export function createVoiceConfigModal({
   }
 
   function applyRecommendedCast() {
+    if (isStudio && enginePool.length === 0) return;
     const localNarrator = getDefaultNarratorVoice().id;
     workingNarratorVoiceId = engineId === ENGINE_IDS.KOKORO
       ? localNarrator
@@ -127,7 +138,33 @@ export function createVoiceConfigModal({
   }
 
   function renderContent() {
+    enginePool = getVoicesForEngine(engineId);
+    if (isStudio && enginePool.length > 0) {
+      if (!enginePool.some(voice => voice.id === workingNarratorVoiceId)) {
+        workingNarratorVoiceId = enginePool[0].id;
+      }
+      characters.forEach((char, index) => {
+        const key = char.name.toUpperCase().trim();
+        const assignment = workingAssignments.get(key) || makeDefaultAssignment();
+        const savedStudioVoice = assignment.voiceIds?.[engineId];
+        if (!enginePool.some(voice => voice.id === savedStudioVoice)) {
+          const voiceId = enginePool[index % enginePool.length].id;
+          workingAssignments.set(key, {
+            ...assignment,
+            voiceIds: { ...(assignment.voiceIds || {}), [engineId]: voiceId }
+          });
+        }
+      });
+    }
     const narratorProfile = getVoiceById(workingNarratorVoiceId, engineId);
+    const studioCastReady = !isStudio || (
+      enginePool.length > 0
+      && !!workingNarratorVoiceId
+      && characters.every(char => {
+        const assignment = workingAssignments.get(char.name.toUpperCase().trim()) || {};
+        return enginePool.some(voice => voice.id === voiceIdOf(assignment));
+      })
+    );
 
     modal.innerHTML = `
       ${isInitialSetup ? `
@@ -185,12 +222,32 @@ export function createVoiceConfigModal({
             <div>
               ${getIconSvg('cpu', 17)}
               <span>
-                <strong>${engineId === ENGINE_IDS.OPENAI ? 'OpenAI cloud voices' : 'Kokoro local voices'}</strong>
-                <small>${engineId === ENGINE_IDS.OPENAI ? 'Dialogue is sent to OpenAI for synthesis.' : 'Audio is generated on this device. Your screenplay stays local.'}</small>
+                <strong>${engineId === ENGINE_IDS.OPENAI ? 'OpenAI cloud voices' : (isStudio ? 'Studio Local · Chatterbox' : 'Kokoro local voices')}</strong>
+                <small>${engineId === ENGINE_IDS.OPENAI
+                  ? 'Dialogue is sent to OpenAI for synthesis.'
+                  : (isStudio ? 'Highest-quality local voices cloned from private reference recordings.' : 'Audio is generated on this device. Your screenplay stays local.')}</small>
               </span>
             </div>
             <button id="btn-casting-engine" class="btn btn-quiet" type="button">Change engine</button>
           </div>
+
+          ${isStudio ? `
+            <section class="studio-voice-library" aria-labelledby="studio-voice-title">
+              <div>
+                <span class="eyebrow">Private voice library</span>
+                <strong id="studio-voice-title">${enginePool.length
+                  ? `${enginePool.length} reference voice${enginePool.length === 1 ? '' : 's'} available`
+                  : 'Add your first reference voice'}</strong>
+                <small>Use a clean 5–10 second recording with one speaker and little background noise. Stored only in this browser.</small>
+              </div>
+              <label class="btn btn-secondary studio-add-voice ${addingStudioVoice ? 'is-loading' : ''}">
+                ${getIconSvg('upload', 15)} ${addingStudioVoice ? 'Adding voice…' : 'Add reference voice'}
+                <input id="studio-voice-file" type="file" accept="audio/*,.wav,.mp3,.m4a,.ogg" ${addingStudioVoice ? 'disabled' : ''}>
+              </label>
+              <p>Only clone a voice you own or have permission to use.</p>
+              ${studioVoiceError ? `<div class="studio-voice-error" role="alert">${escapeHtml(studioVoiceError)}</div>` : ''}
+            </section>
+          ` : ''}
 
           ${setupMode === 'choice' ? `
             <div class="casting-choice">
@@ -200,9 +257,11 @@ export function createVoiceConfigModal({
                 <p>Both paths can be adjusted later from the listening room.</p>
               </div>
               <div class="casting-choice-grid">
-                <button class="casting-path is-recommended" id="casting-path-recommended" type="button">
+                <button class="casting-path is-recommended" id="casting-path-recommended" type="button" ${isStudio && enginePool.length === 0 ? 'disabled' : ''}>
                   <span class="path-icon">${getIconSvg('sparkles', 20)}</span>
-                  <span><strong>Use recommended cast</strong><small>Assign distinct voices automatically, then review them before listening.</small></span>
+                  <span><strong>Use recommended cast</strong><small>${isStudio && enginePool.length === 0
+                    ? 'Add at least one reference voice to create a Studio cast.'
+                    : 'Assign distinct voices automatically, then review them before listening.'}</small></span>
                   <em>Fastest</em>
                   ${getIconSvg('chevronRight', 18)}
                 </button>
@@ -249,16 +308,16 @@ export function createVoiceConfigModal({
 
             <div class="voice-card-controls">
               <div class="voice-select-row">
-                <select class="voice-select modal-narrator-select" style="font-weight: 500;">
+                <select class="voice-select modal-narrator-select" style="font-weight: 500;" ${enginePool.length === 0 ? 'disabled' : ''}>
                   ${buildVoiceOptions(workingNarratorVoiceId)}
                 </select>
-                <button class="btn btn-secondary btn-audition-narrator ${currentlyPlayingChar === 'NARRATOR' ? 'btn-active' : ''}" style="padding: 7px 14px;">
+                <button class="btn btn-secondary btn-audition-narrator ${currentlyPlayingChar === 'NARRATOR' ? 'btn-active' : ''}" style="padding: 7px 14px;" ${enginePool.length === 0 ? 'disabled' : ''}>
                   ${currentlyPlayingChar === 'NARRATOR' ? `${getIconSvg('stop', 15)} Stop` : `${getIconSvg('volume', 15)} Listen`}
                 </button>
               </div>
 
               <div class="voice-desc-pill">
-                <strong>${narratorProfile.name}:</strong> ${narratorProfile.tone} • ${narratorProfile.description}
+                <strong>${escapeHtml(narratorProfile.name)}:</strong> ${escapeHtml(narratorProfile.tone)} • ${escapeHtml(narratorProfile.description)}
               </div>
             </div>
           </div>
@@ -295,7 +354,7 @@ export function createVoiceConfigModal({
                         <span class="badge-lines">${char.lineCount} lines (${percent}%)</span>
                       </div>
                       <div style="font-size: 0.75rem; color: #06B6D4; font-weight: 600; margin-top: 1px;">
-                        ${voiceProfile.name} • ${voiceProfile.sex} ${voiceProfile.accent}
+                        ${escapeHtml(voiceProfile.name)} • ${escapeHtml(voiceProfile.sex)} ${escapeHtml(voiceProfile.accent)}
                         <span style="color: ${gradeColor(voiceProfile.id)}; font-weight: 700;">
                           · ${escapeHtml(qualityBadge(voiceProfile.id))}
                         </span>
@@ -311,10 +370,10 @@ export function createVoiceConfigModal({
                   <!-- Voice Selection Row -->
                   <div class="voice-card-controls">
                     <div class="voice-select-row">
-                      <select class="voice-select modal-char-select" data-char="${charAttr}">
+                      <select class="voice-select modal-char-select" data-char="${charAttr}" ${enginePool.length === 0 ? 'disabled' : ''}>
                         ${buildVoiceOptions(voiceIdOf(assignment))}
                       </select>
-                      <button class="btn btn-secondary btn-audition-char ${isPlaying ? 'btn-active' : ''}" data-char="${charAttr}" style="padding: 7px 12px; white-space: nowrap;">
+                      <button class="btn btn-secondary btn-audition-char ${isPlaying ? 'btn-active' : ''}" data-char="${charAttr}" style="padding: 7px 12px; white-space: nowrap;" ${enginePool.length === 0 ? 'disabled' : ''}>
                         ${isPlaying ? `${getIconSvg('stop', 14)} Stop` : `${getIconSvg('volume', 14)} Listen`}
                       </button>
                     </div>
@@ -323,7 +382,7 @@ export function createVoiceConfigModal({
                       <summary>${getIconSvg('sliders', 13)} Advanced performance controls</summary>
                       <div class="voice-advanced-body">
                     <div class="voice-tone-tag">
-                      <span>${voiceProfile.tone}</span>
+                      <span>${escapeHtml(voiceProfile.tone)}</span>
                     </div>
 
                     <div class="voice-sliders-container">
@@ -385,7 +444,7 @@ export function createVoiceConfigModal({
               ${isInitialSetup ? 'Back to scripts' : 'Cancel'}
             </button>
             ${setupMode !== 'choice' ? `<button id="btn-reset-cast" class="btn btn-secondary" type="button">${getIconSvg('replay', 14)} Reset cast</button>` : ''}
-            <button id="btn-modal-save" class="btn btn-primary" style="padding: 10px 24px; font-size: 0.95rem; font-weight: 700;" ${setupMode === 'choice' ? 'disabled' : ''}>
+            <button id="btn-modal-save" class="btn btn-primary" style="padding: 10px 24px; font-size: 0.95rem; font-weight: 700;" ${setupMode === 'choice' || !studioCastReady ? 'disabled' : ''}>
               ${getIconSvg('play', 16)}
               <span>${isInitialSetup ? 'Save cast and open player' : 'Save voice cast'}</span>
             </button>
@@ -398,6 +457,24 @@ export function createVoiceConfigModal({
   }
 
   function attachEventListeners() {
+    modal.querySelector('#studio-voice-file')?.addEventListener('change', async event => {
+      const file = event.target.files?.[0];
+      if (!file) return;
+      addingStudioVoice = true;
+      studioVoiceError = '';
+      renderContent();
+      try {
+        await saveChatterboxVoice(file);
+        enginePool = getVoicesForEngine(engineId);
+        applyRecommendedCast();
+        if (setupMode === 'choice') setupMode = 'review';
+      } catch (error) {
+        studioVoiceError = error.message || 'The reference voice could not be added.';
+      } finally {
+        addingStudioVoice = false;
+        renderContent();
+      }
+    });
     // Close button
     const btnClose = modal.querySelector('.btn-close-voice-modal');
     if (btnClose) {

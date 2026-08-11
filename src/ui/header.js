@@ -69,12 +69,17 @@ export function createHeader({
     if (!badgeText || !badge) return false;
 
     const isCloud = engineId === ENGINE_TYPES.OPENAI;
-    badgeText.textContent = isCloud ? 'Cloud voices' : 'Local voices';
+    const isStudio = engineId === ENGINE_TYPES.CHATTERBOX;
+    badgeText.textContent = isCloud ? 'Cloud voices' : (isStudio ? 'Studio Local' : 'Local voices');
     badge.classList.toggle('is-cloud', isCloud);
     badge.title = isCloud
       ? 'OpenAI voices — dialogue is sent to OpenAI. Click to change.'
-      : 'Kokoro voices — screenplay audio is generated on this device. Click to change.';
-    return isCloud;
+      : (isStudio
+        ? 'Chatterbox Studio voices — generated privately on this device. Click to change.'
+        : 'Kokoro voices — screenplay audio is generated on this device. Click to change.');
+    // Only Kokoro's cache status should rewrite this label. Studio Local has a
+    // separate multi-file install state and must not inherit Kokoro's badge.
+    return engineId !== ENGINE_TYPES.KOKORO_NEURAL;
   }
 
   function updateEngineCacheBadge({ isModelCached, isFullyCached, engineId }) {

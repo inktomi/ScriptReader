@@ -19,7 +19,7 @@ export function createHelpModal({ onClose }) {
       <div class="modal-body help-sections">
         <section>
           <h3>${getIconSvg('cpu', 16)} Private by default</h3>
-          <p>Kokoro generates the table read on this device. If you choose OpenAI voices, ScriptReader clearly asks for consent before sending dialogue for synthesis.</p>
+          <p>Kokoro provides fast local playback. Studio Local installs Chatterbox once and creates higher-quality private voices from reference recordings stored on this device. If you choose OpenAI voices, ScriptReader clearly asks for consent before sending dialogue for synthesis.</p>
         </section>
 
         <section>

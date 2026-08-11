@@ -37,7 +37,7 @@ export function createCastPanel({
         <optgroup label="${label}">
           ${voices.map(v => `
             <option value="${v.id}" ${v.id === selectedId ? 'selected' : ''}>
-              ${v.name} (${v.sex} ${v.ageGroup} • ${v.accent}) - ${v.tone.split(',')[0]}
+              ${escapeHtml(v.name)} (${escapeHtml(v.sex)} ${escapeHtml(v.ageGroup)} • ${escapeHtml(v.accent)}) - ${escapeHtml(v.tone.split(',')[0])}
             </option>
           `).join('')}
         </optgroup>
@@ -79,7 +79,7 @@ export function createCastPanel({
               <div class="char-name" style="color: #F59E0B;">THE NARRATOR</div>
               <div class="char-badges">
                 <span class="badge-lines">Scene Headings & Actions</span>
-                <span class="badge-voice">${narratorProfile.name}</span>
+                <span class="badge-voice">${escapeHtml(narratorProfile.name)}</span>
               </div>
             </div>
           </div>
@@ -125,7 +125,7 @@ export function createCastPanel({
                   <div class="char-name">${escapeHtml(char.name)}</div>
                   <div class="char-badges">
                     <span class="badge-lines">${char.lineCount} lines (${percent}%)</span>
-                    <span class="badge-voice">${voiceProfile.name}</span>
+                    <span class="badge-voice">${escapeHtml(voiceProfile.name)}</span>
                   </div>
                 </div>
               </div>

@@ -456,9 +456,18 @@ async function initApp() {
         showResumeToast(
           engineId === ENGINE_TYPES.OPENAI
             ? 'Cloud voices on — dialogue is sent to OpenAI to be spoken.'
-            : 'Local Kokoro voices on — nothing leaves this device.'
+            : (engineId === ENGINE_TYPES.CHATTERBOX
+              ? 'Studio Local on — Chatterbox voices run privately on this device.'
+              : 'Local Kokoro voices on — nothing leaves this device.')
         );
-        if (afterEngineChanged) afterEngineChanged(engineId);
+        if (afterEngineChanged) {
+          afterEngineChanged(engineId);
+        } else if (engineId === ENGINE_TYPES.CHATTERBOX) {
+          // Chatterbox voices are private reference recordings rather than a
+          // built-in catalog. Move straight into casting after installation so
+          // the engine can never be selected with an unexplained empty cast.
+          openVoiceConfigModal(false);
+        }
       }
     });
     document.body.appendChild(modal);

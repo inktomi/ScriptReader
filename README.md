@@ -10,7 +10,8 @@ By leveraging advanced in-browser neural Text-to-Speech (TTS), ScriptReader can 
 * **Overlapping Dialogue**: Characters can talk over each other. A line ending in `--` is cut off by whoever speaks next; Fountain's `^` dual-dialogue marker makes two characters speak at once. See [Overlap and pacing notation](#overlap-and-pacing-notation).
 * **Authored Pacing**: A `[[pace: rapid]]` note makes an argument crackle and `[[pace: droning]]` makes a lecture drag — tightening or stretching both the gaps *and* the delivery speed until the next directive or scene heading.
 * **Format Support**: Upload scripts in standard industry formats, including **Fountain** text files and **PDFs**.
-* **100% Local Processing**: ScriptReader runs entirely in your browser. It uses WebGPU (falling back to WebAssembly) via Transformers.js to execute neural TTS models (like Kokoro) directly on your device. Your data never leaves your computer.
+* **Private Local Processing**: Kokoro and the optional Studio Local engine run entirely in your browser through WebGPU (falling back to WebAssembly). A cloud engine is available only as an explicit opt-in.
+* **Studio Local Voices**: Install Chatterbox once (about 1.5 GB), then create expressive character voices from private 5–10 second reference recordings. Model files and references remain on the device and work offline after caching.
 * **Gapless Playback**: Lines are placed directly on the Web Audio timeline at sample accuracy, so the only silence you hear is deliberate theatrical timing. Sit back and the script reads itself.
 * **Direction-Aware Performance**: Parentheticals actually change the delivery. `(whispering)` drops the level and slows the read; `(authoritative)` lowers the pitch and firms the tempo; `(over comms)` band-limits the voice like a radio; an `(O.S.)` cue moves it off-screen.
 * **Teleprompter UI**: Follow along with the audio playback via a clean, auto-scrolling teleprompter interface that highlights the current active line.
@@ -69,8 +70,8 @@ have no PDF equivalent.
 ## Technical Stack
 
 * **Frontend**: Vanilla JavaScript (ESModules) and CSS, bundled with Vite.
-* **Audio Engine**: Web Audio API combined with `kokoro-js` (a port of the Kokoro TTS model).
-* **Neural Inference**: Handled via `@huggingface/transformers` running in a dedicated Web Worker to prevent UI blocking.
+* **Audio Engine**: Web Audio API with Kokoro for fast local reads, Chatterbox for high-quality local character voices, and an optional cloud provider.
+* **Neural Inference**: `kokoro-js` and `@huggingface/transformers`, each isolated in a dedicated Web Worker to prevent UI blocking.
 * **Parsing**: Custom Fountain parsing and PDF text extraction.
 
 ## How the audio pipeline works
@@ -83,7 +84,7 @@ script element
   ↓  overlap-pacing.js         who overlaps whom, and how fast the passage runs
   ↓  performance-director.js   direction → tempo / pitch / level / filter / pan, split into chunks
 render unit
-  ↓  kokoro-engine.js          priority-queued synthesis, deduped + cached as AudioBuffers
+  ↓  selected engine           priority-queued synthesis, deduped + cached as AudioBuffers
 audio buffer
   ↓  playback-scheduler.js     placed on the AudioContext timeline at an absolute start time
 speaker
@@ -190,10 +191,15 @@ requirement: WebGPU never needs them, and browsers without it fall back to
 single-threaded inference, which works but is markedly slower. Hosts that cannot
 set response headers at all (GitHub Pages) will run in that degraded mode.
 
-First load pulls ~25 MB of assets plus the Kokoro weights from Hugging Face;
-both are cached in the browser afterwards. Expect a good experience on desktops
-and a memory-constrained one on phones.
+Neural weights are deferred until the listener chooses an engine. Kokoro is the
+smaller fast-local option. Studio Local is an explicit roughly 1.5 GB install,
+cached by the browser for later offline sessions; it is intended primarily for
+desktop browsers with WebGPU.
 
 ## Privacy & Security
 
-Because all parsing and neural inference happens locally inside your browser, ScriptReader is completely private by design. It does not require an internet connection after the initial loading of the model weights, making it safe for unreleased, confidential screenplays.
+Parsing is always local. Kokoro and Studio Local synthesis stay inside the
+browser and require no connection after their model weights are cached. Studio
+reference recordings are stored in IndexedDB on the same device. The OpenAI
+engine is a separate, explicit opt-in and clearly identifies when screenplay
+text will be sent to a cloud service.
