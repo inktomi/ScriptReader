@@ -6,18 +6,21 @@ env.useBrowserCache = true;
 env.allowLocalModels = false;
 
 // NOTE: transformers.js points onnxruntime at cdn.jsdelivr.net when its backend
-// module is evaluated, which overrides the ~21 MB ORT runtime Vite emits into
-// /assets — so that asset ships on every build and is never served.
+// module is evaluated, so the ORT runtime is fetched from there rather than
+// from this origin. vite.config.js keeps the ~21 MB binary out of /assets to
+// match; it used to ship on every build and never be served.
 //
-// Clearing wasmPaths to reclaim it does NOT work, and fails silently: ORT then
+// Do NOT clear wasmPaths to force self-hosting. It fails silently: ORT then
 // asks for `ort-wasm-simd-threaded.jsep.mjs` and `.wasm` by their canonical
-// names, but Vite only emits the content-hashed `.wasm`, so both 404, the wasm
-// backend never initializes, and from_pretrained hangs forever with no error on
-// both the WebGPU and the WASM attempt. It appears to work in dev only because
+// names, nothing at this origin answers to those, the wasm backend never
+// initializes, and from_pretrained hangs forever with no error on both the
+// WebGPU and the WASM attempt. It appears to work in dev only because
 // node_modules serves the unhashed originals.
 //
 // Self-hosting properly means copying onnxruntime-web's dist files somewhere
-// stable under their real names and pointing wasmPaths at that directory.
+// stable under their real names and pointing wasmPaths at that directory — and
+// on Cloudflare Workers it is not an option at all, because the binary
+// transformers-v4 needs is over the 25 MiB per-asset ceiling.
 
 // huggingface.co omits Access-Control-Allow-Origin when a request carries a
 // Referer from certain hosts — *.workers.dev among them — so every weight fetch

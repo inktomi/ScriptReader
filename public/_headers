@@ -32,7 +32,8 @@
   Referrer-Policy: no-referrer
 
 # Everything Vite emits here is content-hashed, so it can never go stale.
-# Worth being explicit given the ONNX runtime alone is 21 MB — a returning
-# family member should pay that once, not once per visit.
+# Worth being explicit given the two TTS workers are ~2 MB each — a returning
+# family member should pay that once, not once per visit. The ONNX runtime
+# itself is not here: it comes from jsdelivr, and vite.config.js explains why.
 /assets/*
   Cache-Control: public, max-age=31536000, immutable
