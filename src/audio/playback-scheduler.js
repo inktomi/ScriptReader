@@ -29,6 +29,8 @@ const MIN_LEAD = 0.03;       // never schedule closer than this to "now"
 const RELEASE_TIME = 0.012;  // fade used when cutting playback short
 const INTERRUPT_FADE = 0.08; // fade applied when a line is cut off mid-thought
 const MIN_AUDIBLE = 0.06;    // a trimmed unit never collapses below this
+const MIX_HEADROOM = 0.76;    // leave room for two actors and filter makeup gain
+const MAX_UNIT_GAIN = 1.10;   // one actor cannot overload the mix bus alone
 
 export class PlaybackScheduler {
   constructor() {
@@ -53,13 +55,24 @@ export class PlaybackScheduler {
 
     if (this.ctx) {
       this.master = this.ctx.createGain();
-      this.master.gain.value = 1.0;
+      this.master.gain.value = MIX_HEADROOM;
+
+      // Speech peaks add quickly when actors overlap. The compressor is the
+      // final safety stage: transparent on ordinary dialogue, progressively
+      // limiting only the peaks that would clip at the destination.
+      this.limiter = this.ctx.createDynamicsCompressor();
+      this.limiter.threshold.value = -1;
+      this.limiter.knee.value = 0;
+      this.limiter.ratio.value = 20;
+      this.limiter.attack.value = 0.001;
+      this.limiter.release.value = 0.12;
 
       this.analyser = this.ctx.createAnalyser();
       this.analyser.fftSize = 512;
       this.analyser.smoothingTimeConstant = 0.75;
 
-      this.master.connect(this.analyser);
+      this.master.connect(this.limiter);
+      this.limiter.connect(this.analyser);
       this.analyser.connect(this.ctx.destination);
     }
   }
@@ -92,7 +105,7 @@ export class PlaybackScheduler {
 
   _applyMasterGain() {
     if (!this.master || !this.ctx) return;
-    const target = this.isMuted ? 0.0001 : Math.max(0.0001, this.volume);
+    const target = this.isMuted ? 0.0001 : Math.max(0.0001, this.volume * MIX_HEADROOM);
     this.master.gain.setTargetAtTime(target, this.ctx.currentTime, 0.015);
   }
 
@@ -153,14 +166,12 @@ export class PlaybackScheduler {
 
     const gainNode = ctx.createGain();
 
-    // A StereoPannerNode uses the constant-power law, which at centre puts
-    // cos(pi/4) = 0.707 into each channel. Web Audio's plain mono-to-stereo
-    // upmix puts the full signal into each. Compensating by sqrt(2) makes a
-    // centred voice — every narrator line — bit-for-bit as loud as it was
-    // before this graph gained a panner.
+    // StereoPannerNode already uses a constant-power law. Compensating that law
+    // with sqrt(2) made each centred voice full-scale in both channels and left
+    // no headroom for a second actor.
     const panNode = ctx.createStereoPanner();
     panNode.pan.value = Math.max(-1, Math.min(1, unit.pan || 0));
-    gainNode.gain.value = unit.gain * makeupGain * Math.SQRT2;
+    gainNode.gain.value = Math.min(MAX_UNIT_GAIN, Math.max(0, unit.gain * makeupGain));
 
     head.connect(gainNode);
     gainNode.connect(panNode);
@@ -203,15 +214,16 @@ export class PlaybackScheduler {
     const { gainNode, tailNode } = this._buildChain(unit, source);
 
     const naturalEnd = startAt + natural;
-    const endAt = trim > 0 ? startAt + play + INTERRUPT_FADE : naturalEnd;
+    const interruptFade = unit.interruptFadeSec || INTERRUPT_FADE;
+    const endAt = trim > 0 ? startAt + play + interruptFade : naturalEnd;
 
     source.start(startAt);
 
     if (trim > 0) {
       const cut = startAt + play;
       gainNode.gain.setValueAtTime(gainNode.gain.value, cut);
-      gainNode.gain.linearRampToValueAtTime(0.0001, cut + INTERRUPT_FADE);
-      source.stop(cut + INTERRUPT_FADE);
+      gainNode.gain.linearRampToValueAtTime(0.0001, cut + interruptFade);
+      source.stop(cut + interruptFade);
     }
 
     const entry = { source, gainNode, tailNode, startAt, endAt, unit };

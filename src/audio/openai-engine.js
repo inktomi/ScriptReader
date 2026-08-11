@@ -53,6 +53,10 @@ function backoffMs(attempt) {
 
 function sleep(ms, signal) {
   return new Promise((resolve, reject) => {
+    if (signal && signal.aborted) {
+      reject(new DOMException('aborted', 'AbortError'));
+      return;
+    }
     const timer = setTimeout(resolve, ms);
     if (!signal) return;
     signal.addEventListener('abort', () => {
@@ -121,18 +125,19 @@ export class OpenAiTtsEngine {
     return {
       id: ENGINE_IDS.OPENAI,
       label: 'OpenAI gpt-4o-mini-tts',
-      // No working speed parameter on this model, so the tempo/pitch
-      // cancellation trick is unavailable — and unnecessary, because tempo can
-      // simply be asked for in words.
-      supportsSpeed: false,
+      // The speech endpoint accepts an exact numeric speed. Instructions still
+      // carry acting direction, but transport and character pace must not be
+      // approximated with prose bands.
+      supportsSpeed: true,
       supportsInstructions: true,
+      usesInstructionPitch: true,
       isLocal: false,
       metered: true,
       nativeSampleRate: 24000,
       // Far larger than Kokoro's 190. The model re-reads `instructions` for every
       // request, so splitting a speech into small pieces gives each piece
       // independently-invented prosody and an audible seam at every join.
-      maxChunkChars: 800,
+      maxChunkChars: 4096,
       concurrency: CONCURRENCY,
       // Never silently drop a paying listener onto the browser's built-in voice:
       // if this engine cannot start, the reason is something they must act on.
@@ -339,7 +344,10 @@ export class OpenAiTtsEngine {
         this.notifyProgress(
           0,
           (error && error.message) || 'OpenAI speech synthesis failed.',
-          'error'
+          // One exhausted render does not make the engine unusable. Reporting a
+          // warning keeps already-buffered dialogue playing while the manager
+          // can request that unit again if it is still needed.
+          'warning'
         );
       }
       entry.reject(error);
@@ -373,6 +381,7 @@ export class OpenAiTtsEngine {
       model: MODEL,
       voice: unit.voiceId,
       input: unit.text,
+      speed: Math.min(4, Math.max(0.25, Number(unit.synthSpeed) || 1)),
       // Raw samples at the rate the AudioContext already runs at: no decode, no
       // encoder delay, no resampling.
       response_format: 'pcm'

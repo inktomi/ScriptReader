@@ -37,6 +37,10 @@ function fakeEngine(overrides = {}) {
       id: ENGINE_IDS.OPENAI,
       metered: true,
       onUnavailable: 'error',
+      supportsSpeed: true,
+      supportsInstructions: true,
+      usesInstructionPitch: true,
+      maxChunkChars: 4096,
       ...overrides.capabilities
     },
     onProgress(callback) {
@@ -90,6 +94,41 @@ test('runtime engine errors leave buffering and emit an actionable error', () =>
   assert.equal(events.at(-1).data.code, 'quota');
 });
 
+test('an isolated render warning does not cut off current playback', () => {
+  const manager = new ScreenplayAudioManager();
+  if (manager._unbindProgress) manager._unbindProgress();
+  const engine = fakeEngine({ lastError: new Error('future line failed') });
+  manager.engine = engine;
+  manager.engineId = ENGINE_IDS.OPENAI;
+  manager._bindEngineProgress();
+  manager.playbackState = PLAYBACK_STATES.PLAYING;
+
+  engine.progressCallback({ phase: 'warning', message: 'future line failed' });
+
+  assert.equal(manager.playbackState, PLAYBACK_STATES.PLAYING);
+});
+
+test('a fatal engine error is surfaced and tears down paused playback', () => {
+  const manager = new ScreenplayAudioManager();
+  if (manager._unbindProgress) manager._unbindProgress();
+  const error = Object.assign(new Error('key revoked'), { code: 'invalid_key', fatal: true });
+  const engine = fakeEngine({ lastError: error });
+  manager.engine = engine;
+  manager.engineId = ENGINE_IDS.OPENAI;
+  manager._bindEngineProgress();
+  manager.playbackState = PLAYBACK_STATES.PAUSED;
+  let stopped = 0;
+  manager.scheduler = { stopAll() { stopped++; } };
+  const events = [];
+  manager.subscribe((event, data) => events.push({ event, data }));
+
+  engine.progressCallback({ phase: 'error', message: error.message });
+
+  assert.equal(manager.playbackState, PLAYBACK_STATES.IDLE);
+  assert.equal(stopped, 1);
+  assert.equal(events.at(-1).event, 'engineError');
+});
+
 test('Play awaits an already-loading engine and falls back when it fails', async () => {
   const manager = new ScreenplayAudioManager();
   manager.scriptElements = [{ type: 'ACTION', character: 'NARRATOR', text: 'Opening' }];
@@ -118,6 +157,29 @@ test('Play awaits an already-loading engine and falls back when it fails', async
   assert.equal(initCalls, 1);
   assert.equal(fallback, true);
   assert.equal(manager.usingWebSpeechFallback, true);
+});
+
+test('resuming paused playback reinitializes an engine that became unavailable', async () => {
+  const manager = new ScreenplayAudioManager();
+  manager.scriptElements = [{ type: 'ACTION', character: 'NARRATOR', text: 'Opening' }];
+  manager.playbackState = PLAYBACK_STATES.PAUSED;
+  manager.scheduler = {};
+  manager._ensureAudio = async () => manager.scheduler;
+  let initCalls = 0;
+  manager.engine = fakeEngine({
+    isReady: false,
+    async init() {
+      initCalls++;
+      this.isReady = true;
+    }
+  });
+  let restarted = 0;
+  manager._beginNeuralPlayback = () => { restarted++; };
+
+  await manager.play();
+
+  assert.equal(initCalls, 1);
+  assert.equal(restarted, 1);
 });
 
 test('Play uses Web Speech when no AudioContext scheduler can be created', async () => {
@@ -158,4 +220,44 @@ test('overlap request pumping expands past the normal lookahead cap', () => {
     : null;
   manager._pumpRequests();
   assert.equal(requested.length, 40);
+});
+
+test('ready runway counts simultaneous voices by timeline coverage, not sum', () => {
+  const manager = new ScreenplayAudioManager();
+  const units = [
+    [{ key: 'left', playbackRate: 1, leadPause: 0, overlapMode: 'sequential' }],
+    [{ key: 'right', playbackRate: 1, leadPause: 0, overlapMode: 'simultaneous' }]
+  ];
+  manager.scriptElements = [{}, {}];
+  manager.cursorLine = 0;
+  manager.cursorUnit = 0;
+  manager._unitsForLine = line => units[line] || null;
+  manager.engine = fakeEngine({ getCached() { return { duration: 1.6 }; } });
+
+  assert.deepEqual(manager._readyRunway(), { seconds: 1.6, hitEnd: true });
+});
+
+test('OpenAI preview failure never auditions a browser voice', async () => {
+  const manager = new ScreenplayAudioManager();
+  const error = Object.assign(new Error('speech endpoint unavailable'), { code: 'network' });
+  let browserSpeeches = 0;
+  manager.webSpeechEngine.speakLine = () => { browserSpeeches++; };
+  manager.scheduler = { stopAll() {} };
+  manager._ensureAudio = async () => manager.scheduler;
+  manager.engineId = ENGINE_IDS.OPENAI;
+  manager.engine = fakeEngine({ request: async () => { throw error; } });
+  const events = [];
+  manager.subscribe((event, data) => events.push({ event, data }));
+
+  const originalWarn = console.warn;
+  console.warn = () => {};
+  try {
+    await manager.previewVoice('marin', 'Preview this line.');
+  } finally {
+    console.warn = originalWarn;
+  }
+
+  assert.equal(browserSpeeches, 0);
+  assert.equal(events.at(-1).event, 'engineError');
+  assert.equal(events.at(-1).data.code, 'network');
 });

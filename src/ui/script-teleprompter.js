@@ -121,7 +121,8 @@ export function createScriptTeleprompter({
             </span>
           ` : '';
 
-          const overlapBadge = overlapMode ? (() => {
+          const visibleOverlap = overlapMode === 'simultaneous' || overlapMode === 'interrupt';
+          const overlapBadge = visibleOverlap ? (() => {
             const color = overlapMode === 'simultaneous' ? '#06B6D4' : '#F43F5E';
             const text = overlapMode === 'simultaneous' ? '⇉ Simultaneous' : '⏵ Interrupts';
             return `<span class="emotion-badge" style="background: ${color}22; border-color: ${color}66; color: ${color};">${text}</span>`;

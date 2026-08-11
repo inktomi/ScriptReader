@@ -82,6 +82,7 @@ function band(bands, value) {
 }
 
 function clampLength(text, max) {
+  if (max <= 0) return '';
   if (text.length <= max) return text;
   const cut = text.slice(0, max);
   const lastStop = cut.lastIndexOf('.');
@@ -110,19 +111,21 @@ export function composeInstructions({
   tempo = 1.0,
   pitch = 1.0,
   persona = '',
-  isNarration = false
+  isNarration = false,
+  includeTempo = true
 } = {}) {
-  const parts = [];
+  const stableParts = [];
+  const lineParts = [];
 
-  if (persona) parts.push(persona.trim().replace(/\.?$/, '.'));
-  if (direction && direction.trim()) parts.push(direction.trim().replace(/\.?$/, '.'));
+  if (persona) stableParts.push(persona.trim().replace(/\.?$/, '.'));
+  if (direction && direction.trim()) stableParts.push(direction.trim().replace(/\.?$/, '.'));
 
   const register = band(REGISTER_BANDS, pitch);
-  if (register) parts.push(register);
-  parts.push(band(PACE_BANDS, tempo));
+  if (register) stableParts.push(register);
+  if (includeTempo) stableParts.push(band(PACE_BANDS, tempo));
 
   const emotion = EMOTION_INSTRUCTIONS[nuance.emotionKey];
-  if (emotion) parts.push(emotion);
+  if (emotion) lineParts.push(emotion);
 
   // The screenwriter's own parenthetical, verbatim and last, because it is the
   // most specific thing anyone said about this line. Passed through rather than
@@ -130,13 +133,23 @@ export function composeInstructions({
   // survives — precisely the kind of direction the table cannot represent and
   // this engine can actually act on.
   if (nuance.directionText) {
-    parts.push(`Direction for this line: ${nuance.directionText}.`);
+    lineParts.push(`Direction for this line: ${nuance.directionText}.`);
   }
 
   if (isNarration && !direction) {
-    parts.push('This is screen action, not a character speaking.');
+    lineParts.push('This is screen action, not a character speaking.');
   }
 
-  const text = parts.filter(Boolean).join(' ').trim();
-  return text.length > 0 ? clampLength(text, MAX_INSTRUCTION_CHARS) : null;
+  const specific = lineParts.filter(Boolean).join(' ').trim();
+  const stable = stableParts.filter(Boolean).join(' ').trim();
+  if (!specific && !stable) return null;
+
+  // Line-specific direction is the information that cannot be recovered from
+  // the voice profile. Reserve its full budget first, then trim the reusable
+  // persona/direction prefix to fit around it.
+  if (specific.length >= MAX_INSTRUCTION_CHARS) {
+    return clampLength(specific, MAX_INSTRUCTION_CHARS);
+  }
+  const stableBudget = MAX_INSTRUCTION_CHARS - specific.length - (specific && stable ? 1 : 0);
+  return [clampLength(stable, stableBudget), specific].filter(Boolean).join(' ').trim();
 }

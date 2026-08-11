@@ -175,9 +175,7 @@ export class ScreenplayAudioManager {
         }
       }
 
-      if (payload.phase === 'error' &&
-          (this.playbackState === PLAYBACK_STATES.PLAYING ||
-           this.playbackState === PLAYBACK_STATES.BUFFERING)) {
+      if (payload.phase === 'error' && this.playbackState !== PLAYBACK_STATES.IDLE) {
         const error = this.engine.lastError;
         const message = payload.message || (error && error.message) || 'Voice synthesis failed.';
         const code = (error && error.code) || 'runtime_failure';
@@ -635,26 +633,40 @@ export class ScreenplayAudioManager {
     let line = this.cursorLine;
     let unit = this.cursorUnit;
     let seconds = 0;
+    let clusterSeconds = 0;
     let guard = 0;
 
     while (guard++ < 500) {
       const units = this._unitsForLine(line);
-      if (!units) return { seconds, hitEnd: true };
+      if (!units) return { seconds: seconds + clusterSeconds, hitEnd: true };
       if (unit >= units.length) {
         line++;
         unit = 0;
         continue;
       }
 
-      const u = units[unit];
-      const cached = this.engine.getCached(u.key);
-      if (!cached) return { seconds, hitEnd: false };
+      let lineSeconds = 0;
+      const first = units[unit];
+      for (; unit < units.length; unit++) {
+        const u = units[unit];
+        const cached = this.engine.getCached(u.key);
+        if (!cached) return { seconds: seconds + clusterSeconds, hitEnd: false };
+        lineSeconds += cached.duration / (u.playbackRate || 1);
+        lineSeconds += Math.max(0, u.leadPause || 0);
+      }
 
-      seconds += cached.duration / (u.playbackRate || 1);
-      unit++;
+      if ((first.overlapMode || 'sequential') === 'simultaneous') {
+        clusterSeconds = Math.max(clusterSeconds, lineSeconds);
+      } else {
+        seconds += clusterSeconds;
+        clusterSeconds = lineSeconds;
+      }
+
+      line++;
+      unit = 0;
     }
 
-    return { seconds, hitEnd: false };
+    return { seconds: seconds + clusterSeconds, hitEnd: false };
   }
 
   _hasPrimeBudget() {
@@ -960,7 +972,8 @@ export class ScreenplayAudioManager {
 
     // Resuming from pause: the context clock was frozen, so everything already
     // scheduled is still valid and simply continues.
-    if (this.playbackState === PLAYBACK_STATES.PAUSED && !this.usingWebSpeechFallback) {
+    if (this.playbackState === PLAYBACK_STATES.PAUSED &&
+        !this.usingWebSpeechFallback && this.engine.isReady) {
       this._setState(PLAYBACK_STATES.PLAYING);
       this._startTick();
       return;
@@ -1162,14 +1175,27 @@ export class ScreenplayAudioManager {
 
     await this._ensureAudio();
 
-    if (!this.engine.isReady && !this.engine.isLoading) {
+    let initError = null;
+    if (!this.engine.isReady) {
       try {
         await this.engine.init();
       } catch (err) {
-        console.warn('Kokoro init fallback for preview:', err);
+        initError = err;
+        console.warn(`Engine ${this.engineId} preview init failed:`, err);
       }
     }
     if (token !== this.previewToken) return;
+
+    if (!this.engine.isReady && this.engine.capabilities.onUnavailable === 'error') {
+      if (this.visualizer) this.visualizer.setSpeaking(false);
+      this.emit('engineError', {
+        engineId: this.engineId,
+        code: (initError && initError.code) || 'preview_unavailable',
+        message: (initError && initError.message)
+          || 'The selected voice could not be prepared for audition.'
+      });
+      return;
+    }
 
     if (this.visualizer) {
       this.visualizer.setSpeaking(true, { badgeColor: '#F59E0B' });
@@ -1204,8 +1230,18 @@ export class ScreenplayAudioManager {
         }
         return;
       } catch (err) {
-        console.warn('Kokoro preview failed, falling back to browser speech:', err);
+        console.warn(`Engine ${this.engineId} preview failed:`, err);
         if (token !== this.previewToken) return;
+        this.engine.dropPendingExcept([]);
+        if (this.engine.capabilities.onUnavailable === 'error') {
+          if (this.visualizer) this.visualizer.setSpeaking(false);
+          this.emit('engineError', {
+            engineId: this.engineId,
+            code: err.code || 'preview_failed',
+            message: err.message || 'The selected voice could not be auditioned.'
+          });
+          return;
+        }
       }
     }
 

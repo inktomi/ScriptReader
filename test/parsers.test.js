@@ -2,7 +2,8 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 
 import { parseFountainScript } from '../src/screenplay/fountain-parser.js';
-import { chunkSpeech } from '../src/audio/performance-director.js';
+import { buildLineUnits, chunkSpeech } from '../src/audio/performance-director.js';
+import { composeInstructions } from '../src/audio/instruction-composer.js';
 import {
   isPdfDialogueContinuation,
   shouldSplitPdfDialogueAtParenthetical
@@ -72,4 +73,144 @@ test('PDF dialogue ends when extraction returns to the action margin', () => {
 test('an inline PDF parenthetical splits already accumulated dialogue', () => {
   assert.equal(shouldSplitPdfDialogueAtParenthetical(['First phrase.']), true);
   assert.equal(shouldSplitPdfDialogueAtParenthetical([]), false);
+});
+
+test('a dual-dialogue cue stays continuous across a parenthetical', () => {
+  const parsed = parseFountainScript([
+    'ALICE',
+    'I have an idea.',
+    '',
+    'BOB ^',
+    'So do I—',
+    '(whispering)',
+    'and mine is better.'
+  ].join('\n'));
+  const bob = parsed.elements.filter(element => element.character === 'BOB');
+
+  assert.equal(bob.length, 2);
+  assert.equal(bob[0].overlap.mode, 'simultaneous');
+  assert.equal(bob[1].overlap.mode, 'continuation');
+});
+
+test('Fountain forced-character cues keep mixed-case names as dialogue', () => {
+  const parsed = parseFountainScript('@McCLANE\nWelcome to the party.');
+  assert.equal(parsed.elements.length, 1);
+  assert.equal(parsed.elements[0].type, 'DIALOGUE');
+  assert.equal(parsed.elements[0].character, 'McCLANE');
+  assert.equal(parsed.elements[0].text, 'Welcome to the party.');
+});
+
+test('explicit interruption cuts the victim while same-speaker dashes stay sequential', () => {
+  const interrupted = parseFountainScript([
+    'ALICE',
+    'Let me finish this thought.',
+    '',
+    'BOB',
+    '(interrupting)',
+    'No.'
+  ].join('\n'));
+  assert.equal(interrupted.elements[0].cutOff, true);
+  assert.equal(interrupted.elements[1].overlap.mode, 'interrupt');
+
+  const sameSpeaker = parseFountainScript([
+    'BOB',
+    'I was going—',
+    '',
+    'BOB',
+    '—to say yes.'
+  ].join('\n'));
+  assert.equal(sameSpeaker.elements[0].cutOff, false);
+  assert.equal(sameSpeaker.elements[1].overlap, null);
+});
+
+async function loadPdfLineProcessor() {
+  // pdf.js evaluates these browser constructors at module load even though the
+  // line processor itself does not use them.
+  if (!globalThis.DOMMatrix) globalThis.DOMMatrix = class DOMMatrix {};
+  if (!globalThis.ImageData) globalThis.ImageData = class ImageData {};
+  if (!globalThis.Path2D) globalThis.Path2D = class Path2D {};
+  return (await import('../src/screenplay/pdf-parser.js')).processExtractedLines;
+}
+
+test('PDF dual columns become two simultaneous dialogue elements', async () => {
+  const processExtractedLines = await loadPdfLineProcessor();
+  const base = { page: 1, pageWidth: 612, pageHeight: 792 };
+  const parsed = processExtractedLines([
+    { ...base, y: 700, minX: 200, maxX: 245, text: 'ALICE' },
+    { ...base, y: 700, minX: 380, maxX: 420, text: 'BOB' },
+    { ...base, y: 682, minX: 160, maxX: 285, text: 'I vote we stay.' },
+    { ...base, y: 682, minX: 350, maxX: 500, text: 'I vote we leave.' },
+    { ...base, y: 640, minX: 72, maxX: 210, text: 'They stare at each other.' }
+  ], 'Dual');
+  const dialogue = parsed.elements.filter(element => element.type === 'DIALOGUE');
+
+  assert.deepEqual(dialogue.map(element => element.character), ['ALICE', 'BOB']);
+  assert.equal(dialogue[1].overlap.mode, 'simultaneous');
+});
+
+test('PDF uppercase dialogue and action do not become phantom speakers', async () => {
+  const processExtractedLines = await loadPdfLineProcessor();
+  const base = { page: 1, pageWidth: 612, pageHeight: 792 };
+  const parsed = processExtractedLines([
+    { ...base, y: 700, minX: 220, maxX: 260, text: 'BOB' },
+    { ...base, y: 685, minX: 180, maxX: 220, text: 'RUN' },
+    { ...base, y: 672, minX: 180, maxX: 310, text: 'before it sees us.' },
+    { ...base, y: 630, minX: 72, maxX: 215, text: 'THE CAR EXPLODES' },
+    { ...base, y: 615, minX: 72, maxX: 230, text: 'Flames fill the road.' }
+  ], 'Action');
+
+  assert.equal(parsed.characters.length, 1);
+  assert.equal(parsed.characters[0].name, 'BOB');
+  assert.equal(parsed.elements[0].text, 'RUN before it sees us.');
+  assert.ok(parsed.elements.some(element => element.type === 'ACTION' && element.text === 'THE CAR EXPLODES'));
+});
+
+test('OpenAI keeps long speeches intact and uses exact transport speed', () => {
+  const engine = {
+    capabilities: {
+      id: 'openai', supportsSpeed: true, supportsInstructions: true,
+      usesInstructionPitch: true, maxChunkChars: 4096
+    },
+    resolveVoiceId: () => 'marin'
+  };
+  const text = `${'word '.repeat(180)}end.`;
+  const units = buildLineUnits({
+    element: { type: 'DIALOGUE', character: 'ALICE', text },
+    voiceProfile: { id: 'marin', tone: 'Warm.', defaultPitch: 1, defaultSpeed: 1 },
+    masterSpeed: 1.4,
+    engine
+  });
+
+  assert.equal(units.length, 1);
+  assert.equal(units[0].synthSpeed, 1.4);
+  assert.equal(units[0].playbackRate, 1);
+});
+
+test('line-specific acting direction survives a pathological persona', () => {
+  const instructions = composeInstructions({
+    direction: 'x'.repeat(880),
+    nuance: { emotionKey: 'whisper', directionText: 'whispering' },
+    includeTempo: false
+  });
+
+  assert.ok(instructions.includes('Whisper.'));
+  assert.ok(instructions.includes('Direction for this line: whispering.'));
+  assert.ok(instructions.length <= 900);
+});
+
+test('interrupt trim and fade scale together with playback speed', () => {
+  const engine = {
+    capabilities: { id: 'openai', supportsSpeed: true, supportsInstructions: true, usesInstructionPitch: true, maxChunkChars: 4096 },
+    resolveVoiceId: () => 'marin'
+  };
+  const args = {
+    element: { type: 'DIALOGUE', character: 'ALICE', text: 'Do not cut me off.', cutOff: true },
+    voiceProfile: { id: 'marin', defaultPitch: 1, defaultSpeed: 1 },
+    engine
+  };
+  const slow = buildLineUnits({ ...args, masterSpeed: 0.5 })[0];
+  const fast = buildLineUnits({ ...args, masterSpeed: 2 })[0];
+
+  assert.equal(slow.trimTailSec / fast.trimTailSec, 4);
+  assert.equal(slow.interruptFadeSec / fast.interruptFadeSec, 4);
 });

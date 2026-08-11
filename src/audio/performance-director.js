@@ -258,6 +258,11 @@ function resolveDelivery({ nuance, voiceProfile, tuning, masterSpeed, paceTempo 
   const common = { gain, filter: nuance.filter || null, pitch };
 
   if (!caps || caps.supportsSpeed) {
+    if (caps && caps.usesInstructionPitch) {
+      // OpenAI changes tempo without shifting pitch. Keep its render untouched
+      // by Web Audio resampling and express register as acting direction.
+      return { ...common, synthSpeed: clamp(tempo, 0.25, 4), playbackRate: 1.0, tempo };
+    }
     // Kokoro: `speed` moves tempo while preserving pitch, `playbackRate` moves
     // both. Synthesise at tempo/pitch and play at pitch — they cancel on tempo
     // and compound on pitch.
@@ -269,15 +274,9 @@ function resolveDelivery({ nuance, voiceProfile, tuning, masterSpeed, paceTempo 
     return { ...common, synthSpeed, playbackRate: pitch, tempo: synthSpeed * pitch };
   }
 
-  // gpt-4o-mini-tts has no working speed parameter, and its output already sits
-  // in the register the chosen voice implies. Resampling would be the only way to
-  // move either — and resampling a cloud render to chase a 3% pitch idea is
-  // exactly the artefact the Kokoro path spends its whole speed budget avoiding.
-  // So `playbackRate` is pinned to 1.0 and nothing is resampled at all; tempo and
-  // register are handed to the model as words instead.
-  //
-  // `tempo` and `pitch` still ride on the return value: they are what the
-  // instruction bands read, and what keeps estimatedDuration honest.
+  // Instruction-only engines approximate tempo in prose and keep their native
+  // register. This remains as the fallback contract for any future engine that
+  // supports direction but no numeric rate.
   return { ...common, synthSpeed: 1.0, playbackRate: 1.0, tempo };
 }
 
@@ -366,7 +365,8 @@ export function buildLineUnits({
         tempo: delivery.tempo,
         pitch: delivery.pitch,
         persona: voiceProfile.tone || '',
-        isNarration: element.type !== 'DIALOGUE'
+        isNarration: element.type !== 'DIALOGUE',
+        includeTempo: !caps.supportsSpeed
       })
     : null;
 
@@ -384,10 +384,12 @@ export function buildLineUnits({
   const firstAnchor =
       overlapMode === 'simultaneous' ? 'prevHead'
     : overlapMode === 'interrupt'    ? 'prevTail'
+    : overlapMode === 'continuation' ? 'chunk'
     :                                  'sequential';
 
   const firstLead =
       overlapMode === 'simultaneous' ? OVERLAP_TIMING.simultaneousStaggerSec
+    : overlapMode === 'continuation' ? chunkGap / 1000
     : (cueGap + emotionalLead) / 1000;
 
   // Standing slightly back is what keeps a simultaneous pair readable rather
@@ -398,7 +400,8 @@ export function buildLineUnits({
 
   // Being cut off is trimmed off this line's own tail, which is what lets the
   // scheduler place it without yet knowing when the interrupter arrives.
-  const trimTailSec = element.cutOff ? interruptTrimSec() : 0;
+  const timingScale = 1 / Math.max(0.5, masterSpeed);
+  const trimTailSec = element.cutOff ? interruptTrimSec() * timingScale : 0;
 
   return chunks.map((text, chunkIndex) => ({
     lineIndex,
@@ -422,6 +425,7 @@ export function buildLineUnits({
     // Silence before this unit, in seconds. Negative means it starts early.
     leadPause: chunkIndex === 0 ? firstLead : chunkGap / 1000,
     trimTailSec: chunkIndex === chunks.length - 1 ? trimTailSec : 0,
+    interruptFadeSec: chunkIndex === chunks.length - 1 ? 0.08 * timingScale : 0,
 
     estimatedDuration: estimateDuration(text, delivery.tempo, caps.supportsSpeed),
     key: makeCacheKey({
@@ -463,7 +467,8 @@ export function buildPreviewUnits({
         nuance: resolvedNuance,
         tempo: delivery.tempo,
         pitch: delivery.pitch,
-        persona: voiceProfile.tone || ''
+        persona: voiceProfile.tone || '',
+        includeTempo: !caps.supportsSpeed
       })
     : null;
 

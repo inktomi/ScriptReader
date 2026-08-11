@@ -52,7 +52,7 @@ test('an aborted request cannot delete a replacement with the same key', async (
   assert.equal(engine.pending.has(unit.key), false);
 });
 
-test('fatal and exhausted nonfatal synthesis errors both surface an error phase', async () => {
+test('fatal failures surface errors while isolated render failures are warnings', async () => {
   for (const fatal of [false, true]) {
     const engine = new OpenAiTtsEngine({ hasConsent: () => true, getApiKey: () => 'test-key' });
     engine.isReady = true;
@@ -64,6 +64,26 @@ test('fatal and exhausted nonfatal synthesis errors both surface an error phase'
       throw error;
     };
     await assert.rejects(engine.request({ key: `key-${fatal}` }));
-    assert.ok(phases.includes('error'));
+    assert.ok(phases.includes(fatal ? 'error' : 'warning'));
   }
+});
+
+test('OpenAI advertises the provider input limit and sends exact numeric speed', async () => {
+  const engine = new OpenAiTtsEngine({ hasConsent: () => true, getApiKey: () => 'test-key' });
+  let requestBody = null;
+  engine._fetchWithRetry = async ({ body }) => {
+    requestBody = JSON.parse(body);
+    return { arrayBuffer: async () => new ArrayBuffer(2) };
+  };
+
+  await assert.rejects(engine._synthesize({
+    voiceId: 'marin',
+    text: 'Read this precisely.',
+    synthSpeed: 1.37,
+    instructions: 'Sound urgent.'
+  }, new AbortController().signal));
+
+  assert.equal(engine.capabilities.supportsSpeed, true);
+  assert.equal(engine.capabilities.maxChunkChars, 4096);
+  assert.equal(requestBody.speed, 1.37);
 });

@@ -197,7 +197,7 @@ function simultaneousClusterEndingAt(elements, index) {
   while (i >= 0 && elements[i] && elements[i].type === 'DIALOGUE') {
     cluster.push(elements[i]);
     const overlap = elements[i].overlap;
-    if (!overlap || overlap.mode !== 'simultaneous') break;
+    if (!overlap || (overlap.mode !== 'simultaneous' && overlap.mode !== 'continuation')) break;
     i--;
   }
 
@@ -237,15 +237,18 @@ export function annotateScriptFlow(parsed) {
 
     const paren = element.parenthetical || '';
 
+    const differentSpeaker = (prev.character || '').toUpperCase().trim()
+      !== (element.character || '').toUpperCase().trim();
+
     if (element.overlap && element.overlap.mode) {
       // Already set by the parser from `^`; leave it alone.
-    } else if (INTERRUPT_PAREN_REGEX.test(paren)) {
+    } else if (differentSpeaker && INTERRUPT_PAREN_REGEX.test(paren)) {
       element.overlap = { mode: 'interrupt', withPrevious: true, offsetMs: null, source: 'parenthetical' };
-    } else if (SIMULTANEOUS_PAREN_REGEX.test(paren)) {
+    } else if (differentSpeaker && SIMULTANEOUS_PAREN_REGEX.test(paren)) {
       element.overlap = { mode: 'simultaneous', withPrevious: true, offsetMs: null, source: 'parenthetical' };
-    } else if (CUT_OFF_END_REGEX.test(prev.text || '')) {
+    } else if (differentSpeaker && CUT_OFF_END_REGEX.test(prev.text || '')) {
       element.overlap = { mode: 'interrupt', withPrevious: true, offsetMs: null, source: 'dash' };
-    } else if (PICK_UP_START_REGEX.test(element.text || '')) {
+    } else if (differentSpeaker && PICK_UP_START_REGEX.test(element.text || '')) {
       element.overlap = { mode: 'interrupt', withPrevious: true, offsetMs: null, source: 'dash' };
     }
 
@@ -257,7 +260,7 @@ export function annotateScriptFlow(parsed) {
     // mid-sentence gets cut off, not just whoever happens to be written last.
     if (element.overlap && element.overlap.mode === 'interrupt') {
       for (const victim of simultaneousClusterEndingAt(elements, i - 1)) {
-        if (CUT_OFF_END_REGEX.test(victim.text || '')) victim.cutOff = true;
+        victim.cutOff = true;
       }
     }
   }

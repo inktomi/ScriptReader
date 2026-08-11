@@ -83,6 +83,23 @@ export async function parsePdfScreenplay(fileOrBuffer, onProgress = () => {}) {
         // Same vertical line: append with spacing if there is a gap
         const prevEndX = currentLine.maxX;
         const gap = x - prevEndX;
+        const columnGap = Math.max(36, viewport.width * 0.06);
+        if (gap > columnGap) {
+          // Side-by-side dual dialogue occupies one PDF row but two screenplay
+          // columns. Preserve those as separate geometric lines; concatenating
+          // them destroys both speaker cues before parsing even begins.
+          pageLines.push(currentLine);
+          currentLine = {
+            y,
+            minX: x,
+            maxX: x + (item.width || 0),
+            text: str,
+            page: pageNum,
+            pageWidth: viewport.width,
+            pageHeight: viewport.height
+          };
+          continue;
+        }
         if (gap > 4) {
           currentLine.text += ' ' + str;
         } else {
@@ -117,10 +134,80 @@ export async function parsePdfScreenplay(fileOrBuffer, onProgress = () => {}) {
   }
 }
 
+function looksLikePdfCue(line) {
+  if (!line) return false;
+  const text = (line.text || '').trim();
+  const ratio = line.minX / (line.pageWidth || 612);
+  return ratio >= 0.22 && ratio <= 0.78 && text.length < 40
+    && text === text.toUpperCase() && !/[.!?]$/.test(text);
+}
+
+/**
+ * Turn row-major PDF extraction of dual dialogue into two contiguous cue blocks.
+ * The right cue is tagged so the parser can restore the simultaneous relation.
+ */
+export function reorderPdfDualDialogue(lines) {
+  const output = [];
+  let i = 0;
+
+  while (i < lines.length) {
+    const leftCue = lines[i];
+    const rightCue = lines[i + 1];
+    const sameRow = rightCue && leftCue.page === rightCue.page
+      && Math.abs(leftCue.y - rightCue.y) < 3.5;
+    const pageWidth = leftCue.pageWidth || 612;
+    const separated = rightCue && leftCue.maxX < pageWidth * 0.55
+      && rightCue.minX > pageWidth * 0.50;
+
+    if (!sameRow || !separated || !looksLikePdfCue(leftCue) || !looksLikePdfCue(rightCue)) {
+      output.push(leftCue);
+      i++;
+      continue;
+    }
+
+    const midpoint = (leftCue.maxX + rightCue.minX) / 2;
+    const leftLines = [];
+    const rightLines = [];
+    let j = i + 2;
+    let previousY = leftCue.y;
+
+    for (; j < lines.length; j++) {
+      const line = lines[j];
+      if (line.page !== leftCue.page) break;
+      const next = lines[j + 1];
+      if (next && line.page === next.page && Math.abs(line.y - next.y) < 3.5
+          && line.maxX < pageWidth * 0.55 && next.minX > pageWidth * 0.50
+          && looksLikePdfCue(line) && looksLikePdfCue(next)) {
+        break;
+      }
+
+      const ratio = line.minX / pageWidth;
+      const verticalGap = Math.abs(previousY - line.y);
+      if (ratio < 0.18 || ratio > 0.84 || verticalGap > 32) break;
+
+      (line.minX < midpoint ? leftLines : rightLines).push(line);
+      previousY = line.y;
+    }
+
+    // A cue pair without content is more likely unrelated header text.
+    if (leftLines.length === 0 || rightLines.length === 0) {
+      output.push(leftCue);
+      i++;
+      continue;
+    }
+
+    output.push(leftCue, ...leftLines, { ...rightCue, dualWithPrevious: true }, ...rightLines);
+    i = j;
+  }
+
+  return output;
+}
+
 /**
  * Converts extracted raw PDF lines with X coordinates into structured screenplay elements
  */
 export function processExtractedLines(lines, scriptTitle) {
+  lines = reorderPdfDualDialogue(lines);
   const elements = [];
   const characterSet = new Map();
   const sceneList = [];
@@ -131,6 +218,7 @@ export function processExtractedLines(lines, scriptTitle) {
   let currentSpeakerOriginal = null;
   let currentParenthetical = '';
   let lineIndex = 0;
+  let pendingDual = false;
 
   const SCENE_REGEX = /^(INT\.|EXT\.|INT\.\/EXT\.|EXT\.\/INT\.|I\/E\.|EST\.|INT\s|EXT\s|SCENE\s+\d+|PROLOGUE|EPILOGUE)(\s+|$)/i;
   const TRANSITION_REGEX = /^(CUT TO:|FADE IN:|FADE OUT\.|FADE TO BLACK\.|DISSOLVE TO:|SMASH CUT TO:|MATCH CUT TO:|JUMP CUT TO:|>.*<)$/i;
@@ -159,6 +247,9 @@ export function processExtractedLines(lines, scriptTitle) {
         characterOriginal: currentSpeakerOriginal || currentSpeaker,
         text: fullDialogueText,
         parenthetical: currentParenthetical,
+        overlap: pendingDual
+          ? { mode: 'simultaneous', withPrevious: true, offsetMs: null, source: 'pdf-columns' }
+          : null,
         nuance
       });
 
@@ -169,6 +260,7 @@ export function processExtractedLines(lines, scriptTitle) {
 
       pendingDialogueLines = [];
       currentParenthetical = '';
+      pendingDual = false;
     }
   }
 
@@ -182,6 +274,23 @@ export function processExtractedLines(lines, scriptTitle) {
     }
 
     const normalizedXRatio = item.minX / (item.pageWidth || 612);
+    const previous = i > 0 ? lines[i - 1] : null;
+    const verticalGap = previous && previous.page === item.page
+      ? Math.abs(previous.y - item.y)
+      : Infinity;
+    const startsDialogueBlock = !inDialogueBlock || item.dualWithPrevious || verticalGap >= 16;
+
+    let followerIndex = i + 1;
+    while (followerIndex < lines.length && PARENTHETICAL_REGEX.test(lines[followerIndex].text.trim())) {
+      followerIndex++;
+    }
+    const follower = lines[followerIndex];
+    const followerRatio = follower ? follower.minX / (follower.pageWidth || 612) : -1;
+    const hasDialogueFollower = !!follower && follower.page === item.page
+      && follower.y <= item.y + 3.5
+      && followerRatio >= 0.18 && followerRatio <= 0.72
+      && !SCENE_REGEX.test(follower.text.trim())
+      && !TRANSITION_REGEX.test(follower.text.trim());
 
     // 1. Scene Heading (Left aligned, INT./EXT.)
     if (SCENE_REGEX.test(text)) {
@@ -243,8 +352,10 @@ export function processExtractedLines(lines, scriptTitle) {
     // 4. Character Cue Detection:
     // Character cues in standard screenplays are indented ~35-50% from left margin, all uppercase, short
     const isIndentedCharacter = (
+      startsDialogueBlock &&
+      hasDialogueFollower &&
       normalizedXRatio >= 0.30 &&
-      normalizedXRatio <= 0.58 &&
+      normalizedXRatio <= (item.dualWithPrevious ? 0.78 : 0.58) &&
       text.length < 40 &&
       text === text.toUpperCase() &&
       !text.includes('!') &&
@@ -253,7 +364,10 @@ export function processExtractedLines(lines, scriptTitle) {
     );
 
     const isExplicitCharacter = (
-      !inDialogueBlock &&
+      startsDialogueBlock &&
+      hasDialogueFollower &&
+      normalizedXRatio >= 0.24 &&
+      normalizedXRatio <= (item.dualWithPrevious ? 0.78 : 0.62) &&
       text.length < 35 &&
       text === text.toUpperCase() &&
       !text.includes('.') &&
@@ -269,6 +383,7 @@ export function processExtractedLines(lines, scriptTitle) {
       // Clean extensions (V.O.), (O.S.), (CONT'D)
       currentSpeaker = text.replace(/\s*\([^)]*\)\s*/g, '').trim();
       currentParenthetical = '';
+      pendingDual = !!item.dualWithPrevious;
       continue;
     }
 
@@ -279,6 +394,7 @@ export function processExtractedLines(lines, scriptTitle) {
       // Action / Description block
       flushDialogue();
       currentSpeaker = null;
+      inDialogueBlock = false;
 
       const nuance = analyzeLineNuance({ text, speakerType: 'ACTION' });
       elements.push({

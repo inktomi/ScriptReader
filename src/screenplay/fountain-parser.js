@@ -23,8 +23,10 @@ export function parseFountainScript(text) {
   let lineIndex = 0;
   // Pace runs from a `[[pace: ...]]` note until the next one or the next scene.
   let activePace = DEFAULT_PACE;
-  // Set by a `^` on the character cue, consumed when that speech is flushed.
-  let pendingDual = false;
+  // Set by a `^` on the character cue. A parenthetical may split one cue into
+  // multiple elements, so later fragments continue from the first rather than
+  // losing the cue's overlap relationship.
+  let pendingDual = null;
 
   // Check for Title Page metadata (e.g. Title: ..., Author: ...)
   let startLine = 0;
@@ -52,12 +54,12 @@ export function parseFountainScript(text) {
   const PARENTHETICAL_REGEX = /^\s*\((.+)\)\s*$/;
   // The trailing `^` is Fountain's dual dialogue marker. It has to be part of
   // the pattern or a cue carrying one is not recognised as a cue at all.
-  const CHARACTER_REGEX = /^\s*([A-Z0-9\s._'-]+?)(\s*\([^)]*\))?\s*(\^)?\s*$/;
+  const CHARACTER_REGEX = /^\s*([A-Za-z0-9\s._'-]+?)(\s*\([^)]*\))?\s*(\^)?\s*$/;
 
   let inDialogueBlock = false;
   let pendingDialogueLines = [];
 
-  function flushDialogue() {
+  function flushDialogue({ preserveCue = false } = {}) {
     if (pendingDialogueLines.length > 0 && currentSpeaker) {
       const fullDialogueText = pendingDialogueLines.join(' ').trim();
       // The cue extension — (V.O.), (O.S.) — decides whether this voice is in the
@@ -81,9 +83,11 @@ export function parseFountainScript(text) {
         parenthetical: currentParenthetical,
         pace: activePace,
         linePace: null,
-        overlap: pendingDual
+        overlap: pendingDual === 'simultaneous'
           ? { mode: 'simultaneous', withPrevious: true, offsetMs: null, source: 'caret' }
-          : null,
+          : pendingDual === 'continuation'
+            ? { mode: 'continuation', withPrevious: true, offsetMs: 0, source: 'parenthetical' }
+            : null,
         cutOff: false,
         nuance
       };
@@ -98,8 +102,9 @@ export function parseFountainScript(text) {
 
       pendingDialogueLines = [];
       currentParenthetical = '';
-      pendingDual = false;
+      pendingDual = preserveCue && pendingDual ? 'continuation' : null;
     }
+    if (!preserveCue && pendingDialogueLines.length === 0) pendingDual = null;
   }
 
   for (let idx = startLine; idx < lines.length; idx++) {
@@ -200,7 +205,7 @@ export function parseFountainScript(text) {
     const parenMatch = trimmed.match(PARENTHETICAL_REGEX);
     if (parenMatch && (inDialogueBlock || currentSpeaker)) {
       if (pendingDialogueLines.length > 0) {
-        flushDialogue();
+        flushDialogue({ preserveCue: true });
         inDialogueBlock = true;
       }
       currentParenthetical = parenMatch[1];
@@ -209,22 +214,24 @@ export function parseFountainScript(text) {
 
     // 4. Character Cue (e.g. SARAH (O.S.))
     // Standard screenplay rules: Uppercase name, preceded by empty line, not a scene heading or transition
-    const charMatch = trimmed.match(CHARACTER_REGEX);
-    const looksLikeInitials = /^(?:[A-Z]\.\s*){2,}(?:[A-Z][A-Z0-9_' -]*\.?)?$/.test(trimmed);
+    const forcedCharacter = trimmed.startsWith('@');
+    const cueText = forcedCharacter ? trimmed.slice(1).trim() : trimmed;
+    const charMatch = cueText.match(CHARACTER_REGEX);
+    const looksLikeInitials = /^(?:[A-Z]\.\s*){2,}(?:[A-Z][A-Z0-9_' -]*\.?)?$/.test(cueText);
     const looksLikeAbbreviatedName = (
-      /^(?:DR|MR|MRS|MS|PROF|CAPT|LT|SGT|GEN|COL|REV)\.$/.test(trimmed)
-      || /^(?:[A-Z][A-Z0-9_'-]*\s+){1,2}(?:JR|SR)\.$/.test(trimmed)
+      /^(?:DR|MR|MRS|MS|PROF|CAPT|LT|SGT|GEN|COL|REV)\.$/.test(cueText)
+      || /^(?:[A-Z][A-Z0-9_'-]*\s+){1,2}(?:JR|SR)\.$/.test(cueText)
     );
     const isLikelyCharacter = (
       charMatch &&
       !inDialogueBlock &&
-      trimmed.length < 38 &&
-      trimmed === trimmed.toUpperCase() &&
-      !trimmed.includes('!') &&
-      !trimmed.includes('?') &&
-      (!/\.$/.test(trimmed) || looksLikeInitials || looksLikeAbbreviatedName) &&
-      !SCENE_REGEX.test(trimmed) &&
-      !TRANSITION_REGEX.test(trimmed)
+      cueText.length < 38 &&
+      (forcedCharacter || cueText === cueText.toUpperCase()) &&
+      !cueText.includes('!') &&
+      !cueText.includes('?') &&
+      (forcedCharacter || !/\.$/.test(cueText) || looksLikeInitials || looksLikeAbbreviatedName) &&
+      !SCENE_REGEX.test(cueText) &&
+      !TRANSITION_REGEX.test(cueText)
     );
 
     if (isLikelyCharacter) {
@@ -232,8 +239,8 @@ export function parseFountainScript(text) {
       inDialogueBlock = true;
       // The caret is a staging instruction, not part of the name — keep it out
       // of the cue the teleprompter shows and out of the extension parsing.
-      pendingDual = !!charMatch[3];
-      currentSpeakerOriginal = trimmed.replace(/\s*\^\s*$/, '').trim();
+      pendingDual = charMatch[3] ? 'simultaneous' : null;
+      currentSpeakerOriginal = cueText.replace(/\s*\^\s*$/, '').trim();
       // Strip extensions like (V.O.), (O.S.), (CONT'D), (INTO PHONE)
       currentSpeaker = charMatch[1].replace(/\s*\([^)]*\)\s*/g, '').trim();
       currentParenthetical = '';

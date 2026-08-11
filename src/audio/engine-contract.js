@@ -35,6 +35,8 @@ export const ENGINE_IDS = {
  *   True when the engine accepts free-text direction. When set, emotion is handed
  *   to the model as a stage direction rather than synthesised out of pitch and
  *   speed arithmetic.
+ * @property {boolean} [usesInstructionPitch]
+ *   Preserve native audio and express register changes through instructions.
  * @property {boolean} isLocal   Nothing leaves the device.
  * @property {boolean} metered   Renders cost money. Gates spend caps, the
  *                               re-render confirmation, and seek debouncing.
