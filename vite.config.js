@@ -189,7 +189,11 @@ export default defineConfig({
     },
   },
   optimizeDeps: {
-    exclude: ['@huggingface/transformers', 'kokoro-js', 'pdfjs-dist'],
+    // transformers-v4 belongs here for the same reason as its v3 sibling: it is
+    // only ever imported from a worker, and pre-bundling it rewrites the module
+    // that `ortWasmFromCdn` needs to transform, so the ORT wasm URL rebase
+    // silently stops applying in dev.
+    exclude: ['@huggingface/transformers', 'transformers-v4', 'kokoro-js', 'pdfjs-dist'],
   },
   build: {
     target: 'esnext',

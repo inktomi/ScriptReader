@@ -438,10 +438,20 @@ async function initApp() {
     document.body.appendChild(modal);
   }
 
+  // While the engine settings modal is open, its own inline install panel is the
+  // contextual view; the global toast is what carries the install *after* the
+  // modal closes, so the two must not both be on screen.
+  let engineModalOpen = false;
+
   function openEngineSettingsModal(afterEngineChanged = null) {
+    engineModalOpen = true;
     const modal = createEngineSettingsModal({
       audioManager,
-      onOpenModelHub: () => openHfHubModal(),
+      onClose: () => { engineModalOpen = false; },
+      onOpenModelHub: () => {
+        engineModalOpen = false;
+        openHfHubModal();
+      },
       onEngineChanged: (engineId) => {
         // The cast is per-engine, so switching re-resolves every character's
         // voice; re-pushing the assignments is what makes that visible.
@@ -617,47 +627,100 @@ async function initApp() {
   surfaceLegacyCastOffer();
   surfaceCastMigration();
 
-  // Connect Kokoro Engine Progress to UI Toast and Header Badge.
+  // Connect local-engine progress to the UI toast and header badge.
   //
-  // Deliberately synchronous. This fires once per network chunk — thousands of
-  // times while the multi-hundred-MB weights stream — so anything awaited here
-  // piles up on the main thread and freezes the very bar it is trying to update.
-  // A cache-status sweep is especially costly (two caches.open + keys + a match
-  // per entry), so the badge is refreshed on phase transitions instead.
-  audioManager.kokoroEngine.onProgress(({ progress, message, phase, isCachedLocally }) => {
-    if (phase === 'error') {
-      showNeuralErrorNotification(message);
-      refreshEngineCacheBadge();
-      return;
-    }
+  // Deliberately synchronous. This fires once per progress batch while hundreds
+  // of megabytes stream, so anything awaited here piles up on the main thread and
+  // freezes the very bar it is trying to update. A cache-status sweep is
+  // especially costly, so the badge is refreshed on phase transitions instead.
+  //
+  // Both local engines are subscribed directly rather than through
+  // audioManager.onEngineProgress, which follows whichever engine is *active*:
+  // Studio Local is installed from the settings modal while Kokoro is still the
+  // active engine, so an active-engine subscription would show nothing at all for
+  // the one download that most needs a progress indicator.
+  function engineProgressHandler(engine, label) {
+    return ({ progress, message, phase }) => {
+      if (phase === 'error') {
+        // Terminal states are never suppressed. The modal shows its own error,
+        // but a progress toast left behind it would go on claiming a download
+        // that has already stopped.
+        if (engineModalOpen) {
+          dismissNeuralToast();
+        } else {
+          showNeuralErrorNotification(message, engine, label);
+        }
+        refreshEngineCacheBadge();
+        return;
+      }
 
-    if (phase === 'ready') {
-      // The engine's own message already distinguishes "cached locally" from
-      // "ready but the weights did not fit in Cache Storage" — don't second-guess
-      // it here, both of the old strings claimed a cache that may not exist.
-      removeNeuralLoadingNotification(message);
-      refreshEngineCacheBadge();
-      // Render the opening lines now so the first Play starts instantly.
-      audioManager.prewarm();
-      return;
-    }
+      if (phase === 'idle') {
+        // A cancelled install. Drop the toast rather than leaving it frozen
+        // partway along a bar that will never move again.
+        dismissNeuralToast();
+        return;
+      }
 
-    if (!neuralToast) {
-      showNeuralLoadingNotification();
-    }
-    const msg = neuralToast ? neuralToast.querySelector('#neural-toast-msg') : null;
-    const pct = neuralToast ? neuralToast.querySelector('#neural-toast-pct') : null;
-    const fill = neuralToast ? neuralToast.querySelector('#neural-toast-fill') : null;
-    if (msg) msg.textContent = message;
-    if (pct) pct.textContent = `${progress}%`;
-    if (fill) fill.style.width = `${progress}%`;
-  });
+      if (phase === 'ready') {
+        if (engineModalOpen) {
+          dismissNeuralToast();
+          refreshEngineCacheBadge();
+          if (audioManager.engineId === engine.capabilities.id) audioManager.prewarm();
+          return;
+        }
+        // The engine's own message already distinguishes "stored locally" from
+        // "ready but the weights could not be retained" — don't second-guess it
+        // here, both of the old strings claimed a cache that may not exist.
+        removeNeuralLoadingNotification(message);
+        refreshEngineCacheBadge();
+        // Render the opening lines now so the first Play starts instantly — but
+        // only for the engine that will actually be doing the rendering.
+        if (audioManager.engineId === engine.capabilities.id) audioManager.prewarm();
+        return;
+      }
+
+      // Loading updates only: while the settings modal is open its inline panel
+      // is the contextual view, and a second copy of the same bar behind it would
+      // freeze at whatever value it held when the modal opened.
+      if (engineModalOpen) {
+        dismissNeuralToast();
+        return;
+      }
+
+      if (!neuralToast) {
+        showNeuralLoadingNotification(label);
+      }
+      const msg = neuralToast ? neuralToast.querySelector('#neural-toast-msg') : null;
+      const pct = neuralToast ? neuralToast.querySelector('#neural-toast-pct') : null;
+      const fill = neuralToast ? neuralToast.querySelector('#neural-toast-fill') : null;
+      if (msg) msg.textContent = message;
+      if (pct) pct.textContent = `${progress}%`;
+      if (fill) fill.style.width = `${progress}%`;
+    };
+  }
+
+  audioManager.kokoroEngine.onProgress(
+    engineProgressHandler(audioManager.kokoroEngine, 'Kokoro-82M')
+  );
+  const studioEngine = audioManager.getEngine(ENGINE_TYPES.CHATTERBOX);
+  if (studioEngine) {
+    studioEngine.onProgress(engineProgressHandler(studioEngine, 'Studio Local'));
+  }
 
   function refreshEngineCacheBadge() {
+    const engineId = audioManager.engineId;
+    // Studio Local's install is eight files in OPFS, not one cached blob, so it
+    // answers "is this ready offline?" through its own probe.
+    if (engineId === ENGINE_TYPES.CHATTERBOX) {
+      audioManager.getChatterboxCacheStatus()
+        .then(status => header.updateEngineCacheBadge({ engineId, studioInstalled: status.installed }))
+        .catch(err => console.warn('Studio Local cache status notice:', err));
+      return;
+    }
     audioManager.getCacheStatus()
       // The engine id rides along so a cloud session's badge is not overwritten
       // by a status report about Kokoro's weights.
-      .then(status => header.updateEngineCacheBadge({ ...status, engineId: audioManager.engineId }))
+      .then(status => header.updateEngineCacheBadge({ ...status, engineId }))
       .catch(err => console.warn('Cache status notice:', err));
   }
 
@@ -666,7 +729,7 @@ async function initApp() {
 
   // Neural Loading Notification Toast
   let neuralToast = null;
-  function showNeuralLoadingNotification() {
+  function showNeuralLoadingNotification(label = 'Kokoro-82M') {
     if (neuralToast) neuralToast.remove();
     neuralToast = document.createElement('div');
     neuralToast.className = 'neural-progress-container';
@@ -678,7 +741,7 @@ async function initApp() {
     neuralToast.style.boxShadow = '0 10px 30px rgba(0,0,0,0.6)';
     neuralToast.innerHTML = `
       <div style="display: flex; justify-content: space-between; font-size: 0.8rem; font-weight: 600; color: #06B6D4;">
-        <span id="neural-toast-msg">Loading Kokoro-82M Neural Engine...</span>
+        <span id="neural-toast-msg">Loading ${label}…</span>
         <span id="neural-toast-pct">15%</span>
       </div>
       <div class="neural-progress-bar">
@@ -702,13 +765,13 @@ async function initApp() {
    * which on a fresh visit is the "Downloading model weights..." line, making a
    * hard failure look identical to a slow download that never ends.
    */
-  function showNeuralErrorNotification(message) {
-    if (!neuralToast) showNeuralLoadingNotification();
+  function showNeuralErrorNotification(message, engine = audioManager.kokoroEngine, label = 'Neural voice engine') {
+    if (!neuralToast) showNeuralLoadingNotification(label);
     if (!neuralToast) return;
 
     neuralToast.innerHTML = `
       <div style="display: flex; justify-content: space-between; align-items: center; gap: 12px; font-size: 0.8rem; font-weight: 600; color: #F87171;">
-        <span>Neural voice engine unavailable</span>
+        <span>${label} unavailable</span>
         <button id="neural-toast-dismiss" title="Dismiss" style="background: none; border: none; color: #F87171; cursor: pointer; font-size: 1rem; line-height: 1; padding: 0;">&times;</button>
       </div>
       <div id="neural-toast-error" style="margin-top: 6px; font-size: 0.72rem; color: #FCA5A5; line-height: 1.45; word-break: break-word;"></div>
@@ -728,7 +791,10 @@ async function initApp() {
         // Drop the toast entirely so the next 'loading' event rebuilds it with
         // the progress markup rather than patching the error markup.
         dismissNeuralToast();
-        audioManager.kokoroEngine.init().catch(() => {
+        // Retry whichever engine actually failed. Hardcoding Kokoro here meant a
+        // Studio Local failure offered a Retry button that reloaded the wrong
+        // engine and left the broken one exactly as it was.
+        engine.init().catch(() => {
           /* the error phase re-renders the toast; nothing to do here */
         });
       });

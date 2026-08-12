@@ -1813,12 +1813,28 @@ button:disabled {
   border-top: 1px solid var(--border);
 }
 
+/* The panel now always renders the progress block and hides it, so the bar and
+   its two text nodes can be patched in place instead of being rebuilt — a node
+   that only exists mid-install cannot be patched without a full re-render. */
+.studio-install-progress[hidden] {
+  display: none;
+}
+
 .studio-install-progress > div {
   height: 4px;
   margin-bottom: 6px;
   overflow: hidden;
   background: #3c3831;
   border-radius: 4px;
+}
+
+/* The only line carrying aria-live. The percentage beside it changes several
+   times a second, which would make a screen reader unusable. */
+.studio-install-stage {
+  display: block;
+  margin-top: 2px;
+  font-style: italic;
+  opacity: 0.75;
 }
 
 .studio-install-progress > div > span {

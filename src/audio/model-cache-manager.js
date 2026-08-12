@@ -69,6 +69,53 @@ export class ModelCacheManager {
   }
 
   /**
+   * Bytes held by one Cache Storage entry, or 0 if it cannot be sized.
+   *
+   * `.blob()` rather than `.arrayBuffer()`: a weights entry can be 300 MB+, and
+   * a Blob stays backed by the browser's blob store instead of being copied onto
+   * the JS heap just to read `.size`.
+   */
+  static async measureCacheEntry(cache, request) {
+    try {
+      const response = await cache.match(request);
+      if (!response) return 0;
+      const declared = response.headers.get('content-length');
+      if (declared) return parseInt(declared, 10) || 0;
+      const blob = await response.clone().blob();
+      return blob.size;
+    } catch (e) {
+      return 0;
+    }
+  }
+
+  /**
+   * Delete every entry in the transformers cache whose URL the predicate accepts.
+   *
+   * Exists because `clearModelCache` is Kokoro-specific, and Studio Local needs a
+   * way to sweep the entries older builds left in Cache Storage before its
+   * weights moved to OPFS.
+   */
+  static async clearMatchingEntries(matches, cacheName = TRANSFORMERS_CACHE_NAME) {
+    if (typeof caches === 'undefined') return false;
+    return this._withCacheLock(async () => {
+      try {
+        const cache = await caches.open(cacheName);
+        const keys = await cache.keys();
+        let removed = false;
+        for (const request of keys) {
+          if (!matches(request.url)) continue;
+          await cache.delete(request);
+          removed = true;
+        }
+        return removed;
+      } catch (err) {
+        console.warn('Error clearing cache entries:', err);
+        return false;
+      }
+    });
+  }
+
+  /**
    * Query estimated storage quota and usage
    */
   static async getStorageEstimate() {
@@ -135,25 +182,8 @@ export class ModelCacheManager {
         const url = req.url;
         if (url.includes(modelId) || url.includes('Kokoro-82M')) {
           cachedModelFiles++;
-          let entryBytes = 0;
-          try {
-            const resp = await tfCache.match(req);
-            if (resp) {
-              const cl = resp.headers.get('content-length');
-              if (cl) {
-                entryBytes = parseInt(cl, 10) || 0;
-              } else {
-                // .blob() rather than .arrayBuffer(): the weights entry can be
-                // 300 MB+, and a Blob stays backed by the browser's blob store
-                // instead of being copied onto the JS heap just to read .size.
-                const blob = await resp.clone().blob();
-                entryBytes = blob.size;
-              }
-              totalCachedBytes += entryBytes;
-            }
-          } catch (e) {
-            // ignore sizing error
-          }
+          const entryBytes = await this.measureCacheEntry(tfCache, req);
+          totalCachedBytes += entryBytes;
           if (url.includes('.onnx') && entryBytes >= MIN_WEIGHTS_BYTES) {
             hasWeights = true;
           }

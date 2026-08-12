@@ -1,7 +1,8 @@
 import { getIconSvg } from '../utils/icons.js';
 import { escapeHtml } from '../utils/escape-html.js';
 import { ENGINE_IDS } from '../audio/engine-contract.js';
-import { CHATTERBOX_DOWNLOAD_BYTES } from '../audio/chatterbox-engine.js';
+import { CHATTERBOX_DOWNLOAD_BYTES, clearChatterboxCache } from '../audio/chatterbox-engine.js';
+import { ModelCacheManager } from '../audio/model-cache-manager.js';
 import {
   loadOpenAIKey,
   saveOpenAIKey,
@@ -24,6 +25,24 @@ import {
  * material change, and it has to be an explicit, informed choice rather than a
  * side effect of picking a nicer voice.
  */
+
+// What each install stage is actually doing, in the user's terms. Only this line
+// carries aria-live: the percentage next to it changes several times a second,
+// which would make a screen reader unusable.
+const STAGE_COPY = {
+  probe: 'Checking what is already on this device',
+  download: 'Downloading — you can close this window, the install keeps going',
+  building: 'Building the speech models',
+  done: 'Ready'
+};
+
+const MAX_MESSAGE_CHARS = 300;
+
+function short(text) {
+  const value = typeof text === 'string' ? text : '';
+  return value.length > MAX_MESSAGE_CHARS ? `${value.slice(0, MAX_MESSAGE_CHARS)}…` : value;
+}
+
 export function createEngineSettingsModal({ audioManager, onClose, onEngineChanged, onOpenModelHub }) {
   const modal = document.createElement('div');
   modal.className = 'modal-overlay';
@@ -33,17 +52,50 @@ export function createEngineSettingsModal({ audioManager, onClose, onEngineChang
   let validating = false;
   let validationMessage = '';
   let validationOk = null;
-  let studioStatus = { installed: false, persisted: false, fileCount: 0 };
+  let studioStatus = { installed: false, partial: false, storable: true, persisted: false, fileCount: 0 };
   let studioStatusReady = false;
   let installingStudio = false;
   let studioProgress = 0;
   let studioMessage = '';
+  let studioStage = 'probe';
   let unsubscribeStudioProgress = null;
+  let closed = false;
+
+  // Live references to the three nodes that change during an install, so
+  // progress can be patched in place. Rebuilding the modal per progress event —
+  // which is what this used to do — put a full innerHTML parse and a dozen
+  // listener rebinds between every network chunk and the next, on the same
+  // thread as the bar it was trying to animate. See the same note in main.js.
+  let studioRefs = null;
+  let studioFrame = 0;
 
   const isCloud = () => selectedEngine === ENGINE_IDS.OPENAI;
   const isStudio = () => selectedEngine === ENGINE_IDS.CHATTERBOX;
+  // Straight off the class rather than through `audioManager.modelCacheManager`:
+  // formatting a byte count needs no manager instance, and reaching for one at
+  // construction time would make this modal unrenderable without a full manager.
+  const formatBytes = (bytes) => ModelCacheManager.formatBytes(bytes);
+  const downloadSize = formatBytes(CHATTERBOX_DOWNLOAD_BYTES);
+
+  function studioChipLabel() {
+    if (!studioStatusReady) return 'Checking…';
+    if (studioStatus.installed) return 'Installed';
+    if (studioStatus.partial) return 'Partly downloaded';
+    return `${downloadSize} download`;
+  }
+
+  function applyLabel() {
+    if (installingStudio) return 'Installing…';
+    if (!isStudio()) return 'Use this engine';
+    if (!studioStatusReady) return 'Checking…';
+    return studioStatus.installed ? 'Use this engine' : 'Install Studio Local';
+  }
 
   function render() {
+    // A structural render after the modal has closed would rebuild a detached
+    // tree, and the install continues past the modal's lifetime by design.
+    if (closed) return;
+
     const storedKey = loadOpenAIKey();
     const keyReady = storedKey.length > 0;
 
@@ -91,9 +143,9 @@ export function createEngineSettingsModal({ audioManager, onClose, onEngineChang
                 ${isStudio() ? 'checked' : ''} style="accent-color: var(--brass);">
               <span style="font-weight: 700; color: var(--text-primary);">Studio Local</span>
               <span class="badge-voice">Chatterbox · Highest local quality</span>
-              ${studioStatusReady ? `<span class="engine-install-state ${studioStatus.installed ? 'is-installed' : ''}">
-                ${studioStatus.installed ? 'Installed' : '1.5 GB download'}
-              </span>` : ''}
+              <span class="engine-install-state ${studioStatus.installed ? 'is-installed' : ''}">
+                ${studioChipLabel()}
+              </span>
             </div>
             <div style="font-size: 0.8rem; color: var(--text-secondary); margin-top: 6px; line-height: 1.5;">
               More natural, expressive character performances using private 5–10 second
@@ -103,20 +155,24 @@ export function createEngineSettingsModal({ audioManager, onClose, onEngineChang
           </label>
 
           ${isStudio() ? `
-            <div class="studio-install-panel" role="status" aria-live="polite">
+            <div class="studio-install-panel">
               <div>
                 <strong>${studioStatus.installed ? 'Available offline' : 'Install only when you choose'}</strong>
-                <span>${studioStatus.installed
-                  ? `${studioStatus.persisted ? 'Persistent browser storage granted.' : 'Saved in this browser; the browser may evict it under storage pressure.'}`
-                  : 'About 1.5 GB. The screenplay and voice references never leave this device.'}</span>
+                <span>${studioInstallBlurb()}</span>
               </div>
-              ${installingStudio ? `
-                <div class="studio-install-progress">
-                  <div><span style="width:${Math.max(2, studioProgress)}%"></span></div>
-                  <small>${escapeHtml(studioMessage || 'Preparing download…')}</small>
-                </div>
-              ` : ''}
+              <div class="studio-install-progress" ${installingStudio ? '' : 'hidden'}>
+                <div class="studio-install-bar" role="progressbar" aria-valuemin="0" aria-valuemax="100"
+                     aria-valuenow="0" aria-label="Studio Local install progress"><span class="studio-install-fill"></span></div>
+                <small class="studio-install-text"></small>
+                <small class="studio-install-stage" aria-live="polite"></small>
+              </div>
               <p>Use only recordings you own or have permission to clone.</p>
+              ${studioStatus.fileCount > 0 && !installingStudio ? `
+                <button id="btn-studio-remove" class="btn btn-secondary" type="button"
+                        style="align-self:flex-start; font-size: 0.72rem; padding: 5px 10px;">
+                  Remove Studio Local
+                </button>
+              ` : ''}
             </div>
           ` : ''}
 
@@ -206,10 +262,12 @@ export function createEngineSettingsModal({ audioManager, onClose, onEngineChang
         </div>
 
         <div class="modal-footer" style="display: flex; justify-content: flex-end; gap: 10px;">
-          <button id="btn-engine-cancel" class="btn btn-secondary">Cancel</button>
+          <button id="btn-engine-cancel" class="btn btn-secondary">
+            ${installingStudio ? 'Cancel install' : 'Cancel'}
+          </button>
           <button id="btn-engine-apply" class="btn btn-primary"
-            ${(isCloud() && (!consented || !keyReady)) || installingStudio ? 'disabled style="opacity:0.5;cursor:not-allowed;"' : ''}>
-            ${installingStudio ? 'Installing…' : (isStudio() && !studioStatus.installed ? 'Install Studio Local' : 'Use this engine')}
+            ${(isCloud() && (!consented || !keyReady)) || installingStudio || (isStudio() && !studioStatusReady) ? 'disabled style="opacity:0.5;cursor:not-allowed;"' : ''}>
+            ${applyLabel()}
           </button>
         </div>
       </div>
@@ -218,15 +276,91 @@ export function createEngineSettingsModal({ audioManager, onClose, onEngineChang
     attach();
   }
 
+  function studioInstallBlurb() {
+    if (!studioStatus.storable) {
+      return 'This browser cannot store a model this large, so Studio Local will download again '
+        + 'each session. Kokoro is the better local choice here.';
+    }
+    if (studioStatus.installed) {
+      return studioStatus.persisted
+        ? 'Persistent browser storage granted.'
+        : 'Saved on this device; the browser may evict it under storage pressure.';
+    }
+    if (studioStatus.partial) {
+      return `Part of the model is already downloaded. Installing resumes from where it stopped.`;
+    }
+    return `About ${downloadSize}. The screenplay and voice references never leave this device.`;
+  }
+
   function close() {
+    closed = true;
+    // Deliberately does not cancel a running install — the global progress toast
+    // picks it up, which is why the stage copy invites closing this window.
     if (unsubscribeStudioProgress) unsubscribeStudioProgress();
+    unsubscribeStudioProgress = null;
+    if (studioFrame) studioFrame = 0;
     modal.remove();
     if (onClose) onClose();
   }
 
+  function captureStudioRefs() {
+    const panel = modal.querySelector('.studio-install-progress');
+    studioRefs = panel
+      ? {
+        panel,
+        bar: panel.querySelector('.studio-install-bar'),
+        fill: panel.querySelector('.studio-install-fill'),
+        text: panel.querySelector('.studio-install-text'),
+        stage: panel.querySelector('.studio-install-stage')
+      }
+      : null;
+    // Seed straight away so a structural render mid-install does not blank the
+    // readout until the next progress event arrives.
+    paintStudioProgress();
+  }
+
+  function paintStudioProgress() {
+    if (!studioRefs) return;
+    const pct = Math.max(0, Math.min(100, Math.round(studioProgress)));
+    studioRefs.panel.hidden = !installingStudio;
+    studioRefs.fill.style.width = `${Math.max(2, pct)}%`;
+    studioRefs.bar.setAttribute('aria-valuenow', String(pct));
+    // textContent, not innerHTML — these strings carry engine and error text, so
+    // this closes the injection surface rather than escaping around it.
+    studioRefs.text.textContent = studioMessage || 'Preparing…';
+    studioRefs.stage.textContent = STAGE_COPY[studioStage] || '';
+  }
+
+  function scheduleStudioPaint() {
+    if (studioFrame) return;
+    // An animation frame aligns the write with a paint and costs nothing while
+    // the tab is hidden — but it also never *fires* while the tab is hidden, and
+    // a multi-gigabyte install is precisely the thing people leave running in a
+    // background tab. Left on rAF alone, the first suppressed frame would latch
+    // and every later update would be dropped until the tab came back.
+    const hidden = typeof document !== 'undefined' && document.visibilityState === 'hidden';
+    const schedule = !hidden && typeof requestAnimationFrame === 'function'
+      ? requestAnimationFrame
+      : (cb) => setTimeout(cb, 16);
+    studioFrame = schedule(() => {
+      studioFrame = 0;
+      paintStudioProgress();
+    }) || 1;
+  }
+
   function attach() {
     modal.querySelector('.btn-close-modal').addEventListener('click', close);
-    modal.querySelector('#btn-engine-cancel').addEventListener('click', close);
+
+    modal.querySelector('#btn-engine-cancel').addEventListener('click', () => {
+      if (installingStudio) {
+        // Cancel has to mean cancel: without this it only closed the modal and
+        // left a worker pulling well over a gigabyte with nothing referencing it.
+        audioManager.getEngine(ENGINE_IDS.CHATTERBOX)?.abortInit?.();
+        return;
+      }
+      close();
+    });
+
     modal.querySelector('#btn-manage-local-model')?.addEventListener('click', () => {
       modal.remove();
       onOpenModelHub();
@@ -234,6 +368,7 @@ export function createEngineSettingsModal({ audioManager, onClose, onEngineChang
 
     modal.querySelectorAll('input[name="engine"]').forEach(radio => {
       radio.addEventListener('change', (e) => {
+        if (installingStudio) return;
         selectedEngine = e.target.value;
         validationMessage = '';
         validationOk = null;
@@ -244,13 +379,30 @@ export function createEngineSettingsModal({ audioManager, onClose, onEngineChang
     // then toggle twice.
     modal.querySelectorAll('.engine-option').forEach(card => {
       card.addEventListener('click', (e) => {
-        if (e.target.tagName === 'INPUT') return;
+        if (e.target.tagName === 'INPUT' || installingStudio) return;
         selectedEngine = card.dataset.engine;
         validationMessage = '';
         validationOk = null;
         render();
       });
     });
+
+    const removeStudio = modal.querySelector('#btn-studio-remove');
+    if (removeStudio) {
+      removeStudio.addEventListener('click', async () => {
+        if (installingStudio) return;
+        const held = studioStatus.cachedBytes ? formatBytes(studioStatus.cachedBytes) : downloadSize;
+        if (!confirm(`Remove the Studio Local model from this device? That frees about ${held}, and it will have to download again.`)) {
+          return;
+        }
+        removeStudio.disabled = true;
+        removeStudio.textContent = 'Removing…';
+        audioManager.getEngine(ENGINE_IDS.CHATTERBOX)?.release?.();
+        await clearChatterboxCache();
+        studioStatus = await audioManager.getChatterboxCacheStatus();
+        render();
+      });
+    }
 
     const consentBox = modal.querySelector('#cloud-consent');
     if (consentBox) {
@@ -319,50 +471,84 @@ export function createEngineSettingsModal({ audioManager, onClose, onEngineChang
       });
     }
 
-    modal.querySelector('#btn-engine-apply').addEventListener('click', async () => {
-      if (isStudio()) {
-        const estimate = await audioManager.modelCacheManager.getStorageEstimate();
-        const available = Math.max(0, estimate.quota - estimate.usage);
-        if (!studioStatus.installed && estimate.quota > 0 && available < CHATTERBOX_DOWNLOAD_BYTES * 1.1) {
-          validationMessage = `Studio Local needs about 1.7 GB free in browser storage; this browser reports ${audioManager.modelCacheManager.formatBytes(available)} available.`;
-          validationOk = false;
-          render();
-          return;
-        }
+    modal.querySelector('#btn-engine-apply').addEventListener('click', onApply);
 
-        installingStudio = true;
-        studioProgress = 2;
-        studioMessage = studioStatus.installed ? 'Loading the installed model…' : 'Preparing the one-time download…';
-        validationMessage = '';
-        const studioEngine = audioManager.getEngine(ENGINE_IDS.CHATTERBOX);
-        unsubscribeStudioProgress = studioEngine.onProgress(payload => {
-          studioProgress = payload.progress || studioProgress;
-          studioMessage = payload.message || studioMessage;
-          render();
-        });
-        render();
-        try {
-          await audioManager.prepareEngine(ENGINE_IDS.CHATTERBOX);
-          studioStatus = await audioManager.getChatterboxCacheStatus();
-          studioStatusReady = true;
-          installingStudio = false;
-        } catch (error) {
-          installingStudio = false;
-          validationMessage = error.message || 'Studio Local could not be installed.';
-          validationOk = false;
-          render();
-          return;
-        } finally {
-          unsubscribeStudioProgress?.();
-          unsubscribeStudioProgress = null;
-        }
-      }
-      if (selectedEngine !== audioManager.engineId) {
-        audioManager.setEngine(selectedEngine);
-        if (onEngineChanged) onEngineChanged(selectedEngine);
-      }
-      close();
+    captureStudioRefs();
+  }
+
+  async function onApply() {
+    if (isStudio() && !(await installStudio())) return;
+
+    if (selectedEngine !== audioManager.engineId) {
+      audioManager.setEngine(selectedEngine);
+      if (onEngineChanged) onEngineChanged(selectedEngine);
+    }
+    close();
+  }
+
+  /** @returns {Promise<boolean>} whether the engine is ready to be switched to. */
+  async function installStudio() {
+    const estimate = await audioManager.modelCacheManager.getStorageEstimate();
+    const available = Math.max(0, estimate.quota - estimate.usage);
+    const needed = CHATTERBOX_DOWNLOAD_BYTES * 1.1;
+    if (!studioStatus.installed && estimate.quota > 0 && available < needed) {
+      validationMessage = `Studio Local needs about ${formatBytes(needed)} free in browser storage; `
+        + `this browser reports ${formatBytes(available)} available.`;
+      validationOk = false;
+      render();
+      return false;
+    }
+
+    installingStudio = true;
+    studioProgress = 2;
+    studioStage = 'probe';
+    studioMessage = studioStatus.installed ? 'Loading the installed model…' : 'Preparing the one-time download…';
+    validationMessage = '';
+
+    const studioEngine = audioManager.getEngine(ENGINE_IDS.CHATTERBOX);
+    // A load may already be in flight — the app warms an installed model at boot,
+    // and `init()` hands back the running promise rather than starting a second
+    // one. Adopt the engine's real position instead of showing a made-up 2% until
+    // the next event happens to arrive.
+    if (studioEngine.isLoading && Number.isFinite(studioEngine.loadProgress)) {
+      studioProgress = studioEngine.loadProgress;
+      studioMessage = studioEngine.statusMessage || studioMessage;
+      studioStage = studioEngine.stage || studioStage;
+    }
+    unsubscribeStudioProgress = studioEngine.onProgress(payload => {
+      // Number.isFinite, not a truthiness check: the error and cancel paths both
+      // report 0, which a falsy test silently discards.
+      if (Number.isFinite(payload.progress)) studioProgress = payload.progress;
+      if (payload.message) studioMessage = payload.message;
+      if (payload.stage) studioStage = payload.stage;
+      scheduleStudioPaint();
     });
+    render();
+
+    try {
+      await audioManager.prepareEngine(ENGINE_IDS.CHATTERBOX);
+      studioStatus = await audioManager.getChatterboxCacheStatus();
+      studioStatusReady = true;
+      installingStudio = false;
+      // Confirm the action before the modal disappears; previously it just closed.
+      const apply = modal.querySelector('#btn-engine-apply');
+      if (apply) apply.textContent = 'Installed';
+      return true;
+    } catch (error) {
+      installingStudio = false;
+      // Re-probe first, so the panel describes what actually landed rather than
+      // the state from before the attempt.
+      studioStatus = await audioManager.getChatterboxCacheStatus().catch(() => studioStatus);
+      if (!error?.cancelled) {
+        validationMessage = short(error?.message) || 'Studio Local could not be installed.';
+        validationOk = false;
+      }
+      render();
+      return false;
+    } finally {
+      if (unsubscribeStudioProgress) unsubscribeStudioProgress();
+      unsubscribeStudioProgress = null;
+    }
   }
 
   modal.addEventListener('click', (e) => {
@@ -372,13 +558,14 @@ export function createEngineSettingsModal({ audioManager, onClose, onEngineChang
   render();
   const readStudioStatus = audioManager.getChatterboxCacheStatus
     ? audioManager.getChatterboxCacheStatus()
-    : Promise.resolve({ installed: false, persisted: false, fileCount: 0 });
+    : Promise.resolve({ installed: false, partial: false, storable: true, persisted: false, fileCount: 0 });
   readStudioStatus.then(status => {
     studioStatus = status;
     studioStatusReady = true;
-    if (modal.isConnected || !modal.parentNode) render();
+    render();
   }).catch(() => {
     studioStatusReady = true;
+    render();
   });
   return modal;
 }

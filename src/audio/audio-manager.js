@@ -220,6 +220,23 @@ export class ScreenplayAudioManager {
       this.engine.init().catch(err => {
         console.warn('Kokoro background preload notice:', err);
       });
+      return;
+    }
+
+    // Studio Local is warmed only when its weights are already on the device.
+    // Loading something local costs nothing the listener has not already paid
+    // for; beginning a 1.4 GB download at boot for someone who never asked is a
+    // different proposition, so an uninstalled engine waits for an explicit
+    // install or the first Play.
+    if (this.engineId === ENGINE_IDS.CHATTERBOX) {
+      getChatterboxCacheStatus()
+        .then(status => {
+          if (!status.installed || this.engineId !== ENGINE_IDS.CHATTERBOX) return null;
+          return this.engine.init();
+        })
+        .catch(err => {
+          console.warn('Studio Local background preload notice:', err);
+        });
     }
   }
 

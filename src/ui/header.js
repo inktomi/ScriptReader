@@ -77,15 +77,26 @@ export function createHeader({
       : (isStudio
         ? 'Chatterbox Studio voices — generated privately on this device. Click to change.'
         : 'Kokoro voices — screenplay audio is generated on this device. Click to change.');
-    // Only Kokoro's cache status should rewrite this label. Studio Local has a
-    // separate multi-file install state and must not inherit Kokoro's badge.
-    return engineId !== ENGINE_TYPES.KOKORO_NEURAL;
   }
 
-  function updateEngineCacheBadge({ isModelCached, isFullyCached, engineId }) {
-    if (setEngineBadge(engineId)) return;
+  /**
+   * Upgrade the badge to say "ready offline" once the weights really are local.
+   *
+   * The two local engines answer that question differently — Kokoro from a single
+   * cached blob, Studio Local from an eight-file install — so each gets its own
+   * branch rather than one inheriting the other's status.
+   */
+  function updateEngineCacheBadge({ isModelCached, isFullyCached, engineId, studioInstalled }) {
+    setEngineBadge(engineId);
     const badgeText = header.querySelector('#engine-badge-text');
-    if (badgeText && (isFullyCached || isModelCached)) badgeText.textContent = 'Local · ready offline';
+    if (!badgeText) return;
+
+    if (engineId === ENGINE_TYPES.CHATTERBOX) {
+      if (studioInstalled) badgeText.textContent = 'Studio · ready offline';
+      return;
+    }
+    if (engineId !== ENGINE_TYPES.KOKORO_NEURAL) return;
+    if (isFullyCached || isModelCached) badgeText.textContent = 'Local · ready offline';
   }
 
   setEngineBadge(currentEngine);
