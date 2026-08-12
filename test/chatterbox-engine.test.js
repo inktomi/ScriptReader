@@ -10,6 +10,7 @@ import { expectedFilesFor } from '../src/audio/chatterbox-model-files.js';
 import { ENGINE_IDS } from '../src/audio/engine-contract.js';
 import { createVoiceConfigModal } from '../src/ui/voice-config-modal.js';
 import { createEngineSettingsModal } from '../src/ui/engine-settings-modal.js';
+import { listChatterboxVoices } from '../src/audio/chatterbox-voice-store.js';
 import { installDom, removeDom } from './dom-helpers.js';
 
 const tick = () => new Promise(resolve => setTimeout(resolve, 0));
@@ -235,6 +236,7 @@ test('Studio casting requires a private reference before the player can open', (
 
     assert.ok(modal.querySelector('.studio-voice-library'));
     assert.ok(modal.querySelector('#studio-voice-file'));
+    assert.ok(modal.querySelector('#btn-find-studio-voice'));
     assert.equal(modal.querySelector('#casting-path-recommended').disabled, true);
     assert.equal(modal.querySelector('#btn-modal-save').disabled, true);
   } finally {
@@ -276,6 +278,27 @@ test('user-named Studio references are escaped in casting', () => {
     assert.equal(modal.querySelector('img'), null);
     assert.match(modal.textContent, /<img src=x/);
     assert.equal(dom.window.pwned, undefined);
+  } finally {
+    removeDom(dom);
+  }
+});
+
+test('malformed persisted Studio metadata is normalized before casting uses it', () => {
+  const dom = installDom();
+  try {
+    localStorage.setItem('scriptreader_chatterbox_voice_metadata', JSON.stringify([{
+      id: 'studio-malformed',
+      name: 'Safe fallback',
+      tone: { unexpected: true },
+      sex: 'provider-specific',
+      accent: 42,
+      duration: 8
+    }]));
+    const [voice] = listChatterboxVoices();
+    assert.equal(typeof voice.tone, 'string');
+    assert.equal(voice.sex, 'Neutral');
+    assert.equal(voice.accent, 'Cloned');
+    assert.doesNotThrow(() => voice.tone.split(','));
   } finally {
     removeDom(dom);
   }

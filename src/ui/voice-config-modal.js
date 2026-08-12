@@ -12,7 +12,8 @@ import {
 } from '../audio/voice-catalog.js';
 import { ENGINE_IDS } from '../audio/engine-contract.js';
 import { KOKORO_GRADES, gradeLabel, gradeColor } from '../audio/voice-grades.js';
-import { saveChatterboxVoice } from '../audio/chatterbox-voice-store.js';
+import { hasChatterboxVoiceSample, saveChatterboxVoice } from '../audio/chatterbox-voice-store.js';
+import { createVoiceSampleCatalogModal } from './voice-sample-catalog-modal.js';
 
 export function createVoiceConfigModal({
   scriptStore,
@@ -58,6 +59,8 @@ export function createVoiceConfigModal({
   let setupMode = isInitialSetup ? 'choice' : 'detailed';
   let studioVoiceError = '';
   let addingStudioVoice = false;
+  let catalogDialog = null;
+  let openingCatalog = false;
 
   // The casting UI has to show the pool the *active* engine can actually speak
   // with; the two id spaces are disjoint.
@@ -240,10 +243,15 @@ export function createVoiceConfigModal({
                   : 'Add your first reference voice'}</strong>
                 <small>Use a clean 5–10 second recording with one speaker and little background noise. Stored only in this browser.</small>
               </div>
-              <label class="btn btn-secondary studio-add-voice ${addingStudioVoice ? 'is-loading' : ''}">
-                ${getIconSvg('upload', 15)} ${addingStudioVoice ? 'Adding voice…' : 'Add reference voice'}
-                <input id="studio-voice-file" type="file" accept="audio/*,.wav,.mp3,.m4a,.ogg" ${addingStudioVoice ? 'disabled' : ''}>
-              </label>
+              <div class="studio-voice-actions">
+                <button id="btn-find-studio-voice" class="btn btn-primary" type="button">
+                  ${getIconSvg('search', 15)} Find a voice
+                </button>
+                <label class="btn btn-secondary studio-add-voice ${addingStudioVoice ? 'is-loading' : ''}">
+                  ${getIconSvg('upload', 15)} ${addingStudioVoice ? 'Adding voice…' : 'Upload your own'}
+                  <input id="studio-voice-file" type="file" accept="audio/*,.wav,.mp3,.m4a,.ogg" ${addingStudioVoice ? 'disabled' : ''}>
+                </label>
+              </div>
               <p>Only clone a voice you own or have permission to use.</p>
               ${studioVoiceError ? `<div class="studio-voice-error" role="alert">${escapeHtml(studioVoiceError)}</div>` : ''}
             </section>
@@ -457,6 +465,65 @@ export function createVoiceConfigModal({
   }
 
   function attachEventListeners() {
+    modal.querySelector('#btn-find-studio-voice')?.addEventListener('click', async () => {
+      if (catalogDialog || openingCatalog) return;
+      openingCatalog = true;
+      const catalogButton = modal.querySelector('#btn-find-studio-voice');
+      catalogButton.disabled = true;
+      const importedVoiceIds = (await Promise.all(enginePool
+        .filter(voice => voice.sourceVoiceId)
+        .map(async voice => await hasChatterboxVoiceSample(voice.id) ? voice.sourceVoiceId : '')))
+        .filter(Boolean);
+      openingCatalog = false;
+      if (!modal.isConnected || catalogDialog) return;
+      catalogDialog = createVoiceSampleCatalogModal({
+        importedVoiceIds,
+        getAudioSettings: () => ({ volume: audioManager.volume, isMuted: audioManager.isMuted }),
+        async onAdd(file, voice, { signal } = {}) {
+          const wasEmpty = enginePool.length === 0;
+          const replacedVoiceIds = new Set(enginePool
+            .filter(profile => profile.sourceVoiceId === voice.id)
+            .map(profile => profile.id));
+          const saved = await saveChatterboxVoice(file, voice.name, {
+            sex: voice.gender,
+            ageGroup: voice.age,
+            accent: voice.accent,
+            tone: voice.descriptive || voice.useCase,
+            description: voice.description,
+            source: 'Voice catalog',
+            sourceVoiceId: voice.id
+          }, { signal });
+          // Once storage commits, assignment reconciliation is part of that
+          // transaction's logical completion even if the child catalog closes.
+          // Skipping it would leave the working cast pointed at deleted samples.
+          if (!modal.isConnected) return;
+          enginePool = getVoicesForEngine(engineId);
+          if (replacedVoiceIds.has(workingNarratorVoiceId)) workingNarratorVoiceId = saved.id;
+          for (const [charKey, assignment] of workingAssignments) {
+            if (!replacedVoiceIds.has(assignment.voiceIds?.[engineId])) continue;
+            workingAssignments.set(charKey, {
+              ...assignment,
+              voiceIds: { ...(assignment.voiceIds || {}), [engineId]: saved.id }
+            });
+          }
+          if (wasEmpty) {
+            applyRecommendedCast();
+            if (setupMode === 'choice') setupMode = 'review';
+          }
+          renderContent();
+        },
+        onClose() {
+          catalogDialog = null;
+          const button = modal.querySelector('#btn-find-studio-voice');
+          if (button) {
+            button.disabled = false;
+            button.focus();
+          }
+        }
+      });
+      document.body.appendChild(catalogDialog);
+    });
+
     modal.querySelector('#studio-voice-file')?.addEventListener('change', async event => {
       const file = event.target.files?.[0];
       if (!file) return;
@@ -712,6 +779,10 @@ export function createVoiceConfigModal({
 
   const onKeyDown = (e) => {
     if (e.key === 'Escape') {
+      if (catalogDialog) {
+        catalogDialog.close();
+        return;
+      }
       handleClose();
     }
   };
@@ -722,6 +793,8 @@ export function createVoiceConfigModal({
 
   function handleClose() {
     window.removeEventListener('keydown', onKeyDown);
+    catalogDialog?.close();
+    catalogDialog = null;
     audioManager.stop();
     modal.remove();
     if (onCancel) onCancel();
@@ -729,6 +802,8 @@ export function createVoiceConfigModal({
 
   function handleSave() {
     window.removeEventListener('keydown', onKeyDown);
+    catalogDialog?.close();
+    catalogDialog = null;
     audioManager.stop();
 
     // Commit to script store

@@ -26,7 +26,9 @@ import {
   Cpu,
   Smile,
   Eye,
-  ListFilter
+  ListFilter,
+  Search,
+  Download
 } from 'lucide';
 
 const iconMap = {
@@ -57,7 +59,9 @@ const iconMap = {
   cpu: Cpu,
   smile: Smile,
   eye: Eye,
-  filter: ListFilter
+  filter: ListFilter,
+  search: Search,
+  download: Download
 };
 
 /**

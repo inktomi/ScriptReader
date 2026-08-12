@@ -61,6 +61,50 @@ async function putSample(record) {
   }
 }
 
+async function deleteSample(id) {
+  const db = await openDatabase();
+  try {
+    await new Promise((resolve, reject) => {
+      const transaction = db.transaction(STORE_NAME, 'readwrite');
+      transaction.objectStore(STORE_NAME).delete(id);
+      transaction.oncomplete = resolve;
+      transaction.onerror = () => reject(transaction.error || new Error('Could not remove the voice sample.'));
+      transaction.onabort = () => reject(transaction.error || new Error('Voice storage cleanup was interrupted.'));
+    });
+  } finally {
+    db.close();
+  }
+}
+
+function abortError() {
+  const error = new Error('Voice import was cancelled.');
+  error.name = 'AbortError';
+  return error;
+}
+
+function throwIfAborted(signal) {
+  if (signal?.aborted) throw abortError();
+}
+
+export async function hasChatterboxVoiceSample(id) {
+  if (!id) return false;
+  try {
+    const db = await openDatabase();
+    try {
+      return await new Promise((resolve, reject) => {
+        const transaction = db.transaction(STORE_NAME, 'readonly');
+        const request = transaction.objectStore(STORE_NAME).get(id);
+        request.onsuccess = () => resolve(!!request.result?.audio);
+        request.onerror = () => reject(request.error || new Error('Could not check the voice sample.'));
+      });
+    } finally {
+      db.close();
+    }
+  } catch (_) {
+    return false;
+  }
+}
+
 export async function getChatterboxVoiceSample(id) {
   const db = await openDatabase();
   try {
@@ -88,17 +132,21 @@ export function listChatterboxVoices() {
   return readMetadata().map((item, index) => ({
     id: item.id,
     chatterboxId: item.id,
-    name: item.name,
-    sex: item.sex || 'Neutral',
-    ageGroup: 'Reference performance',
-    accent: item.accent || 'Cloned',
-    tone: 'Natural character voice from a private reference recording',
-    description: `${Number(item.duration || 0).toFixed(1)} second reference · stored only on this device`,
+    name: metadataText(item.name, 'Studio voice', 80),
+    sex: ['Female', 'Male', 'Neutral'].includes(item.sex) ? item.sex : 'Neutral',
+    ageGroup: metadataText(item.ageGroup, 'Reference performance', 40),
+    accent: metadataText(item.accent, 'Cloned', 60),
+    tone: metadataText(item.tone, 'Natural character voice from a private reference recording', 120),
+    description: metadataText(item.description, '', 240)
+      ? `${metadataText(item.description, '', 240)} · ${Number(item.duration || 0).toFixed(1)} second local reference`
+      : `${Number(item.duration || 0).toFixed(1)} second reference · stored only on this device`,
     avatarBg: '#343027',
     suggestedRoles: [],
     defaultPitch: 1,
     defaultSpeed: 1,
     sampleLine: 'This is how the character will sound in your listening room.',
+    source: metadataText(item.source, 'Private upload', 80),
+    sourceVoiceId: metadataText(item.sourceVoiceId, '', 100),
     createdAt: item.createdAt || index
   }));
 }
@@ -133,7 +181,13 @@ function voiceNameFromFile(file) {
   return base || 'Studio voice';
 }
 
-export async function saveChatterboxVoice(file, name = '') {
+function metadataText(value, fallback = '', maxLength = 160) {
+  const text = typeof value === 'string' ? value.trim() : '';
+  return (text || fallback).slice(0, maxLength);
+}
+
+export async function saveChatterboxVoice(file, name = '', profile = {}, { signal } = {}) {
+  throwIfAborted(signal);
   if (!file || typeof file.arrayBuffer !== 'function') {
     throw new Error('Choose an audio recording to create a Studio voice.');
   }
@@ -154,23 +208,64 @@ export async function saveChatterboxVoice(file, name = '') {
     throw new Error(`Use at least ${MIN_REFERENCE_SECONDS} seconds of clear speech; 5–10 seconds works best.`);
   }
 
+  throwIfAborted(signal);
+
   const mono = mixToMono(decoded);
   const resampled = resampleLinear(mono, decoded.sampleRate, TARGET_SAMPLE_RATE);
   const maxSamples = TARGET_SAMPLE_RATE * MAX_REFERENCE_SECONDS;
   const audio = resampled.length > maxSamples ? resampled.slice(0, maxSamples) : resampled;
-  const id = `studio-${globalThis.crypto?.randomUUID?.() || `${Date.now()}-${Math.random().toString(36).slice(2)}`}`;
+  const sourceVoiceId = metadataText(profile.sourceVoiceId, '', 100);
+  const currentMetadata = readMetadata();
+  const replacedIds = sourceVoiceId
+    ? currentMetadata.filter(item => item.sourceVoiceId === sourceVoiceId).map(item => item.id)
+    : [];
+  // Reuse a catalog voice's local identity. Cast assignments remain valid even
+  // if the catalog closes after IndexedDB commits but before the UI reconciles.
+  const id = replacedIds[0]
+    || `studio-${globalThis.crypto?.randomUUID?.() || `${Date.now()}-${Math.random().toString(36).slice(2)}`}`;
+  const isReplacement = replacedIds.includes(id);
   const duration = audio.length / TARGET_SAMPLE_RATE;
   const record = { id, audio, sampleRate: TARGET_SAMPLE_RATE, duration, createdAt: Date.now() };
 
   await putSample(record);
-  const metadata = readMetadata();
+  try {
+    throwIfAborted(signal);
+  } catch (error) {
+    if (!isReplacement) {
+      await deleteSample(id).catch(() => {});
+      throw error;
+    }
+    // Replacements have crossed the storage commit point. Finish their
+    // metadata update so the stable ID never describes a missing sample.
+  }
+  // A catalog voice is a replaceable source, not an endlessly duplicated
+  // identity. This also repairs metadata whose IndexedDB sample was evicted.
+  const metadata = currentMetadata.filter(item => !sourceVoiceId || item.sourceVoiceId !== sourceVoiceId);
   metadata.push({
     id,
     name: (name || voiceNameFromFile(file)).slice(0, 80),
     duration,
+    sex: metadataText(profile.sex, 'Neutral', 24),
+    ageGroup: metadataText(profile.ageGroup, 'Reference performance', 40),
+    accent: metadataText(profile.accent, 'Cloned', 60),
+    tone: metadataText(profile.tone, 'Natural character voice from a private reference recording', 120),
+    description: metadataText(profile.description, '', 240),
+    source: metadataText(profile.source, 'Private upload', 80),
+    sourceVoiceId,
     createdAt: record.createdAt
   });
-  writeMetadata(metadata);
+  try {
+    writeMetadata(metadata);
+  } catch (error) {
+    // IndexedDB and localStorage cannot share a transaction. Roll back the
+    // sample when its discoverability metadata fails so retries do not leak
+    // hidden Float32Array records.
+    if (!isReplacement) await deleteSample(id).catch(() => {});
+    throw error;
+  }
+  await Promise.all(replacedIds.filter(replacedId => replacedId !== id).map(replacedId => (
+    deleteSample(replacedId).catch(() => {})
+  )));
   return metadata.at(-1);
 }
 
