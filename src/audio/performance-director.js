@@ -354,6 +354,7 @@ export function buildLineUnits({
     nuance, voiceProfile, tuning, masterSpeed, paceTempo: pace.tempoFactor, caps
   });
   const voiceId = voiceIdFor(engine, voiceProfile);
+  const cacheVoiceId = engine?.resolveVoiceCacheId?.(voiceProfile) || voiceId;
 
   // Composed once per line, not per chunk: the direction is a property of the
   // character and the line, so every chunk of a speech must carry the identical
@@ -430,7 +431,7 @@ export function buildLineUnits({
     estimatedDuration: estimateDuration(text, delivery.tempo, caps.supportsSpeed),
     key: makeCacheKey({
       engineId: caps.id,
-      voiceId,
+      voiceId: cacheVoiceId,
       synthSpeed: delivery.synthSpeed,
       instructions,
       text
@@ -460,6 +461,7 @@ export function buildPreviewUnits({
 
   const delivery = resolveDelivery({ nuance: resolvedNuance, voiceProfile, tuning, masterSpeed, caps });
   const voiceId = voiceIdFor(engine, voiceProfile);
+  const cacheVoiceId = engine?.resolveVoiceCacheId?.(voiceProfile) || voiceId;
 
   const instructions = caps.supportsInstructions
     ? composeInstructions({
@@ -497,7 +499,7 @@ export function buildPreviewUnits({
     estimatedDuration: estimateDuration(chunkText, delivery.tempo, caps.supportsSpeed),
     key: makeCacheKey({
       engineId: caps.id,
-      voiceId,
+      voiceId: cacheVoiceId,
       synthSpeed: delivery.synthSpeed,
       instructions,
       text: chunkText

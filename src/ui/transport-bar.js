@@ -81,6 +81,17 @@ export function createTransportBar({
       </div>
     </div>
 
+    <div class="transport-render-row" id="transport-render-row" hidden>
+      <div class="transport-render-copy">
+        <span id="transport-render-label">Pre-rendering Studio Local audio</span>
+        <span id="transport-render-detail"></span>
+      </div>
+      <div class="transport-render-track" role="progressbar" aria-label="Studio Local pre-render progress"
+        aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
+        <span id="transport-render-fill"></span>
+      </div>
+    </div>
+
     <div class="transport-scrub-row">
       <span id="transport-line-counter">Line 0 / 0</span>
       <div class="scrub-track" id="scrub-track" title="Click to jump to a line in the screenplay">
@@ -109,6 +120,18 @@ export function createTransportBar({
   const bufferStatus = container.querySelector('#transport-buffer-status');
   const volumeSlider = container.querySelector('#transport-volume');
   const btnMute = container.querySelector('#btn-transport-mute');
+  const renderRow = container.querySelector('#transport-render-row');
+  const renderLabel = container.querySelector('#transport-render-label');
+  const renderDetail = container.querySelector('#transport-render-detail');
+  const renderTrack = container.querySelector('.transport-render-track');
+  const renderFill = container.querySelector('#transport-render-fill');
+  let latestPlaybackState = PLAYBACK_STATES.IDLE;
+  let latestRenderStatus = { visible: false, canPlay: true };
+
+  function setPlayDisabled(disabled) {
+    if (disabled && document.activeElement === btnPlay) btnPrev.focus();
+    btnPlay.disabled = disabled;
+  }
 
   // Volume + mute
   volumeSlider.addEventListener('input', (e) => {
@@ -174,6 +197,7 @@ export function createTransportBar({
   });
 
   function updatePlaybackState(state) {
+    latestPlaybackState = state;
     const isBuffering = state === PLAYBACK_STATES.BUFFERING;
     container.classList.toggle('is-buffering', isBuffering);
     bufferStatus.textContent = isBuffering ? 'Rendering voices…' : '';
@@ -185,6 +209,47 @@ export function createTransportBar({
       btnPlay.innerHTML = getIconSvg('play', 24);
       btnPlay.dataset.state = 'idle';
     }
+    setPlayDisabled(latestRenderStatus.visible && !latestRenderStatus.canPlay &&
+      state !== PLAYBACK_STATES.PLAYING);
+  }
+
+  function formatEta(seconds) {
+    if (!Number.isFinite(seconds) || seconds < 1) return '';
+    if (seconds < 60) return 'less than a minute remaining';
+    const minutes = Math.max(1, Math.ceil(seconds / 60));
+    return `about ${minutes} ${minutes === 1 ? 'minute' : 'minutes'} remaining`;
+  }
+
+  function updateRenderProgress(status = {}) {
+    latestRenderStatus = { ...latestRenderStatus, ...status };
+    renderRow.hidden = !latestRenderStatus.visible;
+    if (!latestRenderStatus.visible) {
+      setPlayDisabled(false);
+      return;
+    }
+
+    const percent = Math.max(0, Math.min(100, Number(latestRenderStatus.percent) || 0));
+    renderFill.style.width = `${percent}%`;
+    renderTrack.setAttribute('aria-valuenow', String(percent));
+    renderLabel.textContent = latestRenderStatus.error
+      ? 'Studio Local pre-render stopped'
+      : `Studio Local pre-rendered · ${percent}%`;
+
+    if (latestRenderStatus.error) {
+      renderDetail.textContent = latestRenderStatus.error;
+    } else if (!latestRenderStatus.active) {
+      renderDetail.textContent = 'Ready for uninterrupted playback';
+    } else if (latestRenderStatus.canPlay) {
+      const eta = formatEta(latestRenderStatus.etaSeconds);
+      renderDetail.textContent = `Ready to play · rendering continues${eta ? ` · ${eta}` : ''}`;
+    } else {
+      renderDetail.textContent = `Building a safe playback lead${formatEta(latestRenderStatus.etaSeconds) ? ` · ${formatEta(latestRenderStatus.etaSeconds)}` : ''}`;
+    }
+
+    setPlayDisabled(!latestRenderStatus.canPlay && latestPlaybackState !== PLAYBACK_STATES.PLAYING);
+    btnPlay.title = btnPlay.disabled
+      ? 'Studio Local is rendering enough audio for uninterrupted playback'
+      : 'Play / Pause (Spacebar)';
   }
 
   function updateActiveSpeaker(element, voice, nuance, others = []) {
@@ -238,6 +303,7 @@ export function createTransportBar({
     element: container,
     visualizerCanvas,
     updatePlaybackState,
+    updateRenderProgress,
     updateActiveSpeaker,
     updateProgress
   };

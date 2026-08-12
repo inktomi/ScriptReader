@@ -245,6 +245,7 @@ export function listChatterboxVoices() {
     sampleLine: 'This is how the character will sound in your listening room.',
     source: metadataText(item.source, 'Private upload', 80),
     sourceVoiceId: metadataText(item.sourceVoiceId, '', 100),
+    renderRevision: item.createdAt || index,
     createdAt: item.createdAt || index
   }));
 }

@@ -186,6 +186,33 @@ test('OpenAI keeps long speeches intact and uses exact transport speed', () => {
   assert.equal(units[0].playbackRate, 1);
 });
 
+test('refreshing a Studio reference changes its render key without changing its voice id', () => {
+  const engine = {
+    capabilities: {
+      id: 'chatterbox', supportsSpeed: false, supportsInstructions: false,
+      maxChunkChars: 125
+    },
+    resolveVoiceId: profile => profile.id,
+    resolveVoiceCacheId: profile => `${profile.id}@${profile.renderRevision}`
+  };
+  const args = {
+    element: { type: 'DIALOGUE', character: 'ALICE', text: 'The same line.' },
+    engine
+  };
+  const before = buildLineUnits({
+    ...args,
+    voiceProfile: { id: 'studio-alice', renderRevision: 1, defaultPitch: 1, defaultSpeed: 1 }
+  })[0];
+  const after = buildLineUnits({
+    ...args,
+    voiceProfile: { id: 'studio-alice', renderRevision: 2, defaultPitch: 1, defaultSpeed: 1 }
+  })[0];
+
+  assert.equal(before.voiceId, 'studio-alice');
+  assert.equal(after.voiceId, 'studio-alice');
+  assert.notEqual(before.key, after.key);
+});
+
 test('line-specific acting direction survives a pathological persona', () => {
   const instructions = composeInstructions({
     direction: 'x'.repeat(880),

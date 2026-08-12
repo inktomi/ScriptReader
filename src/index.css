@@ -1696,6 +1696,55 @@ button:disabled {
   font-size: 0.56rem;
 }
 
+.transport-render-row {
+  display: grid;
+  grid-template-columns: minmax(220px, auto) 1fr;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 8px;
+}
+
+.transport-render-row[hidden] {
+  display: none;
+}
+
+.transport-render-copy {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  color: var(--text-secondary);
+  font-family: var(--font-mono);
+  font-size: 0.56rem;
+  white-space: nowrap;
+}
+
+#transport-render-detail {
+  color: var(--text-muted);
+}
+
+.transport-render-track {
+  height: 6px;
+  overflow: hidden;
+  background: #302d28;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+}
+
+.transport-render-track > span {
+  display: block;
+  width: 0;
+  height: 100%;
+  background: var(--success);
+  border-radius: inherit;
+  transition: width 180ms ease-out;
+}
+
+.btn-play-big:disabled {
+  cursor: wait;
+  opacity: 0.58;
+  transform: none !important;
+}
+
 .scrub-track {
   height: 4px;
   position: relative;

@@ -324,6 +324,7 @@ async function initApp() {
     activeVoiceModal?.remove();
     activeVoiceModal = null;
     syncLoadedScript();
+    transportBar.updateRenderProgress(audioManager.renderStatus);
     playerShell.hidden = false;
   }
 
@@ -369,6 +370,10 @@ async function initApp() {
     switch (event) {
       case 'stateChange':
         transportBar.updatePlaybackState(data.state);
+        break;
+
+      case 'renderProgress':
+        transportBar.updateRenderProgress(data);
         break;
 
       case 'lineStart':

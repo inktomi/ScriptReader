@@ -63,6 +63,210 @@ test('metered engines do not synthesize before Play', () => {
   assert.equal(requests, 0);
 });
 
+test('Studio Local loads an installed engine and pre-renders before Play', async () => {
+  const manager = new ScreenplayAudioManager();
+  const requested = [];
+  const engine = fakeEngine({
+    isReady: false,
+    capabilities: { id: ENGINE_IDS.CHATTERBOX, metered: false },
+    async init() { this.isReady = true; },
+    request(unit) {
+      requested.push(unit.key);
+      return Promise.resolve({ duration: 2 });
+    }
+  });
+  manager.engineId = ENGINE_IDS.CHATTERBOX;
+  manager.engine = engine;
+  manager.getChatterboxCacheStatus = async () => ({ installed: true });
+  manager.scriptElements = [{}];
+  manager._unitsForLine = line => line === 0
+    ? [{ key: 'opening', estimatedDuration: 2, leadPause: 0 }]
+    : null;
+
+  await manager.prewarm();
+
+  assert.equal(engine.isReady, true);
+  assert.deepEqual(requested, ['opening']);
+  assert.equal(manager.playbackState, PLAYBACK_STATES.IDLE);
+});
+
+test('Studio Local pre-render reaches character lines beyond the old six-unit limit', async () => {
+  const manager = new ScreenplayAudioManager();
+  const requested = [];
+  manager.engineId = ENGINE_IDS.CHATTERBOX;
+  manager.engine = fakeEngine({
+    capabilities: { id: ENGINE_IDS.CHATTERBOX, metered: false },
+    request(unit) {
+      requested.push(unit);
+      return Promise.resolve();
+    }
+  });
+  manager.scriptElements = Array.from({ length: 10 }, () => ({}));
+  manager._unitsForLine = line => line >= 0 && line < 10
+    ? [{
+        key: `unit-${line}`,
+        character: line < 7 ? 'NARRATOR' : 'RILEY',
+        estimatedDuration: 2,
+        leadPause: 0
+      }]
+    : null;
+
+  await manager.prewarm();
+
+  assert.equal(requested.length, 10);
+  assert.ok(requested.some(unit => unit.character === 'RILEY'));
+});
+
+test('Studio Local keeps background render requests in bounded batches', async () => {
+  const manager = new ScreenplayAudioManager();
+  const completions = [];
+  let requested = 0;
+  let active = 0;
+  let maxActive = 0;
+  manager.engineId = ENGINE_IDS.CHATTERBOX;
+  manager.engine = fakeEngine({
+    capabilities: { id: ENGINE_IDS.CHATTERBOX, metered: false },
+    request() {
+      requested++;
+      active++;
+      maxActive = Math.max(maxActive, active);
+      return new Promise(resolve => {
+        completions.push(() => {
+          active--;
+          resolve();
+        });
+      });
+    }
+  });
+  manager.scriptElements = Array.from({ length: 14 }, () => ({}));
+  manager._unitsForLine = line => line >= 0 && line < 14
+    ? [{ key: `unit-${line}`, estimatedDuration: 1, leadPause: 0 }]
+    : null;
+
+  const prewarm = manager.prewarm();
+  assert.equal(requested, 6);
+
+  while (requested < 14 || completions.length > 0) {
+    const batch = completions.splice(0);
+    batch.forEach(complete => complete());
+    await new Promise(resolve => setImmediate(resolve));
+  }
+  await prewarm;
+
+  assert.equal(requested, 14);
+  assert.equal(maxActive, 6);
+});
+
+test('Studio Local keeps filling its persistent render cache during playback', async () => {
+  const manager = new ScreenplayAudioManager();
+  const completions = [];
+  let requested = 0;
+  manager.engineId = ENGINE_IDS.CHATTERBOX;
+  manager.engine = fakeEngine({
+    capabilities: { id: ENGINE_IDS.CHATTERBOX, metered: false },
+    request() {
+      requested++;
+      return new Promise(resolve => completions.push(() => resolve({ duration: 1 })));
+    }
+  });
+  manager.scriptElements = Array.from({ length: 8 }, () => ({}));
+  manager._unitsForLine = line => line >= 0 && line < 8
+    ? [{ key: `unit-${line}`, estimatedDuration: 1, leadPause: 0 }]
+    : null;
+
+  const prewarm = manager.prewarm();
+  assert.equal(requested, 6);
+  manager.playbackState = PLAYBACK_STATES.PLAYING;
+  completions.splice(0).forEach(complete => complete());
+  await new Promise(resolve => setImmediate(resolve));
+
+  assert.equal(requested, 8);
+  completions.splice(0).forEach(complete => complete());
+  await prewarm;
+});
+
+test('Studio Local enables Play once a safe runway is rendered, before 100 percent', async () => {
+  const manager = new ScreenplayAudioManager();
+  const completions = [];
+  manager.engineId = ENGINE_IDS.CHATTERBOX;
+  manager.engine = fakeEngine({
+    capabilities: { id: ENGINE_IDS.CHATTERBOX, metered: false },
+    request() {
+      return new Promise(resolve => completions.push(resolve));
+    }
+  });
+  manager.scriptElements = Array.from({ length: 20 }, () => ({}));
+  manager._unitsForLine = line => line >= 0 && line < 20
+    ? [{ key: `unit-${line}`, estimatedDuration: 30, leadPause: 0 }]
+    : null;
+  const runwayStatus = manager._studioRunwayStatus.bind(manager);
+  manager._studioRunwayStatus = (units, _renderRate, previousCanPlay) =>
+    runwayStatus(units, 0.5, previousCanPlay);
+
+  const prewarm = manager.prewarm();
+  assert.equal(manager.renderStatus.canPlay, false);
+
+  completions.splice(0).forEach(resolve => resolve());
+  await new Promise(resolve => setImmediate(resolve));
+  completions.splice(0).forEach(resolve => resolve());
+  await new Promise(resolve => setImmediate(resolve));
+
+  assert.equal(manager.renderStatus.canPlay, true);
+  assert.ok(manager.renderStatus.percent < 100);
+
+  while (completions.length > 0 || manager.renderStatus.active) {
+    completions.splice(0).forEach(resolve => resolve());
+    await new Promise(resolve => setImmediate(resolve));
+  }
+  await prewarm;
+});
+
+test('Studio Local does not begin playback before the safe runway is ready', async () => {
+  const manager = new ScreenplayAudioManager();
+  manager.engineId = ENGINE_IDS.CHATTERBOX;
+  manager.engine = fakeEngine({ capabilities: { id: ENGINE_IDS.CHATTERBOX, metered: false } });
+  manager.scriptElements = [{}];
+  manager.renderStatus = { ...manager.renderStatus, visible: true, canPlay: false };
+  manager._studioPrewarmTask = {
+    engine: manager.engine,
+    unitGeneration: manager.prewarmGeneration,
+    promise: new Promise(() => {})
+  };
+  let audioStarts = 0;
+  manager._ensureAudio = async () => { audioStarts++; return {}; };
+
+  await manager.play();
+
+  assert.equal(audioStarts, 0);
+  assert.equal(manager.playbackState, PLAYBACK_STATES.IDLE);
+});
+
+test('a superseded Studio Local load cannot pre-render a stale script', async () => {
+  const manager = new ScreenplayAudioManager();
+  let finishStatusCheck;
+  const requested = [];
+  const engine = fakeEngine({
+    isReady: false,
+    capabilities: { id: ENGINE_IDS.CHATTERBOX, metered: false },
+    async init() { this.isReady = true; },
+    request(unit) { requested.push(unit.key); }
+  });
+  manager.engineId = ENGINE_IDS.CHATTERBOX;
+  manager.engine = engine;
+  manager.getChatterboxCacheStatus = () => new Promise(resolve => { finishStatusCheck = resolve; });
+  manager.scriptElements = [{}];
+  manager._unitsForLine = line => line === 0
+    ? [{ key: 'stale-opening', estimatedDuration: 2, leadPause: 0 }]
+    : null;
+
+  const prewarm = manager.prewarm();
+  manager.stop();
+  finishStatusCheck({ installed: true });
+  await prewarm;
+
+  assert.deepEqual(requested, []);
+});
+
 test('switching engines cancels the old engine queue', () => {
   const manager = new ScreenplayAudioManager();
   let cancellations = 0;

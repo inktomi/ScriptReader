@@ -11,6 +11,7 @@ import { ENGINE_IDS } from '../src/audio/engine-contract.js';
 import { createVoiceConfigModal } from '../src/ui/voice-config-modal.js';
 import { createEngineSettingsModal } from '../src/ui/engine-settings-modal.js';
 import { listChatterboxVoices } from '../src/audio/chatterbox-voice-store.js';
+import { decodePcm16, encodePcm16, MAX_RENDER_CACHE_BYTES } from '../src/audio/chatterbox-render-store.js';
 import { installDom, removeDom } from './dom-helpers.js';
 
 const tick = () => new Promise(resolve => setTimeout(resolve, 0));
@@ -87,6 +88,54 @@ test('Studio Local advertises private non-metered synthesis and bounded chunks',
   assert.equal(engine.capabilities.metered, false);
   assert.equal(engine.capabilities.maxChunkChars, 125);
   assert.ok(CHATTERBOX_DOWNLOAD_BYTES > 1_000_000_000);
+  assert.ok(MAX_RENDER_CACHE_BYTES < 1024 * 1024 * 1024);
+});
+
+test('render cache PCM16 encoding is bounded and preserves the waveform', () => {
+  const source = new Float32Array([-1.2, -0.5, 0, 0.5, 1.2]);
+  const encoded = encodePcm16(source);
+  const decoded = decodePcm16(encoded);
+
+  assert.equal(encoded.byteLength, source.length * 2);
+  assert.deepEqual(Array.from(decoded, value => Number(value.toFixed(3))), [-1, -0.5, 0, 0.5, 1]);
+});
+
+test('Studio Local reuses a persistent render without synthesizing it again', async () => {
+  const stored = { audio: new Int16Array([0, 100]), sampleRate: 24000 };
+  const engine = new ChatterboxStudioEngine({
+    renderStore: {
+      async get(key) { return key === 'cached-line' ? stored : null; },
+      async put() { throw new Error('a cache hit must not be rewritten'); }
+    }
+  });
+  const buffer = { duration: 2 };
+  engine._bufferFromPcm = (audio, sampleRate) => {
+    assert.equal(audio, stored.audio);
+    assert.equal(sampleRate, 24000);
+    return buffer;
+  };
+  engine._synthesize = async () => { throw new Error('a cache hit must not synthesize'); };
+
+  assert.equal(await engine._loadOrSynthesize({ key: 'cached-line' }, 0), buffer);
+});
+
+test('new Studio renders are durably cached before becoming ready', async () => {
+  const writes = [];
+  const samples = new Float32Array([0, 0.25]);
+  const buffer = { sampleRate: 24000, getChannelData: () => samples };
+  const engine = new ChatterboxStudioEngine({
+    renderStore: {
+      async get() { return null; },
+      async put(key, audio, sampleRate) { writes.push({ key, audio, sampleRate }); }
+    }
+  });
+  engine._synthesize = async () => buffer;
+
+  assert.equal(await engine._loadOrSynthesize({ key: 'new-line' }, 0), buffer);
+  assert.equal(writes.length, 1);
+  assert.equal(writes[0].key, 'new-line');
+  assert.equal(writes[0].audio, samples);
+  assert.equal(writes[0].sampleRate, 24000);
 });
 
 test('Studio Local reports not installed when no storage backend can hold the model', async () => {

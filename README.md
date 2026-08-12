@@ -124,6 +124,15 @@ speaker
   source in place, so resuming continues mid-line with no re-render.
 * **Cancellation is surgical.** A seek drops only *pending* lookahead; work
   already in flight still lands in the cache instead of being thrown away.
+* **Studio Local pre-renders continuously.** Chatterbox renders the upcoming
+  screenplay in bounded batches as soon as the engine and cast are ready. The
+  transport shows how much is complete and unlocks Play once the measured render
+  rate and available runway indicate that playback can stay ahead of synthesis.
+* **Studio renders are durable.** Completed Chatterbox chunks are stored as
+  bounded PCM16 records in IndexedDB (up to 768 MB), so reopening a script or
+  replaying a line does not pay the synthesis cost again. Changing a reference
+  recording changes its render key, preventing an old cloned voice from leaking
+  into the refreshed cast.
 
 ## Running Locally
 

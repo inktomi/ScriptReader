@@ -3,6 +3,7 @@ import { getAudioContext } from './audio-context.js';
 import { ModelCacheManager } from './model-cache-manager.js';
 import { getChatterboxVoiceSample } from './chatterbox-voice-store.js';
 import { createOpfsModelCache } from './opfs-model-cache.js';
+import { chatterboxRenderStore, decodePcm16 } from './chatterbox-render-store.js';
 import {
   CHATTERBOX_DOWNLOAD_BYTES,
   CHATTERBOX_MODEL_ID,
@@ -133,7 +134,8 @@ export async function clearChatterboxCache() {
   const sweptLegacy = await ModelCacheManager.clearMatchingEntries(
     url => url.toLowerCase().includes('chatterbox-onnx')
   );
-  return clearedOpfs || sweptLegacy;
+  const clearedRenders = await chatterboxRenderStore.clear();
+  return clearedOpfs || sweptLegacy || clearedRenders;
 }
 
 function exaggerationFor(unit) {
@@ -146,7 +148,7 @@ function exaggerationFor(unit) {
 }
 
 export class ChatterboxStudioEngine {
-  constructor() {
+  constructor({ renderStore = chatterboxRenderStore } = {}) {
     this.worker = null;
     this.msgId = 0;
     this.resolvers = new Map();
@@ -154,6 +156,7 @@ export class ChatterboxStudioEngine {
     this.cachedSeconds = 0;
     this.pending = new Map();
     this.voiceSamples = new Map();
+    this.renderStore = renderStore;
     this.progressListeners = new Set();
     this.initPromise = null;
     this.isLoading = false;
@@ -199,6 +202,11 @@ export class ChatterboxStudioEngine {
 
   resolveVoiceId(profile) {
     return profile?.chatterboxId || profile?.id || '';
+  }
+
+  resolveVoiceCacheId(profile) {
+    const id = this.resolveVoiceId(profile);
+    return profile?.renderRevision ? `${id}@${profile.renderRevision}` : id;
   }
 
   onProgress(callback) {
@@ -580,7 +588,7 @@ export class ChatterboxStudioEngine {
       return existing.promise;
     }
 
-    const promise = this._synthesize(unit, priority)
+    const promise = this._loadOrSynthesize(unit, priority)
       .then(buffer => {
         this.pending.delete(unit.key);
         this._store(unit.key, buffer);
@@ -599,6 +607,24 @@ export class ChatterboxStudioEngine {
     promise.catch(() => {});
     this.pending.set(unit.key, { promise, priority });
     return promise;
+  }
+
+  async _loadOrSynthesize(unit, priority) {
+    const stored = await this.renderStore.get(unit.key);
+    if (stored) return this._bufferFromPcm(stored.audio, stored.sampleRate);
+
+    const buffer = await this._synthesize(unit, priority);
+    await this.renderStore.put(unit.key, buffer.getChannelData(0), buffer.sampleRate);
+    return buffer;
+  }
+
+  _bufferFromPcm(pcm, sampleRate = 24000) {
+    const context = getAudioContext();
+    if (!context) throw new Error('Web Audio is unavailable in this browser.');
+    const samples = decodePcm16(pcm);
+    const buffer = context.createBuffer(1, samples.length, sampleRate);
+    buffer.copyToChannel(samples, 0);
+    return buffer;
   }
 
   async _synthesize(unit, priority) {

@@ -14,6 +14,7 @@ import { getAudioContext, resumeAudioContext, suspendAudioContext } from './audi
 import { ENGINE_IDS } from './engine-contract.js';
 import { OpenAiTtsEngine } from './openai-engine.js';
 import { ChatterboxStudioEngine, getChatterboxCacheStatus } from './chatterbox-engine.js';
+import { MAX_RENDER_CACHE_SECONDS } from './chatterbox-render-store.js';
 import { loadEngineSettings, saveEngineSettings } from '../utils/credentials.js';
 
 /**
@@ -51,6 +52,17 @@ const SCHEDULE_AHEAD_SEC = 1.6;
 // script of short lines cannot flood the queue.
 const LOOKAHEAD_SEC = 28;
 const LOOKAHEAD_UNITS = 24;
+
+// Studio renders continuously into a persistent, bounded cache. Only a small
+// batch is admitted to the worker at once because every queued Chatterbox unit
+// carries a transferable copy of its reference recording.
+const STUDIO_PREWARM_UNITS = 10000;
+const STUDIO_PREWARM_BATCH_UNITS = 6;
+const STUDIO_CACHE_DURATION_BUDGET = MAX_RENDER_CACHE_SECONDS * 0.8;
+const STUDIO_MIN_RUNWAY_SECONDS = 5 * 60;
+const STUDIO_RENDER_SAFETY_FACTOR = 0.8;
+const STUDIO_UNKNOWN_RENDER_RATE = 0;
+const DEFAULT_PREWARM_UNITS = 6;
 
 // Audio banked before the first line plays, versus after recovering a stall.
 // Starting with a cushion is what turns "press play, hear a stutter" into
@@ -132,6 +144,21 @@ export class ScreenplayAudioManager {
     // audio context, and a seek arriving during those awaits must not leave two
     // start-ups racing to schedule from different cursors.
     this.playGeneration = 0;
+
+    // Separates background renders built from different casts, pacing, or
+    // engine-native voices even when playback itself has not moved.
+    this.prewarmGeneration = 0;
+    this._preparedStudioKeys = new Set();
+    this.renderStatus = {
+      visible: this.engineId === ENGINE_IDS.CHATTERBOX,
+      active: false,
+      canPlay: this.engineId !== ENGINE_IDS.CHATTERBOX,
+      completed: 0,
+      total: 0,
+      percent: 0,
+      etaSeconds: null,
+      message: ''
+    };
 
     this.previewToken = 0;
     this._previewResolve = null;
@@ -229,10 +256,21 @@ export class ScreenplayAudioManager {
     // different proposition, so an uninstalled engine waits for an explicit
     // install or the first Play.
     if (this.engineId === ENGINE_IDS.CHATTERBOX) {
+      const engine = this.engine;
+      const generation = this.playGeneration;
       getChatterboxCacheStatus()
         .then(status => {
-          if (!status.installed || this.engineId !== ENGINE_IDS.CHATTERBOX) return null;
-          return this.engine.init();
+          if (!status.installed || generation !== this.playGeneration ||
+              this.engineId !== ENGINE_IDS.CHATTERBOX || this.engine !== engine) {
+            return null;
+          }
+          return engine.init();
+        })
+        .then(() => {
+          if (generation === this.playGeneration &&
+              this.engineId === ENGINE_IDS.CHATTERBOX && this.engine === engine && engine.isReady) {
+            this.prewarm();
+          }
         })
         .catch(err => {
           console.warn('Studio Local background preload notice:', err);
@@ -318,6 +356,7 @@ export class ScreenplayAudioManager {
     saveEngineSettings({ engineId });
 
     this.emit('engineChange', { engineId, capabilities: this.engine.capabilities });
+    this.prewarm();
   }
 
   /** @deprecated Use setEngine(). Kept so older callers keep working. */
@@ -327,6 +366,10 @@ export class ScreenplayAudioManager {
 
   setScript(elements, characterMap = new Map(), startIndex = 0) {
     this.stop();
+    // The persistent store may have evicted records belonging to the previous
+    // script. Re-probe through engine.request(); cache hits are cheap and this
+    // prevents an in-memory key set from overstating what is still durable.
+    this._preparedStudioKeys.clear();
     this.scriptElements = elements || [];
     this.characterAssignments = characterMap;
     this.currentIndex = Math.max(0, Math.min(this.scriptElements.length - 1, startIndex || 0));
@@ -345,6 +388,7 @@ export class ScreenplayAudioManager {
     this._ensureEngineVoices();
     this.engine.dropPendingExcept([]);
     this._invalidateUnits();
+    this.prewarm();
   }
 
   /**
@@ -425,6 +469,7 @@ export class ScreenplayAudioManager {
     // Drop the cached cross-engine translation; it was derived from the old id.
     this._narratorByEngine = {};
     this._invalidateUnits();
+    this.prewarm();
   }
 
   setMasterSpeed(speed) {
@@ -533,6 +578,22 @@ export class ScreenplayAudioManager {
 
   _invalidateUnits() {
     this.unitCache.clear();
+    this.prewarmGeneration++;
+    if (this.engineId === ENGINE_IDS.CHATTERBOX) {
+      this._setRenderStatus({
+        visible: true,
+        active: this.scriptElements.length > 0,
+        canPlay: false,
+        completed: 0,
+        total: 0,
+        percent: 0,
+        etaSeconds: null,
+        error: null,
+        message: this.scriptElements.length > 0 ? 'Preparing Studio Local audio' : ''
+      });
+    } else if (this.renderStatus?.visible) {
+      this._setRenderStatus({ visible: false, active: false, canPlay: true, error: null, message: '' });
+    }
   }
 
   /** Forget everything the playhead knows. Called whenever the timeline is torn down. */
@@ -960,12 +1021,72 @@ export class ScreenplayAudioManager {
     return this.scheduler;
   }
 
-  /**
-   * Render a few units ahead without playing, so the first Play has no wait.
-   */
+  /** Render ahead without playing, so the first Play has no wait. */
   prewarm() {
-    if (!this.engine.isReady || this.scriptElements.length === 0) return;
+    if (this.scriptElements.length === 0) return null;
     if (this.engine.capabilities.metered) return;
+
+    const engine = this.engine;
+    const unitGeneration = this.prewarmGeneration;
+
+    if (this.engineId === ENGINE_IDS.CHATTERBOX) {
+      const active = this._studioPrewarmTask;
+      if (active && active.engine === engine && active.unitGeneration === unitGeneration) {
+        return active.promise;
+      }
+
+      const promise = this._runStudioPrewarm(engine, unitGeneration);
+      this._studioPrewarmTask = { engine, unitGeneration, promise };
+      return promise;
+    }
+
+    if (!engine.isReady) return null;
+    this._queuePrewarm(engine);
+    return null;
+  }
+
+  async _runStudioPrewarm(engine, unitGeneration) {
+    try {
+      if (!engine.isReady) {
+        // Selecting Studio Local is explicit consent to install it, but a saved
+        // selection can outlive browser storage eviction. Re-check the installed
+        // files before starting a background load so merely opening a script can
+        // never silently trigger another 1.4 GB download.
+        const status = await this.getChatterboxCacheStatus();
+        if (!status.installed || !this._ownsStudioPrewarm(engine, unitGeneration)) return false;
+        await engine.init();
+      }
+
+      if (!engine.isReady || !this._ownsStudioPrewarm(engine, unitGeneration)) return false;
+      await this._queueStudioPrewarm(engine, unitGeneration);
+      return true;
+    } catch (err) {
+      console.warn('Studio Local background pre-render notice:', err);
+      if (this._ownsStudioPrewarm(engine, unitGeneration)) {
+        this._setRenderStatus({
+          visible: true,
+          active: false,
+          canPlay: false,
+          error: err?.message || 'Studio audio could not be rendered.',
+          message: err?.message || 'Studio audio could not be rendered.'
+        });
+      }
+      return false;
+    }
+  }
+
+  _ownsStudioPrewarm(engine, unitGeneration) {
+    return unitGeneration === this.prewarmGeneration &&
+      this.engineId === ENGINE_IDS.CHATTERBOX && this.engine === engine;
+  }
+
+  _setRenderStatus(status) {
+    this.renderStatus = { ...this.renderStatus, ...status };
+    this.emit('renderProgress', this.renderStatus);
+  }
+
+  _queuePrewarm(engine) {
+    if (engine !== this.engine || !engine.isReady || this.scriptElements.length === 0) return;
     if (this.playbackState === PLAYBACK_STATES.PLAYING) return;
 
     this.cursorLine = this.currentIndex;
@@ -975,8 +1096,9 @@ export class ScreenplayAudioManager {
     let unit = 0;
     let count = 0;
     let guard = 0;
+    const guardLimit = Math.max(60, this.scriptElements.length + DEFAULT_PREWARM_UNITS + 2);
 
-    while (count < 6 && guard++ < 60) {
+    while (count < DEFAULT_PREWARM_UNITS && guard++ < guardLimit) {
       const units = this._unitsForLine(line);
       if (!units) break;
       if (unit >= units.length) {
@@ -984,9 +1106,142 @@ export class ScreenplayAudioManager {
         unit = 0;
         continue;
       }
-      this.engine.request(units[unit], count);
+      const renderUnit = units[unit];
+      engine.request(renderUnit, count)?.catch(() => {});
       count++;
       unit++;
+    }
+  }
+
+  /**
+   * Keep Studio Local busy while idle without flooding the worker with an entire
+   * screenplay (and a fresh transferable copy of its reference audio) at once.
+   */
+  _studioRenderUnits() {
+    const units = [];
+    const appendRange = (start, end) => {
+      for (let line = start; line < end && units.length <= STUDIO_PREWARM_UNITS; line++) {
+        units.push(...(this._unitsForLine(line) || []));
+      }
+    };
+    // What the listener will hear next is rendered first. Wrapping around later
+    // still fills the bar for the whole script and makes a reset instant.
+    appendRange(this.currentIndex, this.scriptElements.length);
+    appendRange(0, this.currentIndex);
+    return {
+      units: units.slice(0, STUDIO_PREWARM_UNITS),
+      truncated: units.length > STUDIO_PREWARM_UNITS
+    };
+  }
+
+  _studioRunwayStatus(units, renderRate, previousCanPlay = false) {
+    const totalSeconds = units.reduce((sum, unit) => sum + (unit.estimatedDuration || 0), 0);
+    let contiguousSeconds = 0;
+    for (const unit of units) {
+      if (!this._preparedStudioKeys.has(unit.key)) break;
+      contiguousSeconds += unit.estimatedDuration || 0;
+    }
+    const effectiveRate = Math.max(0, renderRate || STUDIO_UNKNOWN_RENDER_RATE) /
+      Math.max(0.5, this.masterSpeed);
+    const deficit = Math.max(0, 1 - effectiveRate * STUDIO_RENDER_SAFETY_FACTOR);
+    const requiredSeconds = Math.min(
+      totalSeconds,
+      Math.max(Math.min(STUDIO_MIN_RUNWAY_SECONDS, totalSeconds), totalSeconds * deficit)
+    );
+    return {
+      totalSeconds,
+      contiguousSeconds,
+      requiredSeconds,
+      canPlay: previousCanPlay || contiguousSeconds >= requiredSeconds
+    };
+  }
+
+  async _queueStudioPrewarm(engine, unitGeneration) {
+    const renderPlan = this._studioRenderUnits();
+    const units = renderPlan.units;
+    const totalSeconds = units.reduce((sum, unit) => sum + (unit.estimatedDuration || 0), 0);
+    if (renderPlan.truncated || totalSeconds > STUDIO_CACHE_DURATION_BUDGET) {
+      throw new Error(
+        'This script is too long for the bounded Studio render cache. Split it into smaller parts for uninterrupted playback.'
+      );
+    }
+    let completed = units.filter(unit => this._preparedStudioKeys.has(unit.key)).length;
+    let completedSeconds = units.reduce(
+      (sum, unit) => sum + (this._preparedStudioKeys.has(unit.key) ? (unit.estimatedDuration || 0) : 0),
+      0
+    );
+    let measuredAudioSeconds = 0;
+    let measuredWallSeconds = 0;
+    let canPlay = false;
+    const startedAt = Date.now();
+
+    const publish = (active, error = null) => {
+      const renderRate = measuredWallSeconds > 0
+        ? measuredAudioSeconds / measuredWallSeconds
+        : STUDIO_UNKNOWN_RENDER_RATE;
+      const runway = this._studioRunwayStatus(units, renderRate, canPlay);
+      canPlay = runway.canPlay;
+      const remainingAudio = Math.max(0, totalSeconds - completedSeconds);
+      const etaSeconds = renderRate > 0 ? remainingAudio / renderRate : null;
+      this._setRenderStatus({
+        visible: true,
+        active,
+        canPlay,
+        completed,
+        total: units.length,
+        percent: totalSeconds > 0 ? Math.min(100, Math.round((completedSeconds / totalSeconds) * 100)) : 100,
+        etaSeconds,
+        renderedSeconds: completedSeconds,
+        runwaySeconds: runway.contiguousSeconds,
+        requiredSeconds: runway.requiredSeconds,
+        error,
+        message: error || (active ? 'Pre-rendering Studio Local audio' : 'Studio Local audio ready')
+      });
+    };
+
+    publish(completed < units.length);
+    for (let offset = 0; offset < units.length && this._ownsStudioPrewarm(engine, unitGeneration);
+         offset += STUDIO_PREWARM_BATCH_UNITS) {
+      const batchUnits = units.slice(offset, offset + STUDIO_PREWARM_BATCH_UNITS)
+        .filter(unit => !this._preparedStudioKeys.has(unit.key));
+      if (batchUnits.length === 0) continue;
+
+      const batchStartedAt = Date.now();
+      const results = await Promise.allSettled(
+        batchUnits.map((unit, index) => {
+          const request = engine.request(unit, offset + index);
+          return request || Promise.reject(new Error('Studio Local stopped accepting render requests.'));
+        })
+      );
+      if (!this._ownsStudioPrewarm(engine, unitGeneration)) return;
+      const failure = results.find(result => result.status === 'rejected');
+      if (failure) throw failure.reason;
+
+      const wallSeconds = (Date.now() - batchStartedAt) / 1000;
+      const batchSeconds = batchUnits.reduce((sum, unit) => sum + (unit.estimatedDuration || 0), 0);
+      const renderedAudioSeconds = results.reduce(
+        (sum, result) => sum + (result.status === 'fulfilled' ? (result.value?.duration || 0) : 0),
+        0
+      );
+      // Fast persistent-cache hits should not be mistaken for synthesis speed.
+      if (wallSeconds >= 0.25) {
+        measuredWallSeconds += wallSeconds;
+        measuredAudioSeconds += renderedAudioSeconds || batchSeconds;
+      }
+      for (const unit of batchUnits) this._preparedStudioKeys.add(unit.key);
+      completed += batchUnits.length;
+      completedSeconds += batchSeconds;
+      publish(completed < units.length);
+    }
+
+    if (this._ownsStudioPrewarm(engine, unitGeneration)) {
+      const elapsed = (Date.now() - startedAt) / 1000;
+      if (measuredWallSeconds === 0 && elapsed >= 0.25) {
+        measuredWallSeconds = elapsed;
+        measuredAudioSeconds = completedSeconds;
+      }
+      canPlay = true;
+      publish(false);
     }
   }
 
@@ -996,6 +1251,11 @@ export class ScreenplayAudioManager {
     if (this.scriptElements.length === 0) return;
     if (this.playbackState === PLAYBACK_STATES.PLAYING ||
         this.playbackState === PLAYBACK_STATES.BUFFERING) {
+      return;
+    }
+
+    if (this.engineId === ENGINE_IDS.CHATTERBOX && !this.renderStatus.canPlay) {
+      this.prewarm();
       return;
     }
 
@@ -1100,8 +1360,20 @@ export class ScreenplayAudioManager {
     await suspendAudioContext();
   }
 
-  stop({ preservePending = false } = {}) {
+  stop({ preservePending = false, preservePrewarm = false } = {}) {
     this.playGeneration++;
+    if (!preservePrewarm) {
+      this.prewarmGeneration++;
+      if (this.engineId === ENGINE_IDS.CHATTERBOX && this.scriptElements.length > 0) {
+        this._setRenderStatus({
+          visible: true,
+          active: false,
+          canPlay: false,
+          error: null,
+          message: 'Studio Local pre-render paused'
+        });
+      }
+    }
     this.previewToken++;
     if (this._previewResolve) {
       const resolve = this._previewResolve;
@@ -1116,7 +1388,7 @@ export class ScreenplayAudioManager {
     }
     this.webSpeechEngine.stop();
 
-    if (!preservePending) {
+    if (!preservePending && !preservePrewarm) {
       this.engine.dropPendingExcept([]);
     }
 
@@ -1153,10 +1425,10 @@ export class ScreenplayAudioManager {
       element: this.scriptElements[this.currentIndex]
     });
 
+    this.prewarm();
+
     if (wasPlaying) {
       this.play();
-    } else {
-      this.prewarm();
     }
   }
 
@@ -1196,6 +1468,8 @@ export class ScreenplayAudioManager {
     if (this.playbackState === PLAYBACK_STATES.PLAYING ||
         this.playbackState === PLAYBACK_STATES.BUFFERING) {
       this.seek(this.currentIndex);
+    } else {
+      this.prewarm();
     }
   }
 
@@ -1206,7 +1480,7 @@ export class ScreenplayAudioManager {
    * so the calling UI can flip its button back at the right moment.
    */
   async previewVoice(voiceId, sampleText = null, pitchOffset = 0, speedMultiplier = 1.0, direction = '') {
-    this.stop();
+    this.stop({ preservePrewarm: true });
 
     const token = ++this.previewToken;
     // Auditions have to resolve against the pool the *active* engine can speak

@@ -608,7 +608,7 @@ export function createVoiceConfigModal({
       narratorAuditionBtn.addEventListener('click', async () => {
         if (currentlyPlayingChar === 'NARRATOR') {
           auditionGeneration++;
-          audioManager.stop();
+          audioManager.stop({ preservePrewarm: true });
           currentlyPlayingChar = null;
           renderContent();
           return;
@@ -670,7 +670,7 @@ export function createVoiceConfigModal({
 
         if (currentlyPlayingChar === charKey) {
           auditionGeneration++;
-          audioManager.stop();
+          audioManager.stop({ preservePrewarm: true });
           currentlyPlayingChar = null;
           renderContent();
           return;
@@ -797,7 +797,7 @@ export function createVoiceConfigModal({
     window.removeEventListener('keydown', onKeyDown);
     catalogDialog?.close();
     catalogDialog = null;
-    audioManager.stop();
+    audioManager.stop({ preservePrewarm: true });
     modal.remove();
     if (onCancel) onCancel();
   }
@@ -806,7 +806,7 @@ export function createVoiceConfigModal({
     window.removeEventListener('keydown', onKeyDown);
     catalogDialog?.close();
     catalogDialog = null;
-    audioManager.stop();
+    audioManager.stop({ preservePrewarm: true });
 
     // Commit to script store
     scriptStore.updateCast({
