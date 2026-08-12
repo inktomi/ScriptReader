@@ -486,9 +486,11 @@ export function createVoiceConfigModal({
             .map(profile => profile.id));
           const saved = await saveChatterboxVoice(file, voice.name, {
             sex: voice.gender,
-            ageGroup: voice.age,
-            accent: voice.accent,
-            tone: voice.descriptive || voice.useCase,
+            // Age and accent are deliberately left to the store's defaults. The
+            // bundled catalog measures register and pace; it does not know how
+            // old the reader is or where they are from, and guessing would put
+            // invented biography on a real person's voice.
+            tone: [voice.registerLabel, voice.paceLabel].filter(Boolean).join(' · '),
             description: voice.description,
             source: 'Voice catalog',
             sourceVoiceId: voice.id

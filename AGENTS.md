@@ -29,11 +29,24 @@ These instructions apply to the entire repository.
 
 ## Keep catalog results honest and deterministic
 
-- Apply quality ranking across every fetched category and page, not independently within a single response.
-- Deduplicate provider results by stable source identity before ranking or displaying them.
-- A language filter must select matching language-specific preview and accent metadata when available.
-- Labels and result counts must describe what the UI actually ranked or displayed; do not imply a global optimum when only a bounded subset is available.
-- Preserve stable local identifiers when refreshing or replacing a voice so existing casting assignments remain valid.
+- The casting catalog ships with the app, built from LibriTTS-R by
+  `scripts/build-voice-catalog.mjs`. It replaced a live ElevenLabs search that
+  now rejects anonymous callers outright; do not reintroduce a dependency that
+  can revoke the feature, and do not ship an API key to the browser.
+- Only two kinds of fact may reach a voice card: metadata the corpus itself
+  records, and measurements taken off the shipped clip. Age, accent, mood and
+  character are none of these — never infer them, and never offer a filter for
+  an attribute the catalog cannot answer.
+- A search term the catalog cannot evaluate must narrow the results to nothing
+  rather than being dropped, so an unmatchable request never looks like a match.
+- Apply quality ranking across the whole matched set, not independently within a
+  page.
+- Labels and result counts must describe what the UI actually ranked or
+  displayed; do not imply a global optimum when only a bounded subset is shown.
+- Preserve stable local identifiers when refreshing or replacing a voice so
+  existing casting assignments remain valid.
+- The corpus is CC BY 4.0. Attribution has to stay visible in the UI and in
+  `public/voice-samples/ATTRIBUTION.md` for any redistribution of the clips.
 
 ## Protect multi-store persistence
 

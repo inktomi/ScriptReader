@@ -8,14 +8,17 @@ import {
   VOICE_SAMPLE_CATALOG
 } from '../audio/voice-sample-catalog.js';
 
-const LANGUAGE_OPTIONS = [
-  ['en', 'English'], ['es', 'Spanish'], ['fr', 'French'], ['de', 'German'],
-  ['it', 'Italian'], ['pt', 'Portuguese'], ['pl', 'Polish']
+// The filters offer exactly the two axes the catalog can answer from
+// measurement. Age, accent and language selectors used to sit here because the
+// old remote provider tagged its voices with them; LibriTTS-R does not record
+// any of the three, and a filter that silently matches nothing is worse than no
+// filter at all.
+const REGISTER_OPTIONS = [
+  ['', 'Any register'], ['deep', 'Deep'], ['low', 'Low'],
+  ['mid', 'Mid'], ['bright', 'Bright'], ['high', 'High']
 ];
-const ACCENT_OPTIONS = [
-  ['', 'Any accent'], ['american', 'American'], ['british', 'British'],
-  ['australian', 'Australian'], ['canadian', 'Canadian'], ['irish', 'Irish'],
-  ['indian', 'Indian'], ['african', 'African']
+const PACE_OPTIONS = [
+  ['', 'Any pace'], ['measured', 'Measured'], ['steady', 'Steady'], ['brisk', 'Brisk']
 ];
 const MAX_VISIBLE_RESULTS = 240;
 const MAX_CACHED_PREVIEWS = 5;
@@ -31,15 +34,9 @@ function selected(value, expected) {
   return value === expected ? 'selected' : '';
 }
 
-function usageLabel(value) {
-  const count = Number(value || 0);
-  if (count >= 1_000_000) return `${(count / 1_000_000).toFixed(1)}m characters`;
-  if (count >= 1_000) return `${Math.round(count / 1_000)}k characters`;
-  return count > 0 ? `${count} characters` : 'New voice';
-}
-
-function languageLabel(value) {
-  return LANGUAGE_OPTIONS.find(([code]) => code === value)?.[1] || String(value || '').toUpperCase();
+function clipLabel(seconds) {
+  const value = Number(seconds || 0);
+  return value > 0 ? `${value.toFixed(0)}s reference` : 'Reference clip';
 }
 
 export function createVoiceSampleCatalogModal({
@@ -56,7 +53,7 @@ export function createVoiceSampleCatalogModal({
   modal.setAttribute('aria-labelledby', 'voice-catalog-title');
 
   const state = {
-    filters: { query: '', gender: '', age: '', accent: '', language: 'en' },
+    filters: { query: '', gender: '', register: '', pace: '' },
     voices: [],
     page: 0,
     hasMore: false,
@@ -111,7 +108,7 @@ export function createVoiceSampleCatalogModal({
     const isAdded = state.addedIds.has(voice.id);
     const isImporting = state.importingId === voice.id;
     const isPreviewing = previewingId === voice.id;
-    const attributes = [voice.gender, voice.age, voice.accent, languageLabel(voice.language)].filter(Boolean);
+    const attributes = [voice.gender, voice.registerLabel, voice.paceLabel].filter(Boolean);
     return `
       <article class="voice-sample-card" data-voice-id="${escapeHtml(voice.id)}">
         <div class="voice-sample-card-heading">
@@ -121,8 +118,9 @@ export function createVoiceSampleCatalogModal({
         </div>
         <p class="voice-sample-description">${escapeHtml(voice.description)}</p>
         <div class="voice-sample-tags">
-          ${voice.descriptive ? `<span>${escapeHtml(voice.descriptive)}</span>` : ''}
-          <span>${escapeHtml(voice.useCase)}</span><span>${escapeHtml(usageLabel(voice.usageCount))}</span>
+          ${voice.pitchHz ? `<span>${escapeHtml(String(voice.pitchHz))} Hz</span>` : ''}
+          ${voice.wordsPerMinute ? `<span>${escapeHtml(String(voice.wordsPerMinute))} wpm</span>` : ''}
+          <span>${escapeHtml(clipLabel(voice.seconds))}</span>
         </div>
         <div class="voice-sample-actions">
           <button class="btn btn-secondary btn-catalog-preview ${isPreviewing ? 'btn-active' : ''}" type="button" data-voice-id="${escapeHtml(voice.id)}" data-focus-key="preview:${escapeHtml(voice.id)}" aria-label="${isPreviewing ? 'Stop' : 'Preview'} ${escapeHtml(voice.name)}">
@@ -141,27 +139,23 @@ export function createVoiceSampleCatalogModal({
       <div class="modal-card voice-sample-catalog-card">
         <header class="voice-catalog-header">
           <div><span class="eyebrow">Quality-first voice catalog</span><h2 id="voice-catalog-title">Find the right performance</h2>
-            <p>Search ${VOICE_SAMPLE_CATALOG.estimatedVoices} quality-ranked voices. Preview anything; only voices you add are stored on this device.</p></div>
+            <p>Search bundled audiobook narrators, ranked by recording clarity. Everything here ships with the app — preview freely, and only voices you add are stored on this device.</p></div>
           <button class="btn-icon btn-close-catalog" type="button" data-focus-key="close" aria-label="Close voice catalog">${getIconSvg('close', 18)}</button>
         </header>
         <form class="voice-catalog-search" role="search">
           <label class="voice-catalog-query"><span class="sr-only">Describe the voice you want</span>${getIconSvg('search', 17)}
-            <input id="voice-catalog-query" type="search" value="${escapeHtml(state.filters.query)}" placeholder="Try “warm older British narrator” or “gravelly villain”" autocomplete="off">
+            <input id="voice-catalog-query" type="search" value="${escapeHtml(state.filters.query)}" placeholder="Try “deep steady narrator” or a reader’s name" autocomplete="off">
             <button class="btn btn-primary" type="submit" data-focus-key="search">Search</button></label>
           <div class="voice-catalog-filters" aria-label="Voice filters">
             <label><span>Voice</span><select id="voice-catalog-gender">
               <option value="" ${selected(state.filters.gender, '')}>Any voice</option><option value="female" ${selected(state.filters.gender, 'female')}>Female</option>
               <option value="male" ${selected(state.filters.gender, 'male')}>Male</option><option value="neutral" ${selected(state.filters.gender, 'neutral')}>Neutral</option>
             </select></label>
-            <label><span>Age</span><select id="voice-catalog-age">
-              <option value="" ${selected(state.filters.age, '')}>Any age</option><option value="young" ${selected(state.filters.age, 'young')}>Young adult</option>
-              <option value="middle_aged" ${selected(state.filters.age, 'middle_aged')}>Middle-aged</option><option value="old" ${selected(state.filters.age, 'old')}>Older adult</option>
-            </select></label>
-            <label><span>Accent</span><select id="voice-catalog-accent">${ACCENT_OPTIONS.map(([value, label]) => `<option value="${value}" ${selected(state.filters.accent, value)}>${label}</option>`).join('')}</select></label>
-            <label><span>Language</span><select id="voice-catalog-language">${LANGUAGE_OPTIONS.map(([value, label]) => `<option value="${value}" ${selected(state.filters.language, value)}>${label}</option>`).join('')}</select></label>
+            <label><span>Register</span><select id="voice-catalog-register">${REGISTER_OPTIONS.map(([value, label]) => `<option value="${value}" ${selected(state.filters.register, value)}>${label}</option>`).join('')}</select></label>
+            <label><span>Pace</span><select id="voice-catalog-pace">${PACE_OPTIONS.map(([value, label]) => `<option value="${value}" ${selected(state.filters.pace, value)}>${label}</option>`).join('')}</select></label>
           </div>
         </form>
-        <div class="voice-catalog-status"><span>${getIconSvg('sparkles', 14)} ${escapeHtml(resultSummary())}</span><span>Ranked by verification and real-world usage</span></div>
+        <div class="voice-catalog-status"><span>${getIconSvg('sparkles', 14)} ${escapeHtml(resultSummary())}</span><span>Ranked by measured recording clarity</span></div>
         <div class="voice-catalog-message" aria-live="polite">
           ${state.error ? `<div class="voice-catalog-error" role="alert">${escapeHtml(state.error)} ${state.retry ? `<button class="text-button btn-catalog-retry" type="button" data-focus-key="retry:${escapeHtml(state.retry.kind)}:${escapeHtml(state.retry.voiceId || '')}">Try again</button>` : ''}</div>` : ''}
           ${state.notice ? `<div class="voice-catalog-notice">${getIconSvg('check', 14)} ${escapeHtml(state.notice)}</div>` : ''}
@@ -172,7 +166,9 @@ export function createVoiceSampleCatalogModal({
             : state.voices.map(voiceCard).join('')}
           ${!state.loading && !state.error && state.voices.length === 0 ? '<div class="voice-catalog-empty"><strong>No exact matches yet.</strong><span>Try fewer words or broaden one of the filters.</span></div>' : ''}
         </div>
-        <footer class="voice-catalog-footer"><span>${state.capped ? `Showing ${MAX_VISIBLE_RESULTS} popular matches, ranked by quality. Refine your search to explore more.` : 'Catalog previews require an internet connection. Imported voices remain available offline.'}</span>
+        <footer class="voice-catalog-footer"><span>${state.capped
+          ? `Showing the ${MAX_VISIBLE_RESULTS} clearest matches. Refine your search to reach the rest.`
+          : `Voices from the ${escapeHtml(VOICE_SAMPLE_CATALOG.provider)} corpus, used under ${escapeHtml(VOICE_SAMPLE_CATALOG.license)}. Works offline.`}</span>
           ${state.hasMore && !state.capped ? `<button class="btn btn-secondary btn-catalog-more" type="button" data-focus-key="more" ${state.loadingMore ? 'aria-disabled="true"' : ''}>${state.loadingMore ? 'Loading…' : 'Show more voices'}</button>` : ''}
         </footer>
       </div>`;
@@ -184,9 +180,8 @@ export function createVoiceSampleCatalogModal({
     state.filters = {
       query: modal.querySelector('#voice-catalog-query')?.value.trim() || '',
       gender: modal.querySelector('#voice-catalog-gender')?.value || '',
-      age: modal.querySelector('#voice-catalog-age')?.value || '',
-      accent: modal.querySelector('#voice-catalog-accent')?.value || '',
-      language: modal.querySelector('#voice-catalog-language')?.value || 'en'
+      register: modal.querySelector('#voice-catalog-register')?.value || '',
+      pace: modal.querySelector('#voice-catalog-pace')?.value || ''
     };
   }
 
@@ -222,7 +217,7 @@ export function createVoiceSampleCatalogModal({
       const known = new Set(state.voices.map(voice => voice.id));
       const newVoices = result.voices.filter(voice => !known.has(voice.id));
       const combined = shouldAppend ? [...state.voices, ...newVoices] : newVoices;
-      combined.sort((a, b) => b.qualityScore - a.qualityScore || b.usageCount - a.usageCount);
+      combined.sort((a, b) => b.qualityScore - a.qualityScore || a.name.localeCompare(b.name));
       state.capped = combined.length > MAX_VISIBLE_RESULTS
         || (result.hasMore && combined.length >= MAX_VISIBLE_RESULTS);
       state.voices = combined.slice(0, MAX_VISIBLE_RESULTS);

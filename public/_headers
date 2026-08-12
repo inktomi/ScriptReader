@@ -37,3 +37,11 @@
 # itself is not here: it comes from jsdelivr, and vite.config.js explains why.
 /assets/*
   Cache-Control: public, max-age=31536000, immutable
+
+# Voice catalog clips are not content-hashed — a clip's name is its speaker id,
+# and rebuilding the catalog rewrites the file in place. So they get a long but
+# revalidated cache rather than `immutable`: auditioning voices should not
+# refetch the same MP3s all session, but a rebuilt catalog must still reach
+# people who already visited.
+/voice-samples/*
+  Cache-Control: public, max-age=86400, stale-while-revalidate=604800

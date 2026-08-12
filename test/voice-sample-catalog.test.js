@@ -1,37 +1,49 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  buildVoiceSampleSearchUrl,
   downloadVoiceSample,
-  normalizeSharedVoice,
+  loadVoiceSampleCatalog,
+  matchesVoiceFilters,
+  normalizeCatalogVoice,
+  resetVoiceSampleCatalog,
   searchVoiceSamples,
   voiceSampleQualityLabel
 } from '../src/audio/voice-sample-catalog.js';
 import { createVoiceSampleCatalogModal } from '../src/ui/voice-sample-catalog-modal.js';
 import { installDom, removeDom } from './dom-helpers.js';
 
-const rawVoice = {
-  public_owner_id: 'owner-1',
-  voice_id: 'voice-1',
-  name: 'Maya',
-  accent: 'american',
+const rawEntry = {
+  id: 'libritts-r-1272',
+  name: 'Maya Ellery',
   gender: 'Female',
-  age: 'middle_aged',
-  descriptive: 'warm',
-  use_case: 'characters_animation',
-  category: 'professional',
-  usage_character_count_1y: 250_000,
-  cloned_by_count: 120,
-  language: 'en',
-  description: 'A warm, restrained dramatic performance.',
-  preview_url: 'https://cdn.example.test/maya.mp3',
-  verified_languages: [{
-    language: 'en',
-    locale: 'en-US',
-    accent: 'american',
-    preview_url: 'https://cdn.example.test/maya.mp3'
-  }]
+  register: 'bright',
+  pitchHz: 196,
+  pace: 'brisk',
+  wordsPerMinute: 205,
+  seconds: 10,
+  bytes: 58_000,
+  snrDb: 31.4,
+  subset: 'dev-clean',
+  clip: '1272.mp3'
 };
+
+function catalogPayload(entries) {
+  return {
+    source: 'LibriTTS-R',
+    license: 'CC BY 4.0',
+    voices: entries
+  };
+}
+
+function fetchingCatalog(entries, onUrl = () => {}) {
+  return async url => {
+    onUrl(url);
+    return {
+      ok: true,
+      async json() { return catalogPayload(entries); }
+    };
+  };
+}
 
 function nextTurn() {
   return new Promise(resolve => setTimeout(resolve, 0));
@@ -44,83 +56,118 @@ function deferred() {
   return { promise, resolve, reject };
 }
 
-test('voice catalog requests popular professional voices with the selected attributes', () => {
-  const url = new URL(buildVoiceSampleSearchUrl({
-    query: 'warm narrator',
-    gender: 'female',
-    age: 'middle_aged',
-    accent: 'british',
-    language: 'en',
-    page: 2,
-    pageSize: 40
-  }));
+test('catalog entries become casting metadata without inventing biography', () => {
+  const voice = normalizeCatalogVoice(rawEntry, catalogPayload([]));
 
-  assert.equal(url.origin, 'https://api.elevenlabs.io');
-  assert.equal(url.searchParams.get('search'), 'warm narrator');
-  assert.equal(url.searchParams.get('gender'), 'female');
-  assert.equal(url.searchParams.get('age'), 'middle_aged');
-  assert.equal(url.searchParams.get('accent'), 'british');
-  assert.equal(url.searchParams.get('language'), 'en');
-  assert.equal(url.searchParams.has('category'), false, 'all quality categories must be searchable');
-  assert.equal(url.searchParams.get('sort'), 'usage_character_count_1y');
-  assert.equal(url.searchParams.get('page'), '2');
-  assert.equal(url.searchParams.get('page_size'), '40');
-});
-
-test('shared voice metadata becomes casting metadata and an honest quality label', () => {
-  const voice = normalizeSharedVoice(rawVoice);
-  assert.equal(voice.name, 'Maya');
+  assert.equal(voice.name, 'Maya Ellery');
   assert.equal(voice.gender, 'Female');
-  assert.equal(voice.age, 'Middle-aged');
-  assert.equal(voice.accent, 'American');
-  assert.equal(voice.useCase, 'Characters Animation');
-  assert.equal(voiceSampleQualityLabel(voice), 'Verified professional');
-  assert.ok(voice.qualityScore > 35);
+  assert.equal(voice.registerLabel, 'Bright');
+  assert.equal(voice.paceLabel, 'Brisk pace');
+  assert.equal(voice.previewUrl, '/voice-samples/1272.mp3');
+  assert.equal(voiceSampleQualityLabel(voice), 'Studio clean');
+  assert.match(voice.description, /Maya Ellery/);
+  assert.match(voice.description, /196 Hz/);
+  assert.match(voice.description, /205 words per minute/);
+
+  // The corpus records none of these, so the catalog must not surface them —
+  // a filter or a card that claims an age or an accent would be fabricating it.
+  assert.equal(voice.age, undefined);
+  assert.equal(voice.accent, undefined);
 });
 
-test('multilingual normalization selects the requested preview and keeps unknown genders selectable', () => {
-  const voice = normalizeSharedVoice({
-    ...rawVoice,
-    gender: 'non-binary',
-    verified_languages: [
-      ...rawVoice.verified_languages,
-      { language: 'es', locale: 'es-MX', accent: 'mexican', preview_url: 'https://cdn.example.test/maya-es.mp3' }
-    ]
-  }, 'es');
-
-  assert.equal(voice.gender, 'Neutral');
-  assert.equal(voice.language, 'es');
-  assert.equal(voice.locale, 'es-MX');
-  assert.equal(voice.accent, 'Mexican');
-  assert.equal(voice.previewUrl, 'https://cdn.example.test/maya-es.mp3');
-});
-
-test('catalog search drops unusable results and ranks stronger voices first', async () => {
-  const categories = [];
-  const result = await searchVoiceSamples({}, {
-    fetchImpl: async url => {
-      categories.push(new URL(url).searchParams.get('category'));
-      return ({
-      ok: true,
-      async json() {
-        return {
-          voices: [
-            { ...rawVoice, voice_id: 'no-preview', preview_url: '', verified_languages: [] },
-            { ...rawVoice, voice_id: 'professional', usage_character_count_1y: 10 },
-            { ...rawVoice, voice_id: 'top', category: 'high_quality', usage_character_count_1y: 1 }
-          ],
-          has_more: true,
-          total_count: 10_214
-        };
-      }
-      });
-    }
+test('catalog search ranks clearer recordings first and paginates locally', async () => {
+  resetVoiceSampleCatalog();
+  const requested = [];
+  const result = await searchVoiceSamples({ pageSize: 2 }, {
+    fetchImpl: fetchingCatalog([
+      { ...rawEntry, id: 'noisy', name: 'Noisy', snrDb: 24 },
+      { ...rawEntry, id: 'unusable', clip: '' },
+      { ...rawEntry, id: 'clearest', name: 'Clearest', snrDb: 41 },
+      { ...rawEntry, id: 'middling', name: 'Middling', snrDb: 33 }
+    ], url => requested.push(url))
   });
 
-  assert.deepEqual(result.voices.map(voice => voice.id), ['top', 'professional']);
+  assert.deepEqual(result.voices.map(voice => voice.id), ['clearest', 'middling']);
+  assert.equal(result.totalCount, 3, 'the entry with no clip is not shippable');
   assert.equal(result.hasMore, true);
-  assert.deepEqual(categories.sort(), ['high_quality', 'professional']);
-  assert.equal(result.totalCount, 20_428);
+  assert.deepEqual(requested, ['/voice-samples/catalog.json'], 'served from our own origin');
+});
+
+test('a second search reuses the loaded catalog instead of refetching it', async () => {
+  resetVoiceSampleCatalog();
+  let fetches = 0;
+  const fetchImpl = fetchingCatalog([rawEntry], () => { fetches++; });
+
+  await searchVoiceSamples({}, { fetchImpl });
+  const second = await searchVoiceSamples({ query: 'maya' }, { fetchImpl });
+
+  assert.equal(fetches, 1);
+  assert.equal(second.voices.length, 1);
+});
+
+test('a superseded search does not abort the catalog load for the search replacing it', async () => {
+  resetVoiceSampleCatalog();
+  let release;
+  const fetchImpl = async () => {
+    await new Promise(resolve => { release = resolve; });
+    return { ok: true, async json() { return catalogPayload([rawEntry]); } };
+  };
+
+  // The modal aborts the previous search on every keystroke. The catalog fetch
+  // is shared, so binding it to the first caller would sink the one that
+  // replaced it.
+  const stale = new AbortController();
+  const first = searchVoiceSamples({}, { signal: stale.signal, fetchImpl });
+  const second = searchVoiceSamples({}, { fetchImpl });
+  stale.abort();
+  release();
+
+  await assert.rejects(first, error => error?.name === 'AbortError');
+  assert.equal((await second).voices.length, 1);
+});
+
+test('a failed catalog load does not poison later attempts', async () => {
+  resetVoiceSampleCatalog();
+  let attempts = 0;
+  const fetchImpl = async url => {
+    attempts++;
+    if (attempts === 1) return { ok: false, status: 503 };
+    return { ok: true, async json() { return catalogPayload([rawEntry]); } };
+  };
+
+  await assert.rejects(loadVoiceSampleCatalog({ fetchImpl }), /could not be loaded/);
+  const catalog = await loadVoiceSampleCatalog({ fetchImpl });
+  assert.equal(catalog.voices.length, 1);
+});
+
+test('filters narrow by the axes the catalog measures, and unknown traits match nothing', () => {
+  const bright = normalizeCatalogVoice(rawEntry);
+  const deep = normalizeCatalogVoice({
+    ...rawEntry,
+    id: 'deep',
+    name: 'Gordon Vale',
+    gender: 'Male',
+    register: 'deep',
+    pitchHz: 92,
+    pace: 'measured',
+    wordsPerMinute: 128
+  });
+
+  assert.equal(matchesVoiceFilters(deep, { gender: 'male' }), true);
+  assert.equal(matchesVoiceFilters(bright, { gender: 'male' }), false);
+  assert.equal(matchesVoiceFilters(deep, { register: 'deep' }), true);
+  assert.equal(matchesVoiceFilters(deep, { pace: 'brisk' }), false);
+
+  // Free text reaches the reader's name and the measured axes by their common
+  // synonyms.
+  assert.equal(matchesVoiceFilters(deep, { query: 'gordon' }), true);
+  assert.equal(matchesVoiceFilters(deep, { query: 'gravelly slow' }), true);
+  assert.equal(matchesVoiceFilters(bright, { query: 'gravelly' }), false);
+
+  // A trait the catalog does not record must return nothing rather than
+  // quietly ignoring the word and returning everything.
+  assert.equal(matchesVoiceFilters(deep, { query: 'scottish' }), false);
+  assert.equal(matchesVoiceFilters(bright, { query: 'elderly' }), false);
 });
 
 test('voice browser searches, escapes remote metadata, and imports a selected preview', async () => {
@@ -128,8 +175,8 @@ test('voice browser searches, escapes remote metadata, and imports a selected pr
   try {
     const searches = [];
     const added = [];
-    const voice = normalizeSharedVoice({
-      ...rawVoice,
+    const voice = normalizeCatalogVoice({
+      ...rawEntry,
       name: '<img src=x onerror="window.pwned=1">'
     });
     const catalogClient = {
@@ -182,8 +229,8 @@ test('catalog preserves live query text and globally reorders appended quality r
   const dom = installDom();
   try {
     let resolveInitial;
-    const low = { ...normalizeSharedVoice(rawVoice), id: 'low', qualityScore: 10 };
-    const high = { ...normalizeSharedVoice({ ...rawVoice, voice_id: 'high', category: 'high_quality' }), qualityScore: 90 };
+    const low = { ...normalizeCatalogVoice(rawEntry), id: 'low', qualityScore: 10 };
+    const high = { ...normalizeCatalogVoice({ ...rawEntry, id: "high", snrDb: 41 }), qualityScore: 90 };
     const catalogClient = {
       search(filters) {
         if (filters.page === 0) {
@@ -224,9 +271,9 @@ test('rapid catalog replacement aborts the old search and ignores its stale comp
     const newSearch = deferred();
     const signals = [];
     let calls = 0;
-    const initial = { ...normalizeSharedVoice(rawVoice), id: 'initial' };
-    const stale = { ...normalizeSharedVoice(rawVoice), id: 'stale', name: 'Stale result' };
-    const current = { ...normalizeSharedVoice(rawVoice), id: 'current', name: 'Current result' };
+    const initial = { ...normalizeCatalogVoice(rawEntry), id: 'initial' };
+    const stale = { ...normalizeCatalogVoice(rawEntry), id: 'stale', name: 'Stale result' };
+    const current = { ...normalizeCatalogVoice(rawEntry), id: 'current', name: 'Current result' };
     const catalogClient = {
       search(_filters, { signal }) {
         signals.push(signal);
@@ -279,9 +326,9 @@ test('a replacement search cannot be overwritten by late pagination', async () =
     const pagination = deferred();
     const replacement = deferred();
     let calls = 0;
-    const first = { ...normalizeSharedVoice(rawVoice), id: 'first' };
-    const late = { ...normalizeSharedVoice(rawVoice), id: 'late-page' };
-    const current = { ...normalizeSharedVoice(rawVoice), id: 'replacement' };
+    const first = { ...normalizeCatalogVoice(rawEntry), id: 'first' };
+    const late = { ...normalizeCatalogVoice(rawEntry), id: 'late-page' };
+    const current = { ...normalizeCatalogVoice(rawEntry), id: 'replacement' };
     const catalogClient = {
       search(filters) {
         calls++;
@@ -326,7 +373,7 @@ test('focus stays in the catalog through preview retry and import state changes'
     const retryDownload = deferred();
     const importCommit = deferred();
     let downloads = 0;
-    const voice = normalizeSharedVoice(rawVoice);
+    const voice = normalizeCatalogVoice(rawEntry);
     const catalogClient = {
       async search() { return { voices: [voice], hasMore: false, totalCount: 1 }; },
       download() {
@@ -378,7 +425,7 @@ test('closing the catalog aborts a pending add before it reaches local storage',
     let resolveDownload;
     let downloadSignal;
     let added = 0;
-    const voice = normalizeSharedVoice(rawVoice);
+    const voice = normalizeCatalogVoice(rawEntry);
     const catalogClient = {
       async search() { return { voices: [voice], hasMore: false, totalCount: 1 }; },
       download(_voice, { signal }) {
@@ -408,7 +455,7 @@ test('an add failure retries the add operation without discarding search results
     let searches = 0;
     let downloads = 0;
     let added = 0;
-    const voice = normalizeSharedVoice(rawVoice);
+    const voice = normalizeCatalogVoice(rawEntry);
     const catalogClient = {
       async search() { searches++; return { voices: [voice], hasMore: false, totalCount: 1 }; },
       async download() {
@@ -485,7 +532,7 @@ test('voice downloads reject a declared oversized response without pulling its b
   await assert.rejects(downloadVoiceSample(
     { name: 'Huge', previewUrl: 'https://cdn.example.test/huge.mp3' },
     { fetchImpl: async () => response }
-  ), /That voice preview is too large to import/);
+  ), /That voice sample is too large to import/);
   assert.equal(pulls, 0);
   assert.equal(cancelled, 1);
   assert.equal(released, 1);

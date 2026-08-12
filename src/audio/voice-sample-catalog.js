@@ -1,187 +1,220 @@
 import { readBoundedResponseBlob } from '../utils/bounded-response.js';
 
-const SHARED_VOICES_ENDPOINT = 'https://api.elevenlabs.io/v1/shared-voices';
+// The catalog ships with the app. It used to be a live search against
+// ElevenLabs' shared-voices endpoint, which now answers anonymous callers with
+// 401 "You must be logged in to use filters" — every request the browser made
+// was rejected, not just the ones carrying a search term. Rather than put an
+// account or a proxied API key in front of casting, the voices are built from
+// LibriTTS-R (CC BY 4.0) by scripts/build-voice-catalog.mjs and served from our
+// own origin, so search is offline, unmetered, and cannot be revoked upstream.
+const CATALOG_PATH = 'voice-samples/catalog.json';
 const DEFAULT_PAGE_SIZE = 24;
 const MAX_SAMPLE_BYTES = 25 * 1024 * 1024;
+
+const REGISTER_LABELS = {
+  deep: 'Deep',
+  low: 'Low',
+  mid: 'Mid',
+  bright: 'Bright',
+  high: 'High',
+  unmeasured: 'Unmeasured'
+};
+
+const PACE_LABELS = {
+  measured: 'Measured pace',
+  steady: 'Steady pace',
+  brisk: 'Brisk pace'
+};
+
+// Words a director actually types, mapped onto the two axes the catalog can
+// honestly answer. Anything outside this list falls through to plain text
+// matching rather than being silently reinterpreted.
+const REGISTER_SYNONYMS = {
+  deep: ['deep', 'bass', 'gravelly', 'low', 'dark', 'booming', 'baritone'],
+  low: ['low', 'warm', 'rich', 'baritone', 'husky'],
+  mid: ['mid', 'middle', 'neutral', 'even', 'natural'],
+  bright: ['bright', 'light', 'clear', 'lifted'],
+  high: ['high', 'bright', 'airy', 'young', 'light']
+};
+
+const PACE_SYNONYMS = {
+  measured: ['measured', 'slow', 'deliberate', 'calm', 'unhurried', 'steady'],
+  steady: ['steady', 'even', 'natural', 'conversational'],
+  brisk: ['brisk', 'fast', 'quick', 'urgent', 'energetic', 'lively']
+};
 
 function clean(value, fallback = '') {
   const text = typeof value === 'string' ? value.trim() : '';
   return text || fallback;
 }
 
-function titleCase(value, fallback = '') {
-  const text = clean(value, fallback).replace(/[_-]+/g, ' ');
-  return text.replace(/\b\w/g, letter => letter.toUpperCase());
+function assetBase() {
+  // Vite serves public/ from BASE_URL; the fallback keeps this importable from
+  // Node's test runner, where import.meta.env does not exist.
+  const base = import.meta.env?.BASE_URL || '/';
+  return base.endsWith('/') ? base : `${base}/`;
 }
 
-function normalizedGender(value) {
-  const gender = clean(value, 'Neutral').toLowerCase();
-  if (gender === 'female') return 'Female';
-  if (gender === 'male') return 'Male';
-  // Casting currently exposes three groups. Preserve every catalog voice by
-  // putting provider-specific and non-binary labels in the neutral group
-  // instead of saving a voice that no selector can display.
-  return 'Neutral';
-}
-
-function normalizedAge(value) {
-  const age = clean(value, 'Adult').toLowerCase().replace(/[ -]+/g, '_');
-  const labels = {
-    young: 'Young adult',
-    young_adult: 'Young adult',
-    middle_aged: 'Middle-aged',
-    middle_age: 'Middle-aged',
-    old: 'Older adult',
-    senior: 'Older adult'
-  };
-  return labels[age] || titleCase(age, 'Adult');
-}
-
-function verifiedLanguageCount(voice) {
-  return Array.isArray(voice.verifiedLanguages) ? voice.verifiedLanguages.length : 0;
+export function voiceSampleAssetUrl(file) {
+  // An entry with no clip must resolve to nothing, not to the directory it
+  // would have lived in — that URL exists and would be fetched as audio.
+  const name = clean(file);
+  return name ? `${assetBase()}voice-samples/${name}` : '';
 }
 
 /**
- * A quality signal, not a claim about fidelity. Library category and verified
- * language previews come first; real usage breaks ties because those voices
- * have survived more auditions than a newly-uploaded sample.
+ * A statement about the recording, not about the speaker. Signal-to-noise is
+ * measured off the shipped clip at build time, so a label here is reproducible
+ * rather than an opinion.
+ */
+export function voiceSampleQualityLabel(voice) {
+  const snr = Number(voice?.snrDb || 0);
+  if (snr >= 36) return 'Pristine capture';
+  if (snr >= 30) return 'Studio clean';
+  if (snr >= 25) return 'Clean capture';
+  return 'Good capture';
+}
+
+/**
+ * Ranking signal. Cleaner recordings clone better than noisy ones, and a longer
+ * reference gives the cloner more prosody to work from, so both feed the sort
+ * with clarity dominating.
  */
 export function voiceSampleQualityScore(voice) {
-  const category = clean(voice.category).toLowerCase();
-  const categoryScore = category === 'high_quality' ? 50
-    : category === 'professional' ? 35
-      : category === 'famous' ? 20 : 0;
-  const verifiedScore = Math.min(15, verifiedLanguageCount(voice) * 5);
-  const usageScore = Math.min(25, Math.log10(1 + Number(voice.usageCount || 0)) * 5);
-  const adoptionScore = Math.min(10, Math.log10(1 + Number(voice.clonedByCount || 0)) * 3);
-  return categoryScore + verifiedScore + usageScore + adoptionScore;
+  const snr = Math.min(45, Number(voice?.snrDb || 0));
+  const seconds = Math.min(12, Number(voice?.seconds || 0));
+  return snr * 2 + seconds;
 }
 
-export function voiceSampleQualityLabel(voice) {
-  const category = clean(voice.category).toLowerCase();
-  if (category === 'high_quality') return 'Highest quality';
-  if (verifiedLanguageCount(voice) > 0) return 'Verified professional';
-  if (category === 'professional') return 'Professional';
-  return 'Community';
-}
-
-export function normalizeSharedVoice(item, preferredLanguage = '') {
-  const verifiedLanguages = Array.isArray(item?.verified_languages)
-    ? item.verified_languages.map(entry => ({
-      language: clean(entry?.language),
-      locale: clean(entry?.locale),
-      accent: titleCase(entry?.accent),
-      previewUrl: clean(entry?.preview_url)
-    })).filter(entry => entry.language || entry.previewUrl)
-    : [];
-  const requestedLanguage = clean(preferredLanguage).toLowerCase();
-  const matchingVerified = verifiedLanguages.find(entry => (
-    entry.language.toLowerCase() === requestedLanguage
-    || entry.locale.toLowerCase().startsWith(`${requestedLanguage}-`)
-  ));
-  const topLevelMatches = clean(item?.language).toLowerCase() === requestedLanguage
-    || clean(item?.locale).toLowerCase().startsWith(`${requestedLanguage}-`);
-  const primaryVerified = matchingVerified || (topLevelMatches ? {} : verifiedLanguages[0]) || {};
-  const descriptive = titleCase(item?.descriptive);
-  const description = clean(item?.description, descriptive || 'Natural character voice');
+export function normalizeCatalogVoice(entry, catalog = {}) {
+  const register = clean(entry?.register, 'unmeasured');
+  const pace = clean(entry?.pace, 'steady');
+  const pitchHz = Number(entry?.pitchHz) || null;
+  const wpm = Number(entry?.wordsPerMinute) || 0;
+  const name = clean(entry?.name, 'Untitled voice');
 
   const voice = {
-    id: clean(item?.voice_id),
-    ownerId: clean(item?.public_owner_id),
-    name: clean(item?.name, 'Untitled voice'),
-    gender: normalizedGender(item?.gender),
-    age: normalizedAge(item?.age),
-    accent: titleCase(primaryVerified.accent || item?.accent, 'Unspecified accent'),
-    language: clean(primaryVerified.language || requestedLanguage || item?.language, 'en').toLowerCase(),
-    locale: clean(primaryVerified.locale || item?.locale),
-    descriptive,
-    description,
-    useCase: titleCase(item?.use_case, 'Character performance'),
-    category: clean(item?.category, 'professional').toLowerCase(),
-    previewUrl: clean(primaryVerified.previewUrl || item?.preview_url),
-    usageCount: Number(item?.usage_character_count_1y || 0),
-    clonedByCount: Number(item?.cloned_by_count || 0),
-    featured: item?.featured === true,
-    verifiedLanguages
+    id: clean(entry?.id),
+    name,
+    gender: clean(entry?.gender, 'Neutral'),
+    register,
+    registerLabel: REGISTER_LABELS[register] || REGISTER_LABELS.unmeasured,
+    pace,
+    paceLabel: PACE_LABELS[pace] || PACE_LABELS.steady,
+    pitchHz,
+    wordsPerMinute: wpm,
+    seconds: Number(entry?.seconds) || 0,
+    snrDb: Number(entry?.snrDb) || 0,
+    // Everything in the blurb is either corpus metadata or a measurement. The
+    // catalog deliberately claims nothing about age, accent, or character,
+    // because LibriTTS-R records none of them and casting copy must not invent
+    // biography for a real person who volunteered a reading.
+    description: `Audiobook narration read by ${name}.${pitchHz ? ` Median pitch ${pitchHz} Hz` : ''}${wpm ? `, ${wpm} words per minute` : ''}.`,
+    source: clean(catalog.source, 'LibriTTS-R'),
+    license: clean(catalog.license, 'CC BY 4.0'),
+    previewUrl: voiceSampleAssetUrl(clean(entry?.clip))
   };
-  voice.qualityScore = voiceSampleQualityScore(voice);
   voice.qualityLabel = voiceSampleQualityLabel(voice);
+  voice.qualityScore = voiceSampleQualityScore(voice);
   return voice;
 }
 
-export function buildVoiceSampleSearchUrl({
-  query = '',
-  gender = '',
-  age = '',
-  accent = '',
-  language = 'en',
-  category = '',
-  page = 0,
-  pageSize = DEFAULT_PAGE_SIZE
-} = {}) {
-  const url = new URL(SHARED_VOICES_ENDPOINT);
-  url.searchParams.set('page_size', String(Math.max(1, Math.min(100, Number(pageSize) || DEFAULT_PAGE_SIZE))));
-  url.searchParams.set('page', String(Math.max(0, Number(page) || 0)));
-  if (clean(category)) url.searchParams.set('category', clean(category).toLowerCase());
-  url.searchParams.set('sort', 'usage_character_count_1y');
-  if (clean(query)) url.searchParams.set('search', clean(query));
-  if (clean(gender)) url.searchParams.set('gender', clean(gender).toLowerCase());
-  if (clean(age)) url.searchParams.set('age', clean(age).toLowerCase());
-  if (clean(accent)) url.searchParams.set('accent', clean(accent).toLowerCase());
-  if (clean(language)) url.searchParams.set('language', clean(language).toLowerCase());
-  return url.toString();
+let catalogPromise = null;
+
+export function resetVoiceSampleCatalog() {
+  catalogPromise = null;
 }
 
-export async function searchVoiceSamples(filters = {}, { signal, fetchImpl = globalThis.fetch } = {}) {
+/**
+ * Deliberately takes no abort signal. The load is shared by every caller, so
+ * binding it to the first one means a superseded search — the modal aborts the
+ * previous one on each keystroke — would reject the load for whoever replaced
+ * it. Callers cancel by ignoring the result, which is what they do anyway; the
+ * asset is small, same-origin, and fetched once per session.
+ */
+export async function loadVoiceSampleCatalog({ fetchImpl = globalThis.fetch } = {}) {
+  if (catalogPromise) return catalogPromise;
   if (typeof fetchImpl !== 'function') {
     throw new Error('Voice search is unavailable in this browser.');
   }
 
-  // The provider accepts one category at a time. Blend its quality-curated and
-  // professional streams so high-quality voices cannot be buried behind pages
-  // of globally popular professional results before local scoring runs.
-  const categories = ['high_quality', 'professional'];
-  let payloads;
+  catalogPromise = (async () => {
+    let payload;
+    try {
+      const response = await fetchImpl(`${assetBase()}${CATALOG_PATH}`);
+      if (!response.ok) throw new Error(`status ${response.status}`);
+      payload = await response.json();
+    } catch (error) {
+      if (error?.name === 'AbortError') throw error;
+      throw new Error(error instanceof SyntaxError
+        ? 'The voice catalog file is unreadable. Reinstall or rebuild the app.'
+        : 'The voice catalog could not be loaded.');
+    }
+    const voices = (Array.isArray(payload?.voices) ? payload.voices : [])
+      .map(entry => normalizeCatalogVoice(entry, payload))
+      .filter(voice => voice.id && voice.previewUrl);
+    return { ...payload, voices };
+  })();
+
   try {
-    payloads = await Promise.all(categories.map(async category => {
-      const response = await fetchImpl(buildVoiceSampleSearchUrl({ ...filters, category }), {
-        headers: { Accept: 'application/json' },
-        referrerPolicy: 'no-referrer',
-        signal
-      });
-      if (!response.ok) {
-        const error = new Error(response.status === 429
-          ? 'The voice catalog is busy. Wait a moment and try again.'
-          : 'The voice catalog is temporarily unavailable.');
-        error.status = response.status;
-        throw error;
-      }
-      return await response.json();
-    }));
+    return await catalogPromise;
   } catch (error) {
-    if (error?.name === 'AbortError') throw error;
-    if (error?.status) throw error;
-    throw new Error(error instanceof SyntaxError
-      ? 'The voice catalog returned an unreadable response.'
-      : 'The voice catalog could not be reached. Check your connection and try again.');
+    // A failed load must not poison every later attempt; the next open retries.
+    catalogPromise = null;
+    throw error;
   }
+}
 
-  const normalized = payloads.flatMap(payload => Array.isArray(payload?.voices) ? payload.voices : [])
-    .map(item => normalizeSharedVoice(item, filters.language))
-    .filter(voice => voice.id && voice.previewUrl);
-  const bestById = new Map();
-  for (const voice of normalized) {
-    const current = bestById.get(voice.id);
-    if (!current || voice.qualityScore > current.qualityScore) bestById.set(voice.id, voice);
-  }
-  const voices = [...bestById.values()]
-    .sort((a, b) => b.qualityScore - a.qualityScore || b.usageCount - a.usageCount);
+function tokensOf(query) {
+  return clean(query).toLowerCase().split(/[^a-z0-9]+/).filter(Boolean);
+}
 
+/**
+ * A token matches when it names something the catalog actually knows: the
+ * reader, the gender, or one of the two measured axes. Unknown words still have
+ * to match somewhere, so a search for a trait we do not record returns nothing
+ * instead of quietly returning everything.
+ */
+function matchesToken(voice, token) {
+  if (voice.name.toLowerCase().includes(token)) return true;
+  if (voice.gender.toLowerCase() === token) return true;
+  if ((token === 'man' || token === 'men') && voice.gender === 'Male') return true;
+  if ((token === 'woman' || token === 'women') && voice.gender === 'Female') return true;
+  if (REGISTER_SYNONYMS[voice.register]?.includes(token)) return true;
+  if (PACE_SYNONYMS[voice.pace]?.includes(token)) return true;
+  return false;
+}
+
+export function matchesVoiceFilters(voice, filters = {}) {
+  const gender = clean(filters.gender).toLowerCase();
+  if (gender && voice.gender.toLowerCase() !== gender) return false;
+
+  const register = clean(filters.register).toLowerCase();
+  if (register && voice.register !== register) return false;
+
+  const pace = clean(filters.pace).toLowerCase();
+  if (pace && voice.pace !== pace) return false;
+
+  const tokens = tokensOf(filters.query);
+  return tokens.every(token => matchesToken(voice, token));
+}
+
+export async function searchVoiceSamples(filters = {}, { signal, fetchImpl = globalThis.fetch } = {}) {
+  const catalog = await loadVoiceSampleCatalog({ fetchImpl });
+  if (signal?.aborted) throw new DOMException('Aborted', 'AbortError');
+  const pageSize = Math.max(1, Math.min(200, Number(filters.pageSize) || DEFAULT_PAGE_SIZE));
+  const page = Math.max(0, Number(filters.page) || 0);
+
+  const matched = catalog.voices
+    .filter(voice => matchesVoiceFilters(voice, filters))
+    .sort((a, b) => b.qualityScore - a.qualityScore || a.name.localeCompare(b.name));
+
+  const start = page * pageSize;
   return {
-    voices,
-    hasMore: payloads.some(payload => payload?.has_more === true),
-    totalCount: payloads.reduce((sum, payload) => sum + Math.max(0, Number(payload?.total_count || 0)), 0),
-    page: Math.max(0, Number(filters.page) || 0)
+    voices: matched.slice(start, start + pageSize),
+    hasMore: matched.length > start + pageSize,
+    totalCount: matched.length,
+    page
   };
 }
 
@@ -195,31 +228,29 @@ function safeFileName(name) {
 }
 
 export async function downloadVoiceSample(voice, { signal, fetchImpl = globalThis.fetch } = {}) {
-  if (!voice?.previewUrl || !/^https:\/\//i.test(voice.previewUrl)) {
-    throw new Error('This voice does not have a downloadable preview.');
-  }
+  const url = clean(voice?.previewUrl);
+  // Same-origin now, but the bound stays: it is what stops a corrupted or
+  // swapped asset from being read into memory unchecked.
+  if (!url) throw new Error('This voice does not have a downloadable preview.');
 
   let response;
   try {
-    response = await fetchImpl(voice.previewUrl, {
-      referrerPolicy: 'no-referrer',
-      signal
-    });
+    response = await fetchImpl(url, { signal });
   } catch (error) {
     if (error?.name === 'AbortError') throw error;
-    throw new Error('The voice preview could not be downloaded.');
+    throw new Error('The voice sample could not be loaded.');
   }
 
-  if (!response.ok) throw new Error('The voice preview could not be downloaded.');
+  if (!response.ok) throw new Error('The voice sample could not be loaded.');
   const contentType = response.headers?.get?.('content-type') || 'audio/mpeg';
   const blob = await readBoundedResponseBlob(response, {
     maxBytes: MAX_SAMPLE_BYTES,
     signal,
     contentType,
-    tooLargeError: () => new Error('That voice preview is too large to import.'),
-    unsafeFallbackError: () => new Error('This browser cannot safely download that voice preview.')
+    tooLargeError: () => new Error('That voice sample is too large to import.'),
+    unsafeFallbackError: () => new Error('This browser cannot safely load that voice sample.')
   });
-  if (!blob.size) throw new Error('The downloaded voice preview was empty.');
+  if (!blob.size) throw new Error('The voice sample was empty.');
 
   return new File([blob], safeFileName(voice.name), {
     type: blob.type || contentType,
@@ -228,7 +259,11 @@ export async function downloadVoiceSample(voice, { signal, fetchImpl = globalThi
 }
 
 export const VOICE_SAMPLE_CATALOG = Object.freeze({
-  provider: 'ElevenLabs Voice Library',
-  estimatedVoices: '10,000+',
-  pageSize: DEFAULT_PAGE_SIZE
+  provider: 'LibriTTS-R',
+  providerUrl: 'https://www.openslr.org/141/',
+  license: 'CC BY 4.0',
+  licenseUrl: 'https://creativecommons.org/licenses/by/4.0/',
+  pageSize: DEFAULT_PAGE_SIZE,
+  registers: Object.keys(REGISTER_LABELS).filter(key => key !== 'unmeasured'),
+  paces: Object.keys(PACE_LABELS)
 });
