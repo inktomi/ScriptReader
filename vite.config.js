@@ -73,6 +73,66 @@ function ortWasmFromCdn() {
   };
 }
 
+// kokoro-js phonemizes through `phonemizer`, which ships espeak-ng as wasm2js:
+// the whole synthesiser is plain JavaScript in Binaryen's output shape, where a
+// labelled block's last statement is often a `continue` or `return` that jumps
+// past the code following the block.
+//
+// Rolldown's tree-shaker reads those jumps as redundant and deletes them, so
+// loops that should repeat run once and functions that should return fall
+// through into the abort trap emitted after them. An unminified build drops ~12
+// `continue`s and ~10 `return`s from that one file. espeak still starts and its
+// data package still mounts — it just finds no voices, so every synthesis in a
+// built app fails with:
+//
+//   Invalid language identifier: "en-us". Should be one of: .
+//
+// Nothing narrower than `treeshake: false` avoids it: none of the treeshake
+// sub-options help, `moduleSideEffects: 'no-treeshake'` does not either, and
+// Vite does not forward build.rollupOptions.treeshake to rolldown regardless.
+// Turning tree-shaking off for the whole worker would drag all of
+// transformers.js in with it.
+//
+// So keep the file away from the bundler: emit it verbatim as an asset and
+// reach it through a dynamic import, which rolldown leaves alone. What runs is
+// then the same bytes dev serves from node_modules. This is why the worker
+// build must be `format: 'es'` — the asset URL arrives via import.meta, which
+// an iife worker chunk replaces with `{}`.
+const PHONEMIZER_VERBATIM = '\0phonemizer-verbatim:';
+
+function phonemizerVerbatim() {
+  return {
+    name: 'phonemizer-verbatim',
+    enforce: 'pre',
+    // Dev serves the file unbundled from node_modules already, and emitFile has
+    // no meaning there.
+    apply: 'build',
+    async resolveId(source, importer, options) {
+      if (source !== 'phonemizer') return null;
+      const resolved = await this.resolve(source, importer, { ...options, skipSelf: true });
+      return resolved ? PHONEMIZER_VERBATIM + resolved.id : null;
+    },
+    load(id) {
+      if (!id.startsWith(PHONEMIZER_VERBATIM)) return null;
+      const ref = this.emitFile({
+        type: 'asset',
+        name: 'phonemizer.js',
+        source: fs.readFileSync(id.slice(PHONEMIZER_VERBATIM.length)),
+      });
+      // Started eagerly so the fetch overlaps model loading rather than landing
+      // on the first line the listener is waiting for. A rejection here is
+      // deliberately left for the call site to surface.
+      return `const url = import.meta.ROLLUP_FILE_URL_${ref};
+let loading;
+const load = () => (loading ??= import(/* @vite-ignore */ url));
+load().catch(() => {});
+export async function phonemize(...args) { return (await load()).phonemize(...args); }
+export async function list_voices(...args) { return (await load()).list_voices(...args); }
+`;
+    },
+  };
+}
+
 // A guard rather than a fix: any future dependency that drags an oversized
 // binary into dist should fail here, in a build anyone can run, instead of in
 // the deploy log.
@@ -106,12 +166,16 @@ function assertWorkersAssetSizes() {
 }
 
 export default defineConfig({
-  plugins: [ortWasmFromCdn(), assertWorkersAssetSizes()],
+  plugins: [ortWasmFromCdn(), phonemizerVerbatim(), assertWorkersAssetSizes()],
   worker: {
+    // Every worker is created with `{ type: 'module' }`, so this matches how
+    // they are actually loaded. It is also what lets phonemizerVerbatim reach
+    // its asset: an iife chunk has no usable import.meta.
+    format: 'es',
     // Both engines reach ORT from inside a worker, and a worker is built by a
     // separate bundle that does not inherit `plugins` — without this the
     // rewrite silently does nothing and the binaries come back.
-    plugins: () => [ortWasmFromCdn()],
+    plugins: () => [ortWasmFromCdn(), phonemizerVerbatim()],
   },
   server: {
     port: 5173,
