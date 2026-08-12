@@ -1,3 +1,5 @@
+import { readBoundedResponseBlob } from '../utils/bounded-response.js';
+
 const SHARED_VOICES_ENDPOINT = 'https://api.elevenlabs.io/v1/shared-voices';
 const DEFAULT_PAGE_SIZE = 24;
 const MAX_SAMPLE_BYTES = 25 * 1024 * 1024;
@@ -209,40 +211,15 @@ export async function downloadVoiceSample(voice, { signal, fetchImpl = globalThi
   }
 
   if (!response.ok) throw new Error('The voice preview could not be downloaded.');
-  const declaredSize = Number(response.headers?.get?.('content-length') || 0);
-  if (declaredSize > MAX_SAMPLE_BYTES) throw new Error('That voice preview is too large to import.');
-
   const contentType = response.headers?.get?.('content-type') || 'audio/mpeg';
-  let blob;
-  if (response.body?.getReader) {
-    const reader = response.body.getReader();
-    const chunks = [];
-    let received = 0;
-    try {
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        if (!value?.byteLength) continue;
-        received += value.byteLength;
-        if (received > MAX_SAMPLE_BYTES) {
-          await reader.cancel('Voice preview exceeded the import limit.');
-          throw new Error('That voice preview is too large to import.');
-        }
-        chunks.push(value);
-      }
-    } finally {
-      reader.releaseLock?.();
-    }
-    blob = new Blob(chunks, { type: contentType });
-  } else {
-    // A non-streaming response can only be bounded safely when it declares a
-    // size. Modern browser fetch responses always expose a readable stream;
-    // this branch mainly supports conservative older implementations.
-    if (!declaredSize) throw new Error('This browser cannot safely download that voice preview.');
-    blob = await response.blob();
-  }
+  const blob = await readBoundedResponseBlob(response, {
+    maxBytes: MAX_SAMPLE_BYTES,
+    signal,
+    contentType,
+    tooLargeError: () => new Error('That voice preview is too large to import.'),
+    unsafeFallbackError: () => new Error('This browser cannot safely download that voice preview.')
+  });
   if (!blob.size) throw new Error('The downloaded voice preview was empty.');
-  if (blob.size > MAX_SAMPLE_BYTES) throw new Error('That voice preview is too large to import.');
 
   return new File([blob], safeFileName(voice.name), {
     type: blob.type || contentType,

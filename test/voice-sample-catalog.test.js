@@ -37,6 +37,13 @@ function nextTurn() {
   return new Promise(resolve => setTimeout(resolve, 0));
 }
 
+function deferred() {
+  let resolve;
+  let reject;
+  const promise = new Promise((res, rej) => { resolve = res; reject = rej; });
+  return { promise, resolve, reject };
+}
+
 test('voice catalog requests popular professional voices with the selected attributes', () => {
   const url = new URL(buildVoiceSampleSearchUrl({
     query: 'warm narrator',
@@ -210,6 +217,161 @@ test('catalog preserves live query text and globally reorders appended quality r
   }
 });
 
+test('rapid catalog replacement aborts the old search and ignores its stale completion', async () => {
+  const dom = installDom();
+  try {
+    const oldSearch = deferred();
+    const newSearch = deferred();
+    const signals = [];
+    let calls = 0;
+    const initial = { ...normalizeSharedVoice(rawVoice), id: 'initial' };
+    const stale = { ...normalizeSharedVoice(rawVoice), id: 'stale', name: 'Stale result' };
+    const current = { ...normalizeSharedVoice(rawVoice), id: 'current', name: 'Current result' };
+    const catalogClient = {
+      search(_filters, { signal }) {
+        signals.push(signal);
+        calls++;
+        if (calls === 1) return Promise.resolve({ voices: [initial], hasMore: false, totalCount: 1 });
+        return calls === 2 ? oldSearch.promise : newSearch.promise;
+      },
+      async download() { return new File(['audio'], 'sample.mp3', { type: 'audio/mpeg' }); }
+    };
+    const modal = createVoiceSampleCatalogModal({ catalogClient });
+    document.body.appendChild(modal);
+    await nextTurn();
+
+    let query = modal.querySelector('#voice-catalog-query');
+    query.value = 'old request';
+    query.focus();
+    query.setSelectionRange(4, 11);
+    modal.querySelector('.voice-catalog-search').dispatchEvent(new dom.window.Event('submit', {
+      bubbles: true,
+      cancelable: true
+    }));
+    query = modal.querySelector('#voice-catalog-query');
+    assert.equal(document.activeElement, query);
+    assert.equal(query.selectionStart, 4);
+    assert.equal(query.selectionEnd, 11);
+
+    query.value = 'new request';
+    modal.querySelector('.voice-catalog-search').dispatchEvent(new dom.window.Event('submit', {
+      bubbles: true,
+      cancelable: true
+    }));
+    assert.equal(signals[1].aborted, true);
+    newSearch.resolve({ voices: [current], hasMore: false, totalCount: 1 });
+    await nextTurn();
+    oldSearch.resolve({ voices: [stale], hasMore: false, totalCount: 1 });
+    await nextTurn();
+
+    assert.deepEqual([...modal.querySelectorAll('.voice-sample-card')].map(card => card.dataset.voiceId), ['current']);
+    assert.equal(modal.querySelector('#voice-catalog-query').value, 'new request');
+    assert.equal(modal.querySelector('.voice-catalog-error'), null);
+    assert.notEqual(document.activeElement, document.body);
+  } finally {
+    removeDom(dom);
+  }
+});
+
+test('a replacement search cannot be overwritten by late pagination', async () => {
+  const dom = installDom();
+  try {
+    const pagination = deferred();
+    const replacement = deferred();
+    let calls = 0;
+    const first = { ...normalizeSharedVoice(rawVoice), id: 'first' };
+    const late = { ...normalizeSharedVoice(rawVoice), id: 'late-page' };
+    const current = { ...normalizeSharedVoice(rawVoice), id: 'replacement' };
+    const catalogClient = {
+      search(filters) {
+        calls++;
+        if (calls === 1) return Promise.resolve({ voices: [first], hasMore: true, totalCount: 3 });
+        if (filters.page === 1) return pagination.promise;
+        return replacement.promise;
+      },
+      async download() { return new File(['audio'], 'sample.mp3', { type: 'audio/mpeg' }); }
+    };
+    const modal = createVoiceSampleCatalogModal({ catalogClient });
+    document.body.appendChild(modal);
+    await nextTurn();
+    modal.querySelector('.btn-catalog-more').click();
+    const query = modal.querySelector('#voice-catalog-query');
+    query.value = 'replacement';
+    modal.querySelector('.voice-catalog-search').dispatchEvent(new dom.window.Event('submit', {
+      bubbles: true,
+      cancelable: true
+    }));
+
+    replacement.resolve({ voices: [current], hasMore: false, totalCount: 1 });
+    await nextTurn();
+    pagination.resolve({ voices: [late], hasMore: false, totalCount: 3 });
+    await nextTurn();
+    assert.deepEqual([...modal.querySelectorAll('.voice-sample-card')].map(card => card.dataset.voiceId), ['replacement']);
+  } finally {
+    removeDom(dom);
+  }
+});
+
+test('focus stays in the catalog through preview retry and import state changes', async () => {
+  const dom = installDom();
+  const originalCreateObjectUrl = URL.createObjectURL;
+  const originalRevokeObjectUrl = URL.revokeObjectURL;
+  try {
+    URL.createObjectURL = () => 'blob:preview';
+    URL.revokeObjectURL = () => {};
+    dom.window.HTMLMediaElement.prototype.play = async () => {};
+    dom.window.HTMLMediaElement.prototype.pause = () => {};
+    dom.window.HTMLMediaElement.prototype.load = () => {};
+
+    const retryDownload = deferred();
+    const importCommit = deferred();
+    let downloads = 0;
+    const voice = normalizeSharedVoice(rawVoice);
+    const catalogClient = {
+      async search() { return { voices: [voice], hasMore: false, totalCount: 1 }; },
+      download() {
+        downloads++;
+        if (downloads === 1) return Promise.reject(new Error('Preview temporarily failed.'));
+        return retryDownload.promise;
+      }
+    };
+    const modal = createVoiceSampleCatalogModal({
+      catalogClient,
+      onAdd: async () => await importCommit.promise
+    });
+    document.body.appendChild(modal);
+    await nextTurn();
+
+    modal.querySelector('.btn-catalog-preview').focus();
+    modal.querySelector('.btn-catalog-preview').click();
+    await nextTurn();
+    assert.match(modal.textContent, /Preview temporarily failed/);
+    const retry = modal.querySelector('.btn-catalog-retry');
+    retry.focus();
+    retry.click();
+    assert.equal(document.activeElement.classList.contains('btn-catalog-preview'), true);
+
+    retryDownload.resolve(new File(['audio'], 'sample.mp3', { type: 'audio/mpeg' }));
+    await nextTurn();
+    assert.equal(document.activeElement.classList.contains('btn-catalog-preview'), true);
+
+    const add = modal.querySelector('.btn-catalog-add');
+    add.focus();
+    add.click();
+    assert.equal(modal.querySelector('.btn-catalog-add').disabled, true);
+    assert.equal(document.activeElement.classList.contains('btn-catalog-preview'), true);
+    importCommit.resolve();
+    await nextTurn();
+    assert.equal(modal.querySelector('.btn-catalog-add').disabled, true);
+    assert.equal(document.activeElement.classList.contains('btn-catalog-preview'), true);
+    assert.notEqual(document.activeElement, document.body);
+  } finally {
+    URL.createObjectURL = originalCreateObjectUrl;
+    URL.revokeObjectURL = originalRevokeObjectUrl;
+    removeDom(dom);
+  }
+});
+
 test('closing the catalog aborts a pending add before it reaches local storage', async () => {
   const dom = installDom();
   try {
@@ -294,4 +456,70 @@ test('voice downloads stop reading as soon as the byte limit is exceeded', async
     /too large/
   );
   assert.equal(pulls, 1);
+});
+
+test('voice downloads reject a declared oversized response without pulling its body', async () => {
+  let pulls = 0;
+  let cancelled = 0;
+  let released = 0;
+  const response = {
+    ok: true,
+    headers: {
+      get(name) {
+        if (name.toLowerCase() === 'content-length') return String(26 * 1024 * 1024);
+        if (name.toLowerCase() === 'content-type') return 'audio/mpeg';
+        return null;
+      }
+    },
+    body: {
+      getReader() {
+        return {
+          async read() { pulls++; return { done: true }; },
+          async cancel() { cancelled++; },
+          releaseLock() { released++; }
+        };
+      }
+    }
+  };
+
+  await assert.rejects(downloadVoiceSample(
+    { name: 'Huge', previewUrl: 'https://cdn.example.test/huge.mp3' },
+    { fetchImpl: async () => response }
+  ), /That voice preview is too large to import/);
+  assert.equal(pulls, 0);
+  assert.equal(cancelled, 1);
+  assert.equal(released, 1);
+});
+
+test('aborting a voice download cancels and releases its response reader', async () => {
+  const controller = new AbortController();
+  let finishRead;
+  let cancelled = 0;
+  let released = 0;
+  const response = {
+    ok: true,
+    headers: { get: name => name.toLowerCase() === 'content-type' ? 'audio/mpeg' : null },
+    body: {
+      getReader() {
+        return {
+          read: () => new Promise(resolve => { finishRead = resolve; }),
+          async cancel() {
+            cancelled++;
+            finishRead?.({ done: true });
+          },
+          releaseLock() { released++; }
+        };
+      }
+    }
+  };
+  const download = downloadVoiceSample(
+    { name: 'Pending', previewUrl: 'https://cdn.example.test/pending.mp3' },
+    { signal: controller.signal, fetchImpl: async () => response }
+  );
+  await Promise.resolve();
+  controller.abort();
+
+  await assert.rejects(download, error => error?.name === 'AbortError');
+  assert.ok(cancelled >= 1);
+  assert.equal(released, 1);
 });

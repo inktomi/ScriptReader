@@ -1,4 +1,6 @@
 import { getAudioContext } from './audio-context.js';
+import { createMutationQueue, runStagedMutation } from '../utils/staged-mutation.js';
+import { throwIfAborted } from '../utils/latest-operation.js';
 
 const DB_NAME = 'scriptreader-studio-voices';
 const DB_VERSION = 1;
@@ -12,10 +14,21 @@ function storage() {
   return typeof localStorage === 'undefined' ? null : localStorage;
 }
 
+function parseMetadata(raw) {
+  const parsed = JSON.parse(raw || '[]');
+  if (!Array.isArray(parsed)) throw new Error('Studio voice metadata is malformed.');
+  return parsed.filter(item => item && item.id && item.name);
+}
+
+function readMetadataStrict() {
+  const metadataStorage = storage();
+  if (!metadataStorage) throw new Error('Local storage is unavailable.');
+  return parseMetadata(metadataStorage.getItem(META_KEY));
+}
+
 function readMetadata() {
   try {
-    const parsed = JSON.parse(storage()?.getItem(META_KEY) || '[]');
-    return Array.isArray(parsed) ? parsed.filter(item => item && item.id && item.name) : [];
+    return readMetadataStrict();
   } catch (_) {
     return [];
   }
@@ -23,7 +36,9 @@ function readMetadata() {
 
 function writeMetadata(items) {
   try {
-    storage()?.setItem(META_KEY, JSON.stringify(items));
+    const metadataStorage = storage();
+    if (!metadataStorage) throw new Error('Local storage is unavailable.');
+    metadataStorage.setItem(META_KEY, JSON.stringify(items));
   } catch (error) {
     throw new Error('The reference voice could not be saved in this browser.');
   }
@@ -76,14 +91,97 @@ async function deleteSample(id) {
   }
 }
 
-function abortError() {
-  const error = new Error('Voice import was cancelled.');
-  error.name = 'AbortError';
-  return error;
+async function deleteSamples(ids) {
+  if (ids.length === 0) return;
+  const db = await openDatabase();
+  try {
+    await new Promise((resolve, reject) => {
+      const transaction = db.transaction(STORE_NAME, 'readwrite');
+      const store = transaction.objectStore(STORE_NAME);
+      ids.forEach(id => store.delete(id));
+      transaction.oncomplete = resolve;
+      transaction.onerror = () => reject(transaction.error || new Error('Could not remove voice samples.'));
+      transaction.onabort = () => reject(transaction.error || new Error('Voice storage cleanup was interrupted.'));
+    });
+  } finally {
+    db.close();
+  }
 }
 
-function throwIfAborted(signal) {
-  if (signal?.aborted) throw abortError();
+function hasUsableAudio(record) {
+  if (!record?.audio) return false;
+  const length = Number(record.audio.length ?? record.audio.byteLength ?? 0);
+  return Number.isFinite(length) && length > 0;
+}
+
+async function inspectSampleRecords() {
+  const db = await openDatabase();
+  try {
+    return await new Promise((resolve, reject) => {
+      const transaction = db.transaction(STORE_NAME, 'readonly');
+      const store = transaction.objectStore(STORE_NAME);
+      const summaries = [];
+      const request = store.openCursor();
+      request.onsuccess = () => {
+        const cursor = request.result;
+        if (!cursor) {
+          resolve(summaries);
+          return;
+        }
+        summaries.push({ id: String(cursor.key), usable: hasUsableAudio(cursor.value) });
+        cursor.continue();
+      };
+      request.onerror = () => reject(request.error || new Error('Could not inspect stored voice samples.'));
+    });
+  } finally {
+    db.close();
+  }
+}
+
+const defaultPersistence = {
+  readMetadata: readMetadataStrict,
+  writeMetadata,
+  putSample,
+  deleteSample,
+  deleteSamples,
+  inspectSampleRecords
+};
+const voiceMutationQueue = createMutationQueue({
+  lockName: 'scriptreader-chatterbox-voice-mutation'
+});
+
+/**
+ * Removes metadata whose sample was evicted and samples that no metadata can
+ * discover. Metadata is repaired first; orphan deletion never runs if that
+ * write fails, so a cleanup attempt cannot create a newly broken reference.
+ */
+export async function reconcileChatterboxVoiceStorage({ persistence = defaultPersistence } = {}) {
+  return await voiceMutationQueue.run(async () => {
+    const metadata = persistence.readMetadata();
+    const sampleRecords = await persistence.inspectSampleRecords();
+    const sampleIds = sampleRecords.map(record => String(record.id));
+    const samples = new Set(sampleRecords.filter(record => record.usable).map(record => String(record.id)));
+    const validMetadata = metadata.filter(item => samples.has(item.id));
+    const removedMetadata = metadata.length - validMetadata.length;
+    if (removedMetadata > 0) await persistence.writeMetadata(validMetadata);
+
+    const referenced = new Set(validMetadata.map(item => item.id));
+    const orphanIds = sampleIds.filter(id => !referenced.has(id));
+    let failedOrphanIds = [];
+    if (typeof persistence.deleteSamples === 'function') {
+      try {
+        await persistence.deleteSamples(orphanIds);
+      } catch (_) {
+        // The default bulk cleanup is one IndexedDB transaction, so a failure
+        // leaves the whole set for a later reconciliation attempt.
+        failedOrphanIds = orphanIds;
+      }
+    } else {
+      const cleanup = await Promise.allSettled(orphanIds.map(id => persistence.deleteSample(id)));
+      failedOrphanIds = orphanIds.filter((_, index) => cleanup[index].status === 'rejected');
+    }
+    return { removedMetadata, removedOrphans: orphanIds.length - failedOrphanIds.length, failedOrphanIds };
+  });
 }
 
 export async function hasChatterboxVoiceSample(id) {
@@ -186,7 +284,10 @@ function metadataText(value, fallback = '', maxLength = 160) {
   return (text || fallback).slice(0, maxLength);
 }
 
-export async function saveChatterboxVoice(file, name = '', profile = {}, { signal } = {}) {
+export async function saveChatterboxVoice(file, name = '', profile = {}, {
+  signal,
+  persistence = defaultPersistence
+} = {}) {
   throwIfAborted(signal);
   if (!file || typeof file.arrayBuffer !== 'function') {
     throw new Error('Choose an audio recording to create a Studio voice.');
@@ -214,59 +315,62 @@ export async function saveChatterboxVoice(file, name = '', profile = {}, { signa
   const resampled = resampleLinear(mono, decoded.sampleRate, TARGET_SAMPLE_RATE);
   const maxSamples = TARGET_SAMPLE_RATE * MAX_REFERENCE_SECONDS;
   const audio = resampled.length > maxSamples ? resampled.slice(0, maxSamples) : resampled;
-  const sourceVoiceId = metadataText(profile.sourceVoiceId, '', 100);
-  const currentMetadata = readMetadata();
-  const replacedIds = sourceVoiceId
-    ? currentMetadata.filter(item => item.sourceVoiceId === sourceVoiceId).map(item => item.id)
-    : [];
-  // Reuse a catalog voice's local identity. Cast assignments remain valid even
-  // if the catalog closes after IndexedDB commits but before the UI reconciles.
-  const id = replacedIds[0]
-    || `studio-${globalThis.crypto?.randomUUID?.() || `${Date.now()}-${Math.random().toString(36).slice(2)}`}`;
-  const isReplacement = replacedIds.includes(id);
   const duration = audio.length / TARGET_SAMPLE_RATE;
-  const record = { id, audio, sampleRate: TARGET_SAMPLE_RATE, duration, createdAt: Date.now() };
-
-  await putSample(record);
-  try {
+  return await voiceMutationQueue.run(async () => {
     throwIfAborted(signal);
-  } catch (error) {
-    if (!isReplacement) {
-      await deleteSample(id).catch(() => {});
-      throw error;
-    }
-    // Replacements have crossed the storage commit point. Finish their
-    // metadata update so the stable ID never describes a missing sample.
-  }
-  // A catalog voice is a replaceable source, not an endlessly duplicated
-  // identity. This also repairs metadata whose IndexedDB sample was evicted.
-  const metadata = currentMetadata.filter(item => !sourceVoiceId || item.sourceVoiceId !== sourceVoiceId);
-  metadata.push({
-    id,
-    name: (name || voiceNameFromFile(file)).slice(0, 80),
-    duration,
-    sex: metadataText(profile.sex, 'Neutral', 24),
-    ageGroup: metadataText(profile.ageGroup, 'Reference performance', 40),
-    accent: metadataText(profile.accent, 'Cloned', 60),
-    tone: metadataText(profile.tone, 'Natural character voice from a private reference recording', 120),
-    description: metadataText(profile.description, '', 240),
-    source: metadataText(profile.source, 'Private upload', 80),
-    sourceVoiceId,
-    createdAt: record.createdAt
+    const sourceVoiceId = metadataText(profile.sourceVoiceId, '', 100);
+    const currentMetadata = persistence.readMetadata();
+    const replacedIds = sourceVoiceId
+      ? currentMetadata.filter(item => item.sourceVoiceId === sourceVoiceId).map(item => item.id)
+      : [];
+    // Reuse a catalog voice's local identity. Cast assignments remain valid
+    // when refreshing the same provider voice.
+    const id = replacedIds[0]
+      || `studio-${globalThis.crypto?.randomUUID?.() || `${Date.now()}-${Math.random().toString(36).slice(2)}`}`;
+    const isReplacement = replacedIds.includes(id);
+    const record = { id, audio, sampleRate: TARGET_SAMPLE_RATE, duration, createdAt: Date.now() };
+    // A catalog voice is a replaceable source, not an endlessly duplicated
+    // identity. This also repairs metadata whose IndexedDB sample was evicted.
+    const metadata = currentMetadata.filter(item => !sourceVoiceId || item.sourceVoiceId !== sourceVoiceId);
+    const savedMetadata = {
+      id,
+      name: (name || voiceNameFromFile(file)).slice(0, 80),
+      duration,
+      sex: metadataText(profile.sex, 'Neutral', 24),
+      ageGroup: metadataText(profile.ageGroup, 'Reference performance', 40),
+      accent: metadataText(profile.accent, 'Cloned', 60),
+      tone: metadataText(profile.tone, 'Natural character voice from a private reference recording', 120),
+      description: metadataText(profile.description, '', 240),
+      source: metadataText(profile.source, 'Private upload', 80),
+      sourceVoiceId,
+      createdAt: record.createdAt
+    };
+    metadata.push(savedMetadata);
+
+    return await runStagedMutation({
+      signal,
+      // Decoding/resampling produced the in-memory staged record. IndexedDB's
+      // stable-ID put is the one atomic durable boundary; it never exposes a
+      // partial replacement and does not require a quota-consuming duplicate.
+      stage: async () => record,
+      commitDurable: async stagedRecord => {
+        await persistence.putSample(stagedRecord);
+        return stagedRecord;
+      },
+      persistMetadata: async () => {
+        await persistence.writeMetadata(metadata);
+        return savedMetadata;
+      },
+      compensateDurable: async () => {
+        if (!isReplacement) await persistence.deleteSample(id);
+      },
+      reconcile: async () => {
+        await Promise.all(replacedIds.filter(replacedId => replacedId !== id).map(replacedId => (
+          persistence.deleteSample(replacedId).catch(() => {})
+        )));
+      }
+    });
   });
-  try {
-    writeMetadata(metadata);
-  } catch (error) {
-    // IndexedDB and localStorage cannot share a transaction. Roll back the
-    // sample when its discoverability metadata fails so retries do not leak
-    // hidden Float32Array records.
-    if (!isReplacement) await deleteSample(id).catch(() => {});
-    throw error;
-  }
-  await Promise.all(replacedIds.filter(replacedId => replacedId !== id).map(replacedId => (
-    deleteSample(replacedId).catch(() => {})
-  )));
-  return metadata.at(-1);
 }
 
 export const CHATTERBOX_REFERENCE_LIMITS = Object.freeze({

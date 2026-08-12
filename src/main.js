@@ -16,6 +16,7 @@ import { createWelcomeScreen } from './ui/welcome-screen.js';
 import { escapeHtml } from './utils/escape-html.js';
 import { loadAppState, restoreCastBackup } from './utils/storage.js';
 import { SAMPLE_SCRIPTS } from './screenplay/sample-scripts.js';
+import { reconcileChatterboxVoiceStorage } from './audio/chatterbox-voice-store.js';
 
 const APP_VIEWS = Object.freeze({
   WELCOME: 'WELCOME',
@@ -26,6 +27,12 @@ const APP_VIEWS = Object.freeze({
 // Application Orchestrator
 async function initApp() {
   const appRoot = document.getElementById('app');
+
+  try {
+    await reconcileChatterboxVoiceStorage();
+  } catch (error) {
+    console.warn('Studio voice library reconciliation notice:', error);
+  }
 
   const scriptStore = new ScriptStore();
   const audioManager = new ScreenplayAudioManager();
