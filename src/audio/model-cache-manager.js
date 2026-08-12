@@ -4,6 +4,8 @@
  * are cached locally in persistent browser CacheStorage on first load so they load instantaneously on subsequent visits.
  */
 
+import { KokoroDownloadProgress } from './kokoro-model-files.js';
+
 export const TRANSFORMERS_CACHE_NAME = 'transformers-cache';
 export const KOKORO_VOICES_CACHE_NAME = 'kokoro-voices';
 export const DEFAULT_MODEL_ID = 'onnx-community/Kokoro-82M-v1.0-ONNX';
@@ -366,7 +368,14 @@ export class ModelCacheManager {
 
     // 1. Load KokoroTTS model via worker (this triggers @huggingface/transformers to download and cache config, tokenizer, onnx)
     const worker = new Worker(new URL('./kokoro-worker.js', import.meta.url), { type: 'module' });
-    
+
+    // Counted from bytes rather than read off `payload.progress`. Hugging Face
+    // serves the weights without a Content-Length, and transformers.js then
+    // reports `progress: 100` on every single chunk — so the old reading pinned
+    // this bar at 80% within a second of a multi-minute download.
+    const download = new KokoroDownloadProgress();
+    let maxPercent = 15;
+
     try {
       await new Promise((resolve, reject) => {
         worker.onerror = (event) => reject(new Error(event.message || 'Model worker failed to start'));
@@ -374,16 +383,21 @@ export class ModelCacheManager {
         worker.onmessage = (e) => {
           const { type, payload, error } = e.data;
           if (type === 'progress') {
-            const p = payload;
-            const modelPct = 15 + Math.round(p.progress * 0.65); // 15% -> 80%
+            download.note(payload);
+            const { loaded, total } = download.totals();
+            const fraction = total > 0 ? loaded / total : 0;
+            // Ratcheted: a file's total becoming trustworthy moves the
+            // denominator, and the bar must not walk backwards when it does.
+            maxPercent = Math.max(maxPercent, 15 + Math.round(fraction * 65)); // 15% -> 80%
             onProgress({
               phase: 'model',
-              percent: modelPct,
-              file: p.file || 'weights',
-              loaded: p.loaded,
-              total: p.total,
-              // p.progress is already 0-100; scaling it again rendered "10000%".
-              message: `Caching model weights: ${Math.round(p.progress)}%`
+              percent: maxPercent,
+              file: (payload && payload.file) || 'weights',
+              loaded,
+              total,
+              message: total > 0
+                ? `Caching model weights: ${Math.round(fraction * 100)}%`
+                : 'Fetching model metadata...'
             });
           } else if (type === 'init_complete') {
             resolve();

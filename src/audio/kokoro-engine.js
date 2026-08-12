@@ -1,6 +1,7 @@
 import { ModelCacheManager, DEFAULT_MODEL_ID } from './model-cache-manager.js';
 import { getAudioContext } from './audio-context.js';
 import { ENGINE_IDS } from './engine-contract.js';
+import { KokoroDownloadProgress } from './kokoro-model-files.js';
 
 /**
  * Neural synthesis service.
@@ -38,10 +39,12 @@ export class KokoroNeuralEngine {
     this.phase = 'idle';
     this.lastError = null;
 
-    // file -> { loaded, total }, so the reported percentage is aggregate bytes
-    // instead of whichever file happens to be streaming right now.
-    this.fileProgress = new Map();
+    // Aggregate bytes across every file being fetched, so the reported
+    // percentage is not whichever file happens to be streaming right now.
+    this.download = new KokoroDownloadProgress();
     this._loadingBaseMessage = '';
+    this._maxProgress = 0;
+    this._lastEmitted = null;
     this._stallTimer = null;
 
     this.audioCache = new Map();      // key -> AudioBuffer (insertion-ordered, LRU-trimmed)
@@ -92,55 +95,49 @@ export class KokoroNeuralEngine {
   }
 
   /**
-   * Fold one transformers.js progress event into an aggregate byte count.
+   * Emit a loading update, ratcheted and de-duplicated.
    *
-   * transformers.js emits `{file, loaded, total, progress}` per network chunk and
-   * restarts `progress` at 0 for every file, so reading it directly makes the bar
-   * bounce config.json -> tokenizer.json -> model.onnx.
-   *
-   * Only files large enough to matter are aggregated. config.json and the
-   * tokenizers are a few KB and arrive first; counting them would drive the bar
-   * to 100% within a second and then snap it back to near zero the moment the
-   * multi-hundred-MB weights file joins the total, which reads as a restart.
+   * The ratchet is not cosmetic. The denominator legitimately changes mid-flight
+   * — when a file's total becomes trustworthy, and when a WebGPU attempt fails
+   * and the WASM retry swaps a 155 MB fp16 weights file for a 88 MB q8 one — and
+   * without this the bar would visibly walk backwards.
    */
+  _emitLoading(progress, message) {
+    const next = Math.max(this._maxProgress, Math.min(99, Math.round(progress)));
+    this._maxProgress = next;
+    if (this._lastEmitted && this._lastEmitted.progress === next && this._lastEmitted.message === message) {
+      return;
+    }
+    this._lastEmitted = { progress: next, message };
+    this.notifyProgress(next, message, 'loading');
+  }
+
+  /** Fold one transformers.js progress event in, then redraw from the total. */
   _noteDownloadProgress(payload) {
     this._armStallWatchdog();
+    this.download.note(payload || {});
+    this._publishDownloadProgress();
+  }
 
-    const SIGNIFICANT_BYTES = 1024 * 1024;
-
-    const file = payload.file || 'weights';
-    const total = Number(payload.total) || 0;
-    const loaded = Number(payload.loaded) || 0;
-    if (total > 0) {
-      this.fileProgress.set(file, { loaded: Math.min(loaded, total), total });
-    }
-
-    let sumLoaded = 0;
-    let sumTotal = 0;
-    for (const entry of this.fileProgress.values()) {
-      if (entry.total < SIGNIFICANT_BYTES) continue;
-      sumLoaded += entry.loaded;
-      sumTotal += entry.total;
-    }
-
+  _publishDownloadProgress() {
+    const { loaded, total } = this.download.totals();
     const base = this.isCachedLocally ? 30 : 20;
 
-    if (sumTotal === 0) {
+    if (total === 0) {
       // Nothing but the small metadata files so far.
       this._loadingBaseMessage = 'Fetching model metadata...';
-      this.notifyProgress(base, this._loadingBaseMessage, 'loading');
+      this._emitLoading(base, this._loadingBaseMessage);
       return;
     }
 
-    const pct = Math.max(0, Math.min(100, (sumLoaded / sumTotal) * 100));
+    const pct = Math.max(0, Math.min(100, (loaded / total) * 100));
     const factor = this.isCachedLocally ? 0.6 : 0.7;
-    const overall = Math.min(99, base + Math.round(pct * factor));
 
     const verb = this.isCachedLocally ? 'Loading local weights' : 'Downloading neural voice weights';
-    const size = `${ModelCacheManager.formatBytes(sumLoaded)} / ${ModelCacheManager.formatBytes(sumTotal)}`;
+    const size = `${ModelCacheManager.formatBytes(loaded)} / ${ModelCacheManager.formatBytes(total)}`;
 
     this._loadingBaseMessage = `${verb}: ${Math.round(pct)}% — ${size}`;
-    this.notifyProgress(overall, this._loadingBaseMessage, 'loading');
+    this._emitLoading(base + pct * factor, this._loadingBaseMessage);
   }
 
   _armStallWatchdog() {
@@ -154,6 +151,11 @@ export class KokoroNeuralEngine {
         `${base} — still waiting on the network (no data for ${seconds}s)`,
         'loading'
       );
+      // The hint went out around `_emitLoading`, so forget what was last
+      // emitted: otherwise the resuming chunk could be deduplicated against the
+      // pre-hint message and leave "still waiting" on screen after data
+      // returned.
+      this._lastEmitted = null;
       // Re-arm so the hint survives; the suffix is rebuilt from the stored base
       // each time rather than appended, so it never compounds.
       this._armStallWatchdog();
@@ -220,10 +222,13 @@ export class KokoroNeuralEngine {
   async _init(device) {
     this.isLoading = true;
     this.lastError = null;
-    // A retry must not inherit byte totals from the attempt that failed.
-    this.fileProgress.clear();
+    // A retry must not inherit byte totals — or a high-water mark — from the
+    // attempt that failed.
+    this.download.reset();
     this._loadingBaseMessage = '';
-    this.notifyProgress(5, 'Initializing Kokoro Neural Engine...', 'loading');
+    this._maxProgress = 0;
+    this._lastEmitted = null;
+    this._emitLoading(5, 'Initializing Kokoro Neural Engine...');
 
     try {
       await ModelCacheManager.requestPersistentStorage();
@@ -234,7 +239,7 @@ export class KokoroNeuralEngine {
       this._loadingBaseMessage = cacheStatus.isModelCached
         ? '⚡ Loading Kokoro-82M from local cache...'
         : 'Downloading Kokoro-82M ONNX model weights to local cache...';
-      this.notifyProgress(cacheStatus.isModelCached ? 30 : 15, this._loadingBaseMessage, 'loading');
+      this._emitLoading(cacheStatus.isModelCached ? 30 : 15, this._loadingBaseMessage);
       this._armStallWatchdog();
 
       this.worker = new Worker(new URL('./kokoro-worker.js', import.meta.url), { type: 'module' });
