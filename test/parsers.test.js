@@ -123,14 +123,72 @@ test('explicit interruption cuts the victim while same-speaker dashes stay seque
   assert.equal(sameSpeaker.elements[1].overlap, null);
 });
 
-async function loadPdfLineProcessor() {
+async function loadPdfParser() {
   // pdf.js evaluates these browser constructors at module load even though the
   // line processor itself does not use them.
   if (!globalThis.DOMMatrix) globalThis.DOMMatrix = class DOMMatrix {};
   if (!globalThis.ImageData) globalThis.ImageData = class ImageData {};
   if (!globalThis.Path2D) globalThis.Path2D = class Path2D {};
-  return (await import('../src/screenplay/pdf-parser.js')).processExtractedLines;
+  return import('../src/screenplay/pdf-parser.js');
 }
+
+async function loadPdfLineProcessor() {
+  return (await loadPdfParser()).processExtractedLines;
+}
+
+/** Smallest PDF that still carries positioned text, so the reader runs for real. */
+function buildTextPdf(contentStream) {
+  const objects = [
+    '1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n',
+    '2 0 obj\n<< /Type /Pages /Kids [3 0 R] /Count 1 >>\nendobj\n',
+    '3 0 obj\n<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792]'
+      + ' /Resources << /Font << /F1 4 0 R >> >> /Contents 5 0 R >>\nendobj\n',
+    '4 0 obj\n<< /Type /Font /Subtype /Type1 /BaseFont /Courier >>\nendobj\n',
+    `5 0 obj\n<< /Length ${contentStream.length} >>\nstream\n${contentStream}\nendstream\nendobj\n`
+  ];
+
+  let pdf = '%PDF-1.4\n';
+  const offsets = [];
+  for (const object of objects) {
+    offsets.push(pdf.length);
+    pdf += object;
+  }
+  const xref = pdf.length;
+  pdf += `xref\n0 ${objects.length + 1}\n0000000000 65535 f \n`
+    + offsets.map(offset => `${String(offset).padStart(10, '0')} 00000 n \n`).join('')
+    + `trailer\n<< /Size ${objects.length + 1} /Root 1 0 R >>\nstartxref\n${xref}\n%%EOF`;
+
+  return Uint8Array.from(pdf, char => char.charCodeAt(0)).buffer;
+}
+
+// The reader tears the document down in a `finally`, so a teardown that throws
+// discards an already-finished screenplay. That is how a `destroy()` pdf.js had
+// removed turned every readable PDF into "could not be read".
+test('a readable PDF survives the reader releasing the document', async () => {
+  const { parsePdfScreenplay } = await loadPdfParser();
+  const parsed = await parsePdfScreenplay(buildTextPdf(
+    'BT /F1 12 Tf 108 700 Td (INT. DINER - NIGHT) Tj'
+    + ' 0 -24 Td (A cook wipes the counter.) Tj'
+    + ' 100 -24 Td (SAM) Tj -64 -14 Td (We are open.) Tj ET'
+  ));
+
+  assert.deepEqual(
+    parsed.elements.map(element => [element.type, element.character, element.text]),
+    [
+      ['SCENE_HEADING', 'NARRATOR', 'INT. DINER - NIGHT'],
+      ['ACTION', 'NARRATOR', 'A cook wipes the counter.'],
+      ['DIALOGUE', 'SAM', 'We are open.']
+    ]
+  );
+});
+
+test('an unreadable PDF reports why it failed rather than how cleanup went', async () => {
+  const { parsePdfScreenplay } = await loadPdfParser();
+  await assert.rejects(
+    parsePdfScreenplay(Uint8Array.from([1, 2, 3, 4, 5]).buffer),
+    /Invalid PDF structure/
+  );
+});
 
 test('PDF dual columns become two simultaneous dialogue elements', async () => {
   const processExtractedLines = await loadPdfLineProcessor();

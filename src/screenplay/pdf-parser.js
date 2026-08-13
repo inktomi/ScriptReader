@@ -34,9 +34,8 @@ export async function parsePdfScreenplay(fileOrBuffer, onProgress = () => {}) {
   }
 
   const loadingTask = pdfjsLib.getDocument({ data: arrayBuffer });
-  let pdfDoc = null;
   try {
-    pdfDoc = await loadingTask.promise;
+    const pdfDoc = await loadingTask.promise;
     const numPages = pdfDoc.numPages;
     const rawLines = [];
 
@@ -127,10 +126,16 @@ export async function parsePdfScreenplay(fileOrBuffer, onProgress = () => {}) {
     // Now process lines with layout geometry and screenplay conventions
     return processExtractedLines(rawLines, fileName);
   } finally {
-    if (pdfDoc) {
-      await pdfDoc.destroy();
-    } else {
+    // pdf.js v5 dropped PDFDocumentProxy.destroy(); the loading task is now the
+    // only teardown entry point and it releases the document and worker
+    // together. Teardown also stays quiet: a throw here runs after the parse has
+    // already succeeded, so letting it escape would replace a finished
+    // screenplay with a cleanup error — which is exactly how the missing
+    // destroy() surfaced as "every PDF is unreadable".
+    try {
       await loadingTask.destroy();
+    } catch (err) {
+      console.warn('Could not release the PDF document:', err);
     }
   }
 }
