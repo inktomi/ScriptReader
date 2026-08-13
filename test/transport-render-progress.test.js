@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 
 import { createTransportBar } from '../src/ui/transport-bar.js';
+import { PLAYBACK_STATES } from '../src/audio/audio-manager.js';
 import { installDom, removeDom } from './dom-helpers.js';
 
 function audioManagerStub() {
@@ -93,6 +94,43 @@ test('an idle pre-render only claims readiness when playback can actually start'
     transport.updateRenderProgress({ visible: true, active: false, canPlay: true, percent: 100 });
     assert.equal(play.disabled, false);
     assert.match(row.textContent, /Ready for uninterrupted playback/);
+  } finally {
+    removeDom(dom);
+  }
+});
+
+/**
+ * When paused, scheduled audio is held in place by suspending the audio context.
+ * The Play button is the resume control and must stay enabled even if canPlay
+ * is false.
+ */
+test('Play button remains enabled while playback is paused, even if canPlay is false', () => {
+  const dom = installDom();
+  try {
+    const transport = createTransportBar({
+      audioManager: audioManagerStub(),
+      scriptStore: { currentScript: { elements: [{}] } },
+      onPlay() {}, onPause() {}, onStop() {},
+      onSkipNext() {}, onSkipPrev() {}, onSeek() {}
+    });
+    document.body.appendChild(transport.element);
+    const row = transport.element.querySelector('#transport-render-row');
+    const play = transport.element.querySelector('#btn-transport-play');
+
+    transport.updateRenderProgress({ visible: true, active: false, canPlay: false, percent: 50 });
+    // In IDLE state with canPlay false, Play is disabled
+    assert.equal(play.disabled, true);
+    assert.match(row.textContent, /Pre-render paused — not ready yet/);
+
+    // In PAUSED state, Play button acts as resume and must be enabled
+    transport.updatePlaybackState(PLAYBACK_STATES.PAUSED);
+    transport.updateRenderProgress({ visible: true, active: false, canPlay: false, percent: 50 });
+    assert.equal(play.disabled, false);
+    assert.match(row.textContent, /Playback paused — press Play to resume/);
+
+    // Transitioning back to IDLE disables it again
+    transport.updatePlaybackState(PLAYBACK_STATES.IDLE);
+    assert.equal(play.disabled, true);
   } finally {
     removeDom(dom);
   }

@@ -386,6 +386,44 @@ test('resuming paused playback reinitializes an engine that became unavailable',
   assert.equal(restarted, 1);
 });
 
+/**
+ * The Studio Local canPlay gate exists to protect a cold start, not a resume.
+ * A pause does not clear canPlay, but an in-between voice or cast edit does
+ * (_invalidateUnits sets it false) -- and editing a cast while paused is
+ * ordinary use, not an edge case. Before this fix, transport-bar enabled Play
+ * whenever the state was not IDLE, but play() still applied the Chatterbox
+ * canPlay gate to a PAUSED resume -- an enabled button that silently
+ * re-armed prewarm and did nothing when clicked.
+ */
+test('resuming paused Studio Local playback is not blocked by a stale canPlay', async () => {
+  const manager = new ScreenplayAudioManager();
+  manager.engineId = ENGINE_IDS.CHATTERBOX;
+  manager.hybridCasting = false;
+  manager.scriptElements = [{ type: 'DIALOGUE', character: 'VALENTINE', text: 'Kira, breach is done.' }];
+  manager.playbackState = PLAYBACK_STATES.PAUSED;
+  manager.scheduler = {};
+  manager._ensureAudio = async () => manager.scheduler;
+  manager.engine = fakeEngine({ capabilities: { id: ENGINE_IDS.CHATTERBOX, metered: false } });
+  // A voice edit made mid-pause, not a cold script load.
+  manager.renderStatus = { ...manager.renderStatus, visible: true, canPlay: false };
+
+  let prewarmCalls = 0;
+  manager.prewarm = () => { prewarmCalls++; return null; };
+  let restarted = 0;
+  manager._beginNeuralPlayback = () => { restarted++; };
+  // The resume branch under test calls the real _startTick(), which would
+  // otherwise leave a live setInterval running past the end of this test.
+  let ticksStarted = 0;
+  manager._startTick = () => { ticksStarted++; };
+
+  await manager.play();
+
+  assert.equal(prewarmCalls, 0, 'a resume must not re-hit the cold-start gate');
+  assert.equal(restarted, 0, 'a resume must not restart the timeline from scratch');
+  assert.equal(ticksStarted, 1);
+  assert.equal(manager.playbackState, PLAYBACK_STATES.PLAYING);
+});
+
 test('Play uses Web Speech when no AudioContext scheduler can be created', async () => {
   const manager = new ScreenplayAudioManager();
   manager.scriptElements = [{ type: 'ACTION', character: 'NARRATOR', text: 'Opening' }];
@@ -678,4 +716,133 @@ test('short script safe runway calculates small cushion without forcing 5-minute
   manager._preparedStudioKeys.add('u1');
   const readyStatus = manager._studioRunwayStatus(units, 1.2);
   assert.equal(readyStatus.canPlay, true);
+});
+
+/**
+ * Seeking repositioning the playhead within the same script preserves prewarm
+ * state and resumes playback without resetting canPlay or percent.
+ */
+test('seeking under Studio Local preserves prewarm and resumes playing', async () => {
+  const manager = new ScreenplayAudioManager();
+  manager.engineId = ENGINE_IDS.CHATTERBOX;
+  manager.engine = fakeEngine({
+    capabilities: { id: ENGINE_IDS.CHATTERBOX, metered: false }
+  });
+  manager.scriptElements = [
+    { type: 'DIALOGUE', character: 'VALENTINE', text: 'Line 0' },
+    { type: 'DIALOGUE', character: 'VALENTINE', text: 'Line 1' },
+    { type: 'DIALOGUE', character: 'VALENTINE', text: 'Line 2' }
+  ];
+  manager._unitsForLine = line => [{
+    key: `unit-${line}`,
+    estimatedDuration: 2,
+    leadPause: 0,
+    engineId: ENGINE_IDS.CHATTERBOX
+  }];
+
+  // Script is already rendered and ready to play
+  manager._preparedStudioKeys.add('unit-0');
+  manager._preparedStudioKeys.add('unit-1');
+  manager._preparedStudioKeys.add('unit-2');
+  manager.renderStatus = { visible: true, active: false, canPlay: true, percent: 100, message: 'Studio Local audio ready' };
+
+  let playbackStartedAt = null;
+  manager._ensureAudio = async () => ({
+    stopAll() {},
+    resetTimeline() {},
+    currentTime: 0
+  });
+  manager._beginNeuralPlayback = (fromIndex) => {
+    playbackStartedAt = fromIndex;
+    manager.playbackState = PLAYBACK_STATES.PLAYING;
+  };
+
+  // Start playing at line 0
+  await manager.play();
+  assert.equal(manager.playbackState, PLAYBACK_STATES.PLAYING);
+  assert.equal(playbackStartedAt, 0);
+
+  // Seek to line 2 while playing
+  manager.seek(2);
+  await new Promise(resolve => setImmediate(resolve));
+
+  // Playback must resume at line 2 and canPlay must not be reset to false
+  assert.equal(manager.currentIndex, 2);
+  assert.equal(manager.renderStatus.canPlay, true);
+  assert.equal(playbackStartedAt, 2);
+});
+
+/**
+ * Dropped or aborted requests (from cast edits or seeks) must not be counted as
+ * prepared or advance the completed count, preventing false runway inflation.
+ */
+test('dropped prewarm requests are not marked as prepared in Studio render store', async () => {
+  const manager = new ScreenplayAudioManager();
+  manager.engineId = ENGINE_IDS.CHATTERBOX;
+  manager.engine = fakeEngine({
+    capabilities: { id: ENGINE_IDS.CHATTERBOX, metered: false },
+    request(unit) {
+      if (unit.key === 'unit-dropped') {
+        return Promise.reject(new Error('Render request dropped'));
+      }
+      return Promise.resolve({ duration: 2 });
+    }
+  });
+  manager.scriptElements = [
+    { type: 'DIALOGUE', character: 'VALENTINE', text: 'Line 0' },
+    { type: 'DIALOGUE', character: 'VALENTINE', text: 'Line 1' }
+  ];
+  manager._unitsForLine = line => [{
+    key: line === 0 ? 'unit-ok' : 'unit-dropped',
+    estimatedDuration: 2,
+    leadPause: 0,
+    engineId: ENGINE_IDS.CHATTERBOX
+  }];
+
+  await manager._queueStudioPrewarm(manager.engine, manager.prewarmGeneration);
+
+  assert.ok(manager._preparedStudioKeys.has('unit-ok'), 'fulfilled unit must be marked prepared');
+  assert.ok(!manager._preparedStudioKeys.has('unit-dropped'), 'dropped unit must not be marked prepared');
+  assert.equal(manager.renderStatus.completed, 1);
+});
+
+/**
+ * Flushing pending requests drops lookahead across all engines in a hybrid cast,
+ * ensuring secondary engines do not continue synthesising abandoned narration.
+ */
+test('flushing pending requests drops lookahead across all engines in a hybrid cast', () => {
+  const manager = new ScreenplayAudioManager();
+  manager.engineId = ENGINE_IDS.CHATTERBOX;
+  manager.hybridCasting = true;
+
+  const chatterboxDropped = [];
+  const kokoroDropped = [];
+
+  const chatterboxEngine = fakeEngine({
+    capabilities: { id: ENGINE_IDS.CHATTERBOX, metered: false },
+    dropPendingExcept(keys) { chatterboxDropped.push(keys); }
+  });
+  const kokoroEngine = fakeEngine({
+    capabilities: { id: ENGINE_IDS.KOKORO, metered: false },
+    dropPendingExcept(keys) { kokoroDropped.push(keys); }
+  });
+
+  manager.engine = chatterboxEngine;
+  manager._engines.set(ENGINE_IDS.CHATTERBOX, chatterboxEngine);
+  manager._engines.set(ENGINE_IDS.KOKORO, kokoroEngine);
+
+  manager.scriptElements = [
+    { type: 'ACTION', character: 'NARRATOR', text: 'Scene opening' },
+    { type: 'DIALOGUE', character: 'VALENTINE', text: 'Dialogue line' }
+  ];
+
+  // Flush on cast change
+  manager.setVoiceAssignment('VALENTINE', { voiceId: 'v1' });
+  assert.equal(chatterboxDropped.length, 1);
+  assert.equal(kokoroDropped.length, 1);
+
+  // Flush on seek
+  manager.seek(1);
+  assert.equal(chatterboxDropped.length, 2);
+  assert.equal(kokoroDropped.length, 2);
 });

@@ -214,7 +214,7 @@ export function createTransportBar({
       btnPlay.dataset.state = 'idle';
     }
     setPlayDisabled(latestRenderStatus.visible && !latestRenderStatus.canPlay &&
-      state !== PLAYBACK_STATES.PLAYING);
+      state === PLAYBACK_STATES.IDLE);
   }
 
   function formatEta(seconds) {
@@ -246,10 +246,15 @@ export function createTransportBar({
       // abandoned run is idle too. Promising uninterrupted playback on that
       // alone is what put "Ready" above a Play button that could not start.
       // The idle-but-unready wording stays factual rather than telling anyone to
-      // press Play, because Play is disabled in exactly this state.
-      renderDetail.textContent = latestRenderStatus.canPlay
-        ? 'Ready for uninterrupted playback'
-        : 'Pre-render paused — not ready yet';
+      // press Play when Play is disabled in the idle state. When paused, the
+      // scheduled audio is held in place and can be resumed immediately.
+      if (latestRenderStatus.canPlay) {
+        renderDetail.textContent = 'Ready for uninterrupted playback';
+      } else if (latestPlaybackState === PLAYBACK_STATES.PAUSED) {
+        renderDetail.textContent = 'Playback paused — press Play to resume';
+      } else {
+        renderDetail.textContent = 'Pre-render paused — not ready yet';
+      }
     } else if (latestRenderStatus.canPlay) {
       const eta = formatEta(latestRenderStatus.etaSeconds);
       renderDetail.textContent = `Ready to play · rendering continues${eta ? ` · ${eta}` : ''}`;
@@ -257,7 +262,8 @@ export function createTransportBar({
       renderDetail.textContent = `Building a safe playback lead${formatEta(latestRenderStatus.etaSeconds) ? ` · ${formatEta(latestRenderStatus.etaSeconds)}` : ''}`;
     }
 
-    setPlayDisabled(!latestRenderStatus.canPlay && latestPlaybackState !== PLAYBACK_STATES.PLAYING);
+    setPlayDisabled(latestRenderStatus.visible && !latestRenderStatus.canPlay &&
+      latestPlaybackState === PLAYBACK_STATES.IDLE);
     btnPlay.title = btnPlay.disabled
       ? 'Studio Local is rendering enough audio for uninterrupted playback'
       : 'Play / Pause (Spacebar)';

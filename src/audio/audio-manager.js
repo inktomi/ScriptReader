@@ -408,7 +408,7 @@ export class ScreenplayAudioManager {
   setVoiceAssignment(characterName, assignment) {
     this.characterAssignments.set(characterName.toUpperCase().trim(), assignment);
     this._ensureEngineVoices();
-    this.engine.dropPendingExcept([]);
+    this._dropPendingExcept([]);
     this._invalidateUnits();
     this.prewarm();
   }
@@ -420,7 +420,7 @@ export class ScreenplayAudioManager {
       this.characterAssignments.set(charKey.toUpperCase().trim(), assignment);
     }
     this._ensureEngineVoices();
-    this.engine.dropPendingExcept([]);
+    this._dropPendingExcept([]);
     this._invalidateUnits();
     this.prewarm();
   }
@@ -499,7 +499,7 @@ export class ScreenplayAudioManager {
 
   setNarratorVoice(voiceId) {
     if (this.narratorVoiceId === voiceId) return;
-    this.engine.dropPendingExcept([]);
+    this._dropPendingExcept([]);
     this.narratorVoiceId = voiceId;
     // Drop the cached cross-engine translation; it was derived from the old id.
     this._narratorByEngine = {};
@@ -561,6 +561,22 @@ export class ScreenplayAudioManager {
       }
     }
     return [...engines];
+  }
+
+  /**
+   * Discard queued lookahead across every engine in the cast.
+   *
+   * Under hybrid casting, narration and cast members are routed to secondary
+   * engines while Chatterbox or another engine stays active. Flushing only
+   * `this.engine` leaves the other engines synthesising abandoned lookahead
+   * after a seek, a stop, or a casting change.
+   */
+  _dropPendingExcept(keepKeys = []) {
+    for (const engine of this._requiredEngines()) {
+      if (typeof engine?.dropPendingExcept === 'function') {
+        engine.dropPendingExcept(keepKeys);
+      }
+    }
   }
 
   /**
@@ -1275,12 +1291,23 @@ export class ScreenplayAudioManager {
   }
 
   async _runStudioPrewarm(engine, unitGeneration) {
-    // Claim "not ready" before the first await. A prewarm that begins by
-    // awaiting engine loads would otherwise leave a stale canPlay standing for
-    // a microtask — long enough for a Play arriving in the same turn to be
-    // waved through onto audio that has not been rendered.
+    // Only claim "not ready" if we do not already have a safe playback runway
+    // from the current index forward. A fresh load has zero prepared units and
+    // correctly publishes canPlay: false before the first await, preventing
+    // Play from starting on unrendered audio. But after a seek or once audio is
+    // prepared, preserving a valid canPlay: true allows synchronous playback resumption.
+    const initialRunway = this._studioRunwayStatus(
+      this._studioRenderUnits().units,
+      STUDIO_UNKNOWN_RENDER_RATE,
+      false
+    );
     if (this._ownsStudioPrewarm(engine, unitGeneration)) {
-      this._setRenderStatus({ visible: true, active: true, canPlay: false, error: null });
+      this._setRenderStatus({
+        visible: true,
+        active: true,
+        canPlay: initialRunway.canPlay,
+        error: null
+      });
     }
 
     try {
@@ -1498,13 +1525,23 @@ export class ScreenplayAudioManager {
         0
       );
       // Fast persistent-cache hits should not be mistaken for synthesis speed.
-      if (wallSeconds >= 0.25) {
+      if (wallSeconds >= 0.25 && renderedAudioSeconds > 0) {
         measuredWallSeconds += wallSeconds;
         measuredAudioSeconds += renderedAudioSeconds || batchSeconds;
       }
-      for (const unit of batchUnits) this._preparedStudioKeys.add(unit.key);
-      completed += batchUnits.length;
-      completedSeconds += batchSeconds;
+      // Only mark units whose render request actually fulfilled as prepared.
+      // When a seek or cast change drops in-flight worker requests via
+      // `dropPendingExcept`, marking dropped units would permanently claim
+      // unrendered audio is ready, inflating the runway and causing playback stalls.
+      for (let i = 0; i < batchUnits.length; i++) {
+        const unit = batchUnits[i];
+        const result = results[i];
+        if (result && result.status === 'fulfilled') {
+          this._preparedStudioKeys.add(unit.key);
+          completed++;
+          completedSeconds += unit.estimatedDuration || 0;
+        }
+      }
       publish(completed < units.length);
     }
 
@@ -1514,7 +1551,7 @@ export class ScreenplayAudioManager {
         measuredWallSeconds = elapsed;
         measuredAudioSeconds = completedSeconds;
       }
-      canPlay = true;
+      canPlay = completed === units.length || canPlay;
       publish(false);
     }
   }
@@ -1528,7 +1565,15 @@ export class ScreenplayAudioManager {
       return;
     }
 
-    if (this.engineId === ENGINE_IDS.CHATTERBOX && !this.renderStatus.canPlay) {
+    // The runway check exists to protect a *cold* start, not a resume. A pause
+    // does not clear canPlay, but an in-between voice or cast edit does — and
+    // that is an ordinary thing to do while paused. Without this exception,
+    // the Play button reads as enabled while paused (transport-bar only force-
+    // disables in IDLE) yet clicking it lands right back on this gate and
+    // silently re-arms prewarm instead of resuming.
+    const isPausedResume = this.playbackState === PLAYBACK_STATES.PAUSED &&
+      !this.usingWebSpeechFallback && this.engine.isReady;
+    if (!isPausedResume && this.engineId === ENGINE_IDS.CHATTERBOX && !this.renderStatus.canPlay) {
       this.prewarm();
       return;
     }
@@ -1677,7 +1722,7 @@ export class ScreenplayAudioManager {
     this.webSpeechEngine.stop();
 
     if (!preservePending && !preservePrewarm) {
-      this.engine.dropPendingExcept([]);
+      this._dropPendingExcept([]);
     }
 
     this._stopTick();
@@ -1702,13 +1747,17 @@ export class ScreenplayAudioManager {
     const wasPlaying = this.playbackState === PLAYBACK_STATES.PLAYING ||
                        this.playbackState === PLAYBACK_STATES.BUFFERING;
 
-    this.stop({ preservePending: true });
+    // Preserve the prewarm state across seeks: repositioning within the same
+    // script does not invalidate already synthesized audio in the persistent
+    // store or the prepared-keys set. Resetting prewarm here would disarm
+    // `canPlay` and set percent to 0, which swallows the replay on line click or scrub.
+    this.stop({ preservePending: true, preservePrewarm: true });
     this.currentIndex = target;
     this.cursorLine = target;
     this.cursorUnit = 0;
 
     // Abandon lookahead the jump made irrelevant, keeping only what we now need.
-    this.engine.dropPendingExcept(this._upcomingKeys(target, 8));
+    this._dropPendingExcept(this._upcomingKeys(target, 8));
 
     this.emit('lineChange', {
       index: this.currentIndex,
