@@ -206,7 +206,7 @@ export class ChatterboxStudioEngine {
 
   resolveVoiceCacheId(profile) {
     const id = this.resolveVoiceId(profile);
-    return profile?.renderRevision ? `${id}@${profile.renderRevision}` : id;
+    return profile?.renderRevision ? `${id}@${profile.renderRevision}` : `${id}@v2`;
   }
 
   onProgress(callback) {

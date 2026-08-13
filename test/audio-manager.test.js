@@ -465,3 +465,40 @@ test('OpenAI preview failure never auditions a browser voice', async () => {
   assert.equal(events.at(-1).event, 'engineError');
   assert.equal(events.at(-1).data.code, 'network');
 });
+
+test('hybrid casting routes narration to Kokoro and character dialogue to Chatterbox', () => {
+  const manager = new ScreenplayAudioManager();
+  manager.setEngine(ENGINE_IDS.CHATTERBOX);
+  manager.hybridCasting = true;
+
+  const actionElement = { type: 'ACTION', character: 'NARRATOR', text: 'Rain lashes against the glass.' };
+  const dialogueElement = { type: 'DIALOGUE', character: 'VALENTINE', text: 'Kira, breach is done.' };
+
+  const actionEngine = manager._engineForElement(actionElement);
+  const dialogueEngine = manager._engineForElement(dialogueElement);
+
+  assert.equal(actionEngine.capabilities.id, ENGINE_IDS.KOKORO);
+  assert.equal(dialogueEngine.capabilities.id, ENGINE_IDS.CHATTERBOX);
+});
+
+test('short script safe runway calculates small cushion without forcing 5-minute requirement', () => {
+  const manager = new ScreenplayAudioManager();
+  manager.engineId = ENGINE_IDS.CHATTERBOX;
+
+  // Short script with 30 seconds total audio
+  const units = [
+    { key: 'u1', estimatedDuration: 10 },
+    { key: 'u2', estimatedDuration: 10 },
+    { key: 'u3', estimatedDuration: 10 }
+  ];
+
+  // At 0 render rate, required runway is total (30s)
+  const initial = manager._studioRunwayStatus(units, 0);
+  assert.equal(initial.requiredSeconds, 30);
+  assert.equal(initial.canPlay, false);
+
+  // Once first 10s unit is prepared and measured render rate is faster than real time (1.2x)
+  manager._preparedStudioKeys.add('u1');
+  const readyStatus = manager._studioRunwayStatus(units, 1.2);
+  assert.equal(readyStatus.canPlay, true);
+});

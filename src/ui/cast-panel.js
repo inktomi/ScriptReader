@@ -2,6 +2,7 @@ import { getIconSvg } from '../utils/icons.js';
 import { formatPitchOffset } from '../audio/performance-director.js';
 import { escapeHtml } from '../utils/escape-html.js';
 import { getVoiceById, getVoicesForEngine, makeDefaultAssignment } from '../audio/voice-catalog.js';
+import { ENGINE_IDS } from '../audio/engine-contract.js';
 
 export function createCastPanel({
   scriptStore,
@@ -11,27 +12,33 @@ export function createCastPanel({
   const panel = document.createElement('aside');
   panel.className = 'cast-sidebar';
 
+  let auditioningChar = null;
+  let auditionPhase = 'idle';
+  let auditionGen = 0;
+
   function render() {
     const script = scriptStore.currentScript;
     const characters = script ? script.characters : [];
-    // The sidebar has to offer the pool the active engine can speak with; the
-    // Kokoro and OpenAI id spaces are disjoint.
     const engineId = audioManager.engineId;
+    const isStudio = engineId === ENGINE_IDS.CHATTERBOX;
+    const isHybrid = isStudio && audioManager.hybridCasting;
+    const narratorEngineId = isHybrid ? ENGINE_IDS.KOKORO : engineId;
     const enginePool = getVoicesForEngine(engineId);
-    const storedNarratorVoiceId = scriptStore.getNarratorVoice(engineId);
-    const narratorProfile = enginePool.some(v => v.id === storedNarratorVoiceId)
-      ? getVoiceById(storedNarratorVoiceId, engineId)
-      : audioManager.getVoiceProfileForCharacter('NARRATOR');
+    const narratorPool = getVoicesForEngine(narratorEngineId);
+    const storedNarratorVoiceId = scriptStore.getNarratorVoice(narratorEngineId);
+    const narratorProfile = narratorPool.some(v => v.id === storedNarratorVoiceId)
+      ? getVoiceById(storedNarratorVoiceId, narratorEngineId)
+      : audioManager.getVoiceProfileForCharacter('NARRATOR', narratorEngineId);
     const narratorVoiceId = narratorProfile.id;
     const voiceIdOf = (assignment) =>
       (assignment.voiceIds && assignment.voiceIds[engineId]) || assignment.voiceId;
 
     // Build options for voice select
-    const voiceOptionsHtml = (selectedId) => {
+    const voiceOptionsHtml = (selectedId, pool = enginePool) => {
       // Group voices by sex / category
-      const femaleVoices = enginePool.filter(v => v.sex === 'Female');
-      const maleVoices = enginePool.filter(v => v.sex === 'Male');
-      const neutralVoices = enginePool.filter(v => v.sex === 'Neutral');
+      const femaleVoices = pool.filter(v => v.sex === 'Female');
+      const maleVoices = pool.filter(v => v.sex === 'Male');
+      const neutralVoices = pool.filter(v => v.sex === 'Neutral');
 
       const buildGroup = (label, voices) => voices.length === 0 ? '' : `
         <optgroup label="${label}">
@@ -49,28 +56,27 @@ export function createCastPanel({
     };
 
     // Calculate total dialogue lines
-    const totalDialogueLines = characters.reduce((sum, c) => sum + c.lineCount, 0) || 1;
+    const totalDialogueLines = characters.reduce((acc, c) => acc + c.lineCount, 0) || 1;
 
     panel.innerHTML = `
-      <div class="sidebar-header">
-        <div class="sidebar-title">
-          ${getIconSvg('users', 18)}
-          <span>Cast Voices (${characters.length + 1})</span>
+      <div class="cast-panel-header">
+        <div class="cast-panel-title">
+          <div style="display: flex; align-items: center; gap: 8px;">
+            ${getIconSvg('users', 18)}
+            <h2>Voice Cast</h2>
+          </div>
+          <button id="btn-cast-modal-open" class="btn btn-secondary btn-sm btn-studio-glow" title="Open Cast Studio">
+            ${getIconSvg('sparkles', 14)} Cast Studio
+          </button>
         </div>
-        <div style="display: flex; align-items: center; gap: 6px;">
-          <button id="btn-cast-modal-open" class="btn btn-primary" style="padding: 4px 10px; font-size: 0.75rem;" title="Open full Voice Studio modal">
-            ${getIconSvg('sparkles', 13)}
-            <span>Studio</span>
-          </button>
-          <button id="btn-autocast" class="btn btn-secondary" style="padding: 4px 8px; font-size: 0.75rem;" title="Auto-assign voices based on character traits">
-            ${getIconSvg('refresh', 13)}
-          </button>
+        <div class="cast-panel-desc">
+          Assign voices and fine-tune delivery for each character.
         </div>
       </div>
 
-      <div class="cast-scroll-area">
+      <div class="cast-list">
         <!-- NARRATOR CARD -->
-        <div class="character-card" style="border-color: rgba(245, 158, 11, 0.4); background: rgba(245, 158, 11, 0.04);">
+        <div class="character-card narrator-card ${auditioningChar === 'NARRATOR' ? 'is-previewing' : ''}">
           <div class="char-header">
             <div class="char-avatar" style="background: linear-gradient(135deg, #F59E0B, #B45309);">
               ${getIconSvg('mic', 16)}
@@ -78,7 +84,7 @@ export function createCastPanel({
             <div class="char-meta">
               <div class="char-name" style="color: #F59E0B;">THE NARRATOR</div>
               <div class="char-badges">
-                <span class="badge-lines">Scene Headings & Actions</span>
+                <span class="badge-lines">${isHybrid ? 'Kokoro Neural' : 'Scene Headings & Actions'}</span>
                 <span class="badge-voice">${escapeHtml(narratorProfile.name)}</span>
               </div>
             </div>
@@ -87,10 +93,18 @@ export function createCastPanel({
           <div class="char-controls">
             <div class="voice-select-row">
               <select class="voice-select narrator-voice-select">
-                ${voiceOptionsHtml(narratorVoiceId)}
+                ${voiceOptionsHtml(narratorVoiceId, narratorPool)}
               </select>
-              <button class="btn btn-secondary btn-test-narrator" style="padding: 6px 10px;" title="Test Narrator Voice">
-                ${getIconSvg('volume', 14)}
+              <button class="btn btn-secondary btn-test-narrator ${auditioningChar === 'NARRATOR' ? (auditionPhase === 'playing' ? 'btn-active' : 'is-loading') : ''}"
+                      style="padding: 6px 10px;"
+                      title="${auditioningChar === 'NARRATOR' ? (auditionPhase === 'rendering' ? 'Synthesizing…' : 'Stop') : 'Test Narrator Voice'}">
+                ${auditioningChar === 'NARRATOR'
+                  ? (auditionPhase === 'preparing'
+                      ? getIconSvg('replay', 14, 'spin-icon')
+                      : (auditionPhase === 'rendering'
+                          ? getIconSvg('sparkles', 14, 'pulse-icon')
+                          : getIconSvg('stop', 14)))
+                  : getIconSvg('volume', 14)}
               </button>
             </div>
           </div>
@@ -102,10 +116,12 @@ export function createCastPanel({
         </div>
 
         ${characters.map(char => {
-          const assignment = scriptStore.castAssignments.get(char.name.toUpperCase().trim())
+          const charKey = char.name.toUpperCase().trim();
+          const assignment = scriptStore.castAssignments.get(charKey)
             || makeDefaultAssignment();
           const voiceProfile = getVoiceById(voiceIdOf(assignment), engineId);
           const percent = Math.round((char.lineCount / totalDialogueLines) * 100);
+          const isPlaying = auditioningChar === charKey;
 
           // The character name comes from the uploaded script, so it is escaped
           // everywhere it appears — including in `data-char`, where a bare quote
@@ -116,7 +132,7 @@ export function createCastPanel({
           const charAttr = escapeHtml(char.name);
 
           return `
-            <div class="character-card" data-char="${charAttr}">
+            <div class="character-card ${isPlaying ? 'is-previewing' : ''}" data-char="${charAttr}">
               <div class="char-header">
                 <div class="char-avatar" style="background: ${voiceProfile.avatarBg};">
                   ${escapeHtml(char.name.substring(0, 2).toUpperCase())}
@@ -135,8 +151,17 @@ export function createCastPanel({
                   <select class="voice-select char-voice-select" data-char="${charAttr}">
                     ${voiceOptionsHtml(voiceIdOf(assignment))}
                   </select>
-                  <button class="btn btn-secondary btn-test-voice" data-char="${charAttr}" style="padding: 6px 10px;" title="Test Assigned Voice">
-                    ${getIconSvg('volume', 14)}
+                  <button class="btn btn-secondary btn-test-voice ${isPlaying ? (auditionPhase === 'playing' ? 'btn-active' : 'is-loading') : ''}"
+                          data-char="${charAttr}"
+                          style="padding: 6px 10px;"
+                          title="${isPlaying ? (auditionPhase === 'rendering' ? 'Synthesizing…' : 'Stop') : 'Test Assigned Voice'}">
+                    ${isPlaying
+                      ? (auditionPhase === 'preparing'
+                          ? getIconSvg('replay', 14, 'spin-icon')
+                          : (auditionPhase === 'rendering'
+                              ? getIconSvg('sparkles', 14, 'pulse-icon')
+                              : getIconSvg('stop', 14)))
+                      : getIconSvg('volume', 14)}
                   </button>
                 </div>
 
@@ -169,7 +194,7 @@ export function createCastPanel({
     const narratorSelect = panel.querySelector('.narrator-voice-select');
     if (narratorSelect) {
       narratorSelect.addEventListener('change', (e) => {
-        scriptStore.updateNarratorVoice(e.target.value, engineId);
+        scriptStore.updateNarratorVoice(e.target.value, narratorEngineId);
         audioManager.setNarratorVoice(e.target.value);
       });
     }
@@ -177,11 +202,45 @@ export function createCastPanel({
     // Narrator test button
     const narratorTestBtn = panel.querySelector('.btn-test-narrator');
     if (narratorTestBtn) {
-      narratorTestBtn.addEventListener('click', () => {
-        audioManager.previewVoice(
-          narratorVoiceId,
-          "EXT. OMNICORP SPIRE - NIGHT. Torrential rain lashes against the glass as the city sleeps below."
-        );
+      narratorTestBtn.addEventListener('click', async () => {
+        if (auditioningChar === 'NARRATOR') {
+          auditionGen++;
+          audioManager.stop({ preservePrewarm: true });
+          auditioningChar = null;
+          auditionPhase = 'idle';
+          render();
+          return;
+        }
+
+        const gen = ++auditionGen;
+        auditioningChar = 'NARRATOR';
+        auditionPhase = 'rendering';
+        render();
+
+        const onStateChange = (phase) => {
+          if (gen !== auditionGen) return;
+          auditionPhase = phase;
+          if (phase === 'idle' || phase === 'error') {
+            auditioningChar = null;
+          }
+          render();
+        };
+
+        try {
+          await audioManager.previewVoice(
+            narratorVoiceId,
+            "EXT. OMNICORP SPIRE - NIGHT. Torrential rain lashes against the glass as the city sleeps below.",
+            0, 1.0, '', narratorEngineId, onStateChange
+          );
+        } catch (e) {
+          console.warn('Narrator test error:', e);
+        } finally {
+          if (gen === auditionGen) {
+            auditioningChar = null;
+            auditionPhase = 'idle';
+            render();
+          }
+        }
       });
     }
 
@@ -189,29 +248,70 @@ export function createCastPanel({
     panel.querySelectorAll('.char-voice-select').forEach(select => {
       select.addEventListener('change', (e) => {
         const charName = select.dataset.char;
+        const charKey = charName.toUpperCase().trim();
         // Recorded against the active engine so the character's casting on the
         // other engine is not overwritten by a choice made here.
         scriptStore.updateCharacterVoice(charName, { voiceId: e.target.value, engineId });
-        audioManager.setVoiceAssignment(charName, scriptStore.castAssignments.get(charName.toUpperCase().trim()));
+        const assignment = scriptStore.castAssignments.get(charKey);
+        audioManager.setVoiceAssignment(charName, assignment);
+        const charObj = characters.find(c => c.name.toUpperCase().trim() === charKey);
+        audioManager.prewarmAudition?.(e.target.value, charObj ? charObj.sampleLine : null, assignment, engineId);
         render(); // update avatar & badge
       });
     });
 
     // Character test buttons
     panel.querySelectorAll('.btn-test-voice').forEach(btn => {
-      btn.addEventListener('click', () => {
+      btn.addEventListener('click', async () => {
         const charName = btn.dataset.char;
-        const assignment = scriptStore.castAssignments.get(charName.toUpperCase().trim());
-        const charObj = characters.find(c => c.name.toUpperCase().trim() === charName.toUpperCase().trim());
+        const charKey = charName.toUpperCase().trim();
+
+        if (auditioningChar === charKey) {
+          auditionGen++;
+          audioManager.stop({ preservePrewarm: true });
+          auditioningChar = null;
+          auditionPhase = 'idle';
+          render();
+          return;
+        }
+
+        const gen = ++auditionGen;
+        auditioningChar = charKey;
+        auditionPhase = 'rendering';
+        render();
+
+        const assignment = scriptStore.castAssignments.get(charKey);
+        const charObj = characters.find(c => c.name.toUpperCase().trim() === charKey);
         const sampleText = charObj ? charObj.sampleLine : null;
         
-        audioManager.previewVoice(
-          voiceIdOf(assignment),
-          sampleText,
-          assignment.pitchOffset || 0,
-          assignment.speedMultiplier || 1.0,
-          assignment.direction || ''
-        );
+        const onStateChange = (phase) => {
+          if (gen !== auditionGen) return;
+          auditionPhase = phase;
+          if (phase === 'idle' || phase === 'error') {
+            auditioningChar = null;
+          }
+          render();
+        };
+
+        try {
+          await audioManager.previewVoice(
+            voiceIdOf(assignment),
+            sampleText,
+            assignment.pitchOffset || 0,
+            assignment.speedMultiplier || 1.0,
+            assignment.direction || '',
+            null,
+            onStateChange
+          );
+        } catch (e) {
+          console.warn('Character test error:', e);
+        } finally {
+          if (gen === auditionGen) {
+            auditioningChar = null;
+            auditionPhase = 'idle';
+            render();
+          }
+        }
       });
     });
 

@@ -96,6 +96,7 @@ export class ScreenplayAudioManager {
 
     const saved = loadEngineSettings();
     this.engineId = this._engines.has(saved.engineId) ? saved.engineId : ENGINE_IDS.KOKORO;
+    this.hybridCasting = saved.hybridCasting !== undefined ? !!saved.hybridCasting : true;
     this.engine = this._engines.get(this.engineId);
 
     this._progressListeners = new Set();
@@ -391,6 +392,18 @@ export class ScreenplayAudioManager {
     this.prewarm();
   }
 
+  setCastAssignments(assignmentsMap) {
+    if (!assignmentsMap) return;
+    const entries = assignmentsMap instanceof Map ? assignmentsMap.entries() : Object.entries(assignmentsMap);
+    for (const [charKey, assignment] of entries) {
+      this.characterAssignments.set(charKey.toUpperCase().trim(), assignment);
+    }
+    this._ensureEngineVoices();
+    this.engine.dropPendingExcept([]);
+    this._invalidateUnits();
+    this.prewarm();
+  }
+
   /**
    * Give every character a voice the *active* engine can actually speak with.
    *
@@ -409,15 +422,16 @@ export class ScreenplayAudioManager {
    * choice is stable across renders, and reserved before the cast is seeded so no
    * character is handed the narrator's voice.
    */
-  _narratorVoiceForEngine() {
+  _narratorVoiceForEngine(targetEngineId = this.engineId) {
+    const engineId = targetEngineId || this.engineId;
     const saved = this.narratorVoiceId || DEFAULT_NARRATOR_VOICE_ID;
-    if (getVoicesForEngine(this.engineId).some(v => v.id === saved)) return saved;
+    if (getVoicesForEngine(engineId).some(v => v.id === saved)) return saved;
 
     if (!this._narratorByEngine) this._narratorByEngine = {};
-    if (!this._narratorByEngine[this.engineId]) {
-      this._narratorByEngine[this.engineId] = mapVoiceAcrossEngines(saved, this.engineId);
+    if (!this._narratorByEngine[engineId]) {
+      this._narratorByEngine[engineId] = mapVoiceAcrossEngines(saved, engineId);
     }
-    return this._narratorByEngine[this.engineId];
+    return this._narratorByEngine[engineId];
   }
 
   _ensureEngineVoices() {
@@ -472,6 +486,35 @@ export class ScreenplayAudioManager {
     this.prewarm();
   }
 
+  setHybridCasting(enabled) {
+    this.hybridCasting = !!enabled;
+    saveEngineSettings({ hybridCasting: this.hybridCasting });
+    this._invalidateUnits();
+    this.prewarm();
+  }
+
+  _engineForElement(element) {
+    if (!element) return this.engine;
+    if (this.engineId === ENGINE_IDS.CHATTERBOX && this.hybridCasting) {
+      if (element.type !== 'DIALOGUE' || this._isNarratorName(element.character)) {
+        return this._engines.get(ENGINE_IDS.KOKORO) || this.engine;
+      }
+      const cleanName = (element.character || '').toUpperCase().trim();
+      const assignment = this.characterAssignments.get(cleanName);
+      if (assignment?.engineId && this._engines.has(assignment.engineId)) {
+        return this._engines.get(assignment.engineId);
+      }
+    }
+    return this.engine;
+  }
+
+  _engineForUnit(unit) {
+    if (unit?.engineId && this._engines.has(unit.engineId)) {
+      return this._engines.get(unit.engineId);
+    }
+    return this.engine;
+  }
+
   setMasterSpeed(speed) {
     const next = Math.min(2.0, Math.max(0.5, speed));
     if (next === this.masterSpeed) return;
@@ -493,10 +536,11 @@ export class ScreenplayAudioManager {
     this.emit('volumeChange', { volume: this.volume, isMuted: this.isMuted });
   }
 
-  getVoiceProfileForCharacter(characterName) {
+  getVoiceProfileForCharacter(characterName, targetEngineId = this.engineId) {
+    const engineId = targetEngineId || this.engineId;
     const cleanName = (characterName || '').toUpperCase().trim();
     if (this._isNarratorName(cleanName)) {
-      return getVoiceById(this._narratorVoiceForEngine(), this.engineId);
+      return getVoiceById(this._narratorVoiceForEngine(engineId), engineId);
     }
 
     const assignment = this.characterAssignments.get(cleanName);
@@ -504,14 +548,14 @@ export class ScreenplayAudioManager {
       // Assignments carry one voice per engine, so switching engines keeps each
       // character's casting on both sides rather than overwriting one with the
       // other. `voiceId` is the legacy single-engine field.
-      const perEngine = assignment.voiceIds && assignment.voiceIds[this.engineId];
-      const chosen = perEngine || assignment.voiceId;
-      if (chosen) return getVoiceById(chosen, this.engineId);
+      const perEngine = assignment.voiceIds && assignment.voiceIds[engineId];
+      const chosen = perEngine || (engineId === ENGINE_IDS.KOKORO ? assignment.voiceId : '');
+      if (chosen) return getVoiceById(chosen, engineId);
     }
     // Reached whenever a line's speaker has no assignment — a character the
     // parser found late, or a cast that failed to load. It used to hand back the
     // worst-graded voice in the set.
-    return getVoiceById('', this.engineId);
+    return getVoiceById('', engineId);
   }
 
   getCharacterSettings(characterName) {
@@ -618,16 +662,17 @@ export class ScreenplayAudioManager {
     if (cached) return cached;
 
     const element = this.scriptElements[lineIndex];
+    const engine = this._engineForElement(element);
     const units = buildLineUnits({
       element,
       prevElement: lineIndex > 0 ? this.scriptElements[lineIndex - 1] : null,
       lineIndex,
-      voiceProfile: this.getVoiceProfileForCharacter(element.character),
+      voiceProfile: this.getVoiceProfileForCharacter(element.character, engine.capabilities.id),
       tuning: this.getCharacterSettings(element.character),
       pan: this.getPanForCharacter(element.character),
       masterSpeed: this.masterSpeed,
       pacing: this.pacingMode,
-      engine: this.engine
+      engine
     });
 
     this.unitCache.set(lineIndex, units);
@@ -659,7 +704,7 @@ export class ScreenplayAudioManager {
   }
 
   _clusterReady(units) {
-    return units.every(unit => !!this.engine.getCached(unit.key));
+    return units.every(unit => !!this._engineForUnit(unit).getCached(unit.key));
   }
 
   /** Unit at the scheduling cursor, skipping over lines with nothing to say. */
@@ -716,11 +761,12 @@ export class ScreenplayAudioManager {
       }
 
       const u = units[unit];
-      const cached = this.engine.getCached(u.key);
+      const engine = this._engineForUnit(u);
+      const cached = engine.getCached(u.key);
       if (cached) {
         seconds += cached.duration / (u.playbackRate || 1);
       } else {
-        this.engine.request(u, count);
+        engine.request(u, count);
         seconds += u.estimatedDuration;
       }
 
@@ -751,7 +797,8 @@ export class ScreenplayAudioManager {
       const first = units[unit];
       for (; unit < units.length; unit++) {
         const u = units[unit];
-        const cached = this.engine.getCached(u.key);
+        const engine = this._engineForUnit(u);
+        const cached = engine.getCached(u.key);
         if (!cached) return { seconds: seconds + clusterSeconds, hitEnd: false };
         lineSeconds += cached.duration / (u.playbackRate || 1);
         lineSeconds += Math.max(0, u.leadPause || 0);
@@ -808,7 +855,8 @@ export class ScreenplayAudioManager {
         this.clusterRemaining = cluster.length;
       }
 
-      const buffer = this.engine.getCached(unit.key);
+      const engine = this._engineForUnit(unit);
+      const buffer = engine.getCached(unit.key);
       if (!buffer) break;
 
       if (!this.primed) {
@@ -1072,6 +1120,10 @@ export class ScreenplayAudioManager {
         });
       }
       return false;
+    } finally {
+      if (this._studioPrewarmTask && this._studioPrewarmTask.unitGeneration === unitGeneration) {
+        this._studioPrewarmTask = null;
+      }
     }
   }
 
@@ -1121,7 +1173,9 @@ export class ScreenplayAudioManager {
     const units = [];
     const appendRange = (start, end) => {
       for (let line = start; line < end && units.length <= STUDIO_PREWARM_UNITS; line++) {
-        units.push(...(this._unitsForLine(line) || []));
+        const lineUnits = (this._unitsForLine(line) || [])
+          .filter(u => !u.engineId || u.engineId === ENGINE_IDS.CHATTERBOX);
+        units.push(...lineUnits);
       }
     };
     // What the listener will hear next is rendered first. Wrapping around later
@@ -1135,6 +1189,9 @@ export class ScreenplayAudioManager {
   }
 
   _studioRunwayStatus(units, renderRate, previousCanPlay = false) {
+    if (!units || units.length === 0) {
+      return { totalSeconds: 0, contiguousSeconds: 0, requiredSeconds: 0, canPlay: true };
+    }
     const totalSeconds = units.reduce((sum, unit) => sum + (unit.estimatedDuration || 0), 0);
     let contiguousSeconds = 0;
     for (const unit of units) {
@@ -1144,15 +1201,19 @@ export class ScreenplayAudioManager {
     const effectiveRate = Math.max(0, renderRate || STUDIO_UNKNOWN_RENDER_RATE) /
       Math.max(0.5, this.masterSpeed);
     const deficit = Math.max(0, 1 - effectiveRate * STUDIO_RENDER_SAFETY_FACTOR);
+    const minCushion = Math.min(10, totalSeconds);
     const requiredSeconds = Math.min(
       totalSeconds,
-      Math.max(Math.min(STUDIO_MIN_RUNWAY_SECONDS, totalSeconds), totalSeconds * deficit)
+      Math.max(minCushion, Math.min(STUDIO_MIN_RUNWAY_SECONDS, totalSeconds * deficit))
     );
+    const isSafeRunway = contiguousSeconds >= requiredSeconds ||
+      (contiguousSeconds >= minCushion && effectiveRate >= 1.0);
+
     return {
       totalSeconds,
       contiguousSeconds,
       requiredSeconds,
-      canPlay: previousCanPlay || contiguousSeconds >= requiredSeconds
+      canPlay: previousCanPlay || isSafeRunway
     };
   }
 
@@ -1214,7 +1275,11 @@ export class ScreenplayAudioManager {
         })
       );
       if (!this._ownsStudioPrewarm(engine, unitGeneration)) return;
-      const failure = results.find(result => result.status === 'rejected');
+      const failure = results.find(result => {
+        if (result.status !== 'rejected') return false;
+        const msg = String(result.reason?.message || result.reason || '');
+        return !msg.includes('dropped') && !msg.includes('Abort');
+      });
       if (failure) throw failure.reason;
 
       const wallSeconds = (Date.now() - batchStartedAt) / 1000;
@@ -1476,35 +1541,78 @@ export class ScreenplayAudioManager {
   // ------------------------------------------------------------------ previews
 
   /**
+   * Eagerly pre-render audition audio for a character or narrator in the background
+   * so clicking "Listen" plays immediately from local cache without waiting.
+   */
+  async prewarmAudition(voiceId, sampleText = null, tuning = {}, targetEngineId = null) {
+    if (!voiceId) return null;
+    const engineId = targetEngineId || this.engineId;
+    const engine = (!targetEngineId || targetEngineId === this.engineId)
+      ? this.engine
+      : (this._engines.get(targetEngineId) || this.engine);
+
+    if (!engine || !engine.isReady || !engine.request) return null;
+    const profile = getVoiceById(voiceId, engineId);
+    if (!profile) return null;
+    const text = sampleText || profile.sampleLine;
+
+    try {
+      const units = buildPreviewUnits({
+        text,
+        voiceProfile: profile,
+        tuning: {
+          pitchOffset: tuning.pitchOffset || 0,
+          speedMultiplier: tuning.speedMultiplier || 1.0,
+          direction: tuning.direction || ''
+        },
+        masterSpeed: this.masterSpeed,
+        engine
+      });
+
+      return Promise.all(units.map((unit, i) => engine.request(unit, 900 + i))).catch(err => {
+        console.warn('Audition prewarm notice:', err);
+      });
+    } catch (err) {
+      console.warn('Audition prewarm build failed:', err);
+      return null;
+    }
+  }
+
+  /**
    * Audition a voice in the Cast Studio. Resolves when playback actually ends,
    * so the calling UI can flip its button back at the right moment.
    */
-  async previewVoice(voiceId, sampleText = null, pitchOffset = 0, speedMultiplier = 1.0, direction = '') {
+  async previewVoice(voiceId, sampleText = null, pitchOffset = 0, speedMultiplier = 1.0, direction = '', targetEngineId = null, onStateChange = null) {
     this.stop({ preservePrewarm: true });
 
+    const engineId = targetEngineId || this.engineId;
+    const engine = (!targetEngineId || targetEngineId === this.engineId)
+      ? this.engine
+      : (this._engines.get(targetEngineId) || this.engine);
     const token = ++this.previewToken;
-    // Auditions have to resolve against the pool the *active* engine can speak
-    // with, or a cloud voice id would fall through to a Kokoro profile.
-    const profile = getVoiceById(voiceId, this.engineId);
+    // Auditions have to resolve against the pool the chosen engine can speak with
+    const profile = getVoiceById(voiceId, engineId);
     const text = sampleText || profile.sampleLine;
 
     await this._ensureAudio();
 
     let initError = null;
-    if (!this.engine.isReady) {
+    if (!engine.isReady) {
+      onStateChange?.('preparing');
       try {
-        await this.engine.init();
+        await engine.init();
       } catch (err) {
         initError = err;
-        console.warn(`Engine ${this.engineId} preview init failed:`, err);
+        console.warn(`Engine ${engineId} preview init failed:`, err);
       }
     }
     if (token !== this.previewToken) return;
 
-    if (!this.engine.isReady && this.engine.capabilities.onUnavailable === 'error') {
+    if (!engine.isReady && engine.capabilities.onUnavailable === 'error') {
       if (this.visualizer) this.visualizer.setSpeaking(false);
+      onStateChange?.('error');
       this.emit('engineError', {
-        engineId: this.engineId,
+        engineId,
         code: (initError && initError.code) || 'preview_unavailable',
         message: (initError && initError.message)
           || 'The selected voice could not be prepared for audition.'
@@ -1512,26 +1620,28 @@ export class ScreenplayAudioManager {
       return;
     }
 
-    if (this.visualizer) {
-      this.visualizer.setSpeaking(true, { badgeColor: '#F59E0B' });
-    }
-
-    if (this.engine.isReady && this.scheduler) {
+    if (engine.isReady && this.scheduler) {
       try {
+        onStateChange?.('rendering');
         const units = buildPreviewUnits({
           text,
           voiceProfile: profile,
           tuning: { pitchOffset, speedMultiplier, direction },
           masterSpeed: this.masterSpeed,
-          engine: this.engine
+          engine
         });
 
         // Requested together rather than one after the next: on a cloud engine a
         // serial loop would cost one full round trip per chunk, turning a
         // two-sentence audition into several seconds of silence. Playback order
         // is unaffected — the scheduler places them by index afterwards.
-        const buffers = await Promise.all(units.map((unit, i) => this.engine.request(unit, i)));
+        const buffers = await Promise.all(units.map((unit, i) => engine.request(unit, i)));
         if (token !== this.previewToken) return;
+
+        if (this.visualizer) {
+          this.visualizer.setSpeaking(true, { badgeColor: '#F59E0B' });
+        }
+        onStateChange?.('playing');
 
         this.scheduler.resetTimeline(this.scheduler.currentTime + 0.06);
         let endAt = this.scheduler.currentTime;
@@ -1543,15 +1653,17 @@ export class ScreenplayAudioManager {
         if (token === this.previewToken && this.visualizer) {
           this.visualizer.setSpeaking(false);
         }
+        onStateChange?.('idle');
         return;
       } catch (err) {
-        console.warn(`Engine ${this.engineId} preview failed:`, err);
+        console.warn(`Engine ${engineId} preview failed:`, err);
         if (token !== this.previewToken) return;
-        this.engine.dropPendingExcept([]);
-        if (this.engine.capabilities.onUnavailable === 'error') {
-          if (this.visualizer) this.visualizer.setSpeaking(false);
+        engine.dropPendingExcept([]);
+        if (this.visualizer) this.visualizer.setSpeaking(false);
+        onStateChange?.('error');
+        if (engine.capabilities.onUnavailable === 'error') {
           this.emit('engineError', {
-            engineId: this.engineId,
+            engineId,
             code: err.code || 'preview_failed',
             message: err.message || 'The selected voice could not be auditioned.'
           });
@@ -1559,6 +1671,11 @@ export class ScreenplayAudioManager {
         }
       }
     }
+
+    if (this.visualizer) {
+      this.visualizer.setSpeaking(true, { badgeColor: '#F59E0B' });
+    }
+    onStateChange?.('playing');
 
     await new Promise((resolve) => {
       this._previewResolve = resolve;
@@ -1568,14 +1685,18 @@ export class ScreenplayAudioManager {
         nuance: { cleanSpeech: text },
         speedMultiplier: speedMultiplier * this.masterSpeed,
         onEnd: () => {
-          this._previewResolve = null;
-          if (this.visualizer) this.visualizer.setSpeaking(false);
-          resolve();
+          if (token === this.previewToken) {
+            if (this.visualizer) this.visualizer.setSpeaking(false);
+            onStateChange?.('idle');
+            resolve();
+          }
         },
         onError: () => {
-          this._previewResolve = null;
-          if (this.visualizer) this.visualizer.setSpeaking(false);
-          resolve();
+          if (token === this.previewToken) {
+            if (this.visualizer) this.visualizer.setSpeaking(false);
+            onStateChange?.('idle');
+            resolve();
+          }
         }
       });
     });

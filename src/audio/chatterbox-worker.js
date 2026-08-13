@@ -307,12 +307,14 @@ async function encodeSpeaker(task) {
 async function generate(task) {
   if (!model || !processor) throw new Error('Studio Local is not installed yet.');
   await encodeSpeaker(task);
-  const inputs = await processor._call(task.payload.text);
+  const text = task.payload.text || '';
+  const inputs = await processor._call(text);
+
   const waveform = await model.generate({
     ...inputs,
     ...speakers.get(task.payload.voiceId),
     exaggeration: task.payload.exaggeration ?? 0.5,
-    max_new_tokens: 256
+    max_new_tokens: task.payload.maxNewTokens || 512
   });
   const samples = waveform.data instanceof Float32Array
     ? waveform.data

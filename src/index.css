@@ -2793,3 +2793,25 @@ button:disabled {
     transition-duration: 0.01ms !important;
   }
 }
+
+@keyframes spin-rotate {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+
+@keyframes pulse-glow {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50% { opacity: 0.55; transform: scale(0.92); }
+}
+
+.spin-icon {
+  animation: spin-rotate 1s linear infinite;
+  display: inline-block;
+  vertical-align: middle;
+}
+
+.pulse-icon {
+  animation: pulse-glow 1.4s ease-in-out infinite;
+  display: inline-block;
+  vertical-align: middle;
+}

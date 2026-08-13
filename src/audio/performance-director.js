@@ -102,9 +102,9 @@ export function formatPitchOffset(sliderValue) {
 export function chunkSpeech(text, maxChars = MAX_CHUNK_CHARS) {
   const trimmed = (text || '').trim();
   if (!trimmed) return [];
-  if (trimmed.length <= maxChars) return [trimmed];
 
   const sentences = trimmed.match(/[^.!?]+[.!?]+["')\]]*\s*|[^.!?]+$/g) || [trimmed];
+  if (sentences.length <= 1 && trimmed.length <= maxChars) return [trimmed];
 
   const chunks = [];
   let current = '';
@@ -153,7 +153,7 @@ export function chunkSpeech(text, maxChars = MAX_CHUNK_CHARS) {
     }
     current = current ? `${current} ${piece}` : piece;
 
-    if (current.length >= maxChars - MIN_CHUNK_CHARS) {
+    if (maxChars < 500 || current.length >= maxChars - MIN_CHUNK_CHARS) {
       flush();
     }
   }
