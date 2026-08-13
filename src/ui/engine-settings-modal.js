@@ -167,9 +167,23 @@ export function createEngineSettingsModal({ audioManager, onClose, onEngineChang
                 <small class="studio-install-stage" aria-live="polite"></small>
               </div>
               <p>Use only recordings you own or have permission to clone.</p>
+              <label style="display: flex; gap: 10px; align-items: flex-start; cursor: pointer;
+                            padding: 10px 12px; border-radius: 8px; background: var(--bg-surface-elevated, rgba(255,255,255,0.04));
+                            border: 1px solid var(--border-color, rgba(255,255,255,0.12)); margin-top: 4px;">
+                <input type="checkbox" id="hybrid-casting-toggle" ${audioManager.hybridCasting ? 'checked' : ''}
+                       style="accent-color: var(--brass); margin-top: 2px;">
+                <div style="display: flex; flex-direction: column; gap: 2px;">
+                  <span style="font-size: 0.82rem; font-weight: 600; color: var(--text-primary);">
+                    Hybrid Casting (Instant Narrator & Faster Playback)
+                  </span>
+                  <span style="font-size: 0.75rem; color: var(--text-secondary); line-height: 1.4;">
+                    Uses high-speed Kokoro for the Narrator and action lines while custom voice-cloned characters speak with Chatterbox.
+                  </span>
+                </div>
+              </label>
               ${studioStatus.fileCount > 0 && !installingStudio ? `
                 <button id="btn-studio-remove" class="btn btn-secondary" type="button"
-                        style="align-self:flex-start; font-size: 0.72rem; padding: 5px 10px;">
+                        style="align-self:flex-start; font-size: 0.72rem; padding: 5px 10px; margin-top: 6px;">
                   Remove Studio Local
                 </button>
               ` : ''}
@@ -401,6 +415,13 @@ export function createEngineSettingsModal({ audioManager, onClose, onEngineChang
         await clearChatterboxCache();
         studioStatus = await audioManager.getChatterboxCacheStatus();
         render();
+      });
+    }
+
+    const hybridToggle = modal.querySelector('#hybrid-casting-toggle');
+    if (hybridToggle) {
+      hybridToggle.addEventListener('change', (e) => {
+        audioManager.setHybridCasting(e.target.checked);
       });
     }
 
