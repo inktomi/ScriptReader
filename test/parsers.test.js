@@ -92,6 +92,94 @@ test('a dual-dialogue cue stays continuous across a parenthetical', () => {
   assert.equal(bob[1].overlap.mode, 'continuation');
 });
 
+// A cue with two extensions is ordinary — and a PDF is persisted by round-tripping
+// through Fountain, so every `(O.S.) (CONT'D)` in an imported script came back as
+// narrator-read action on reload, quietly rewriting the cast list.
+test('a character cue carrying two extensions is still a cue', () => {
+  const parsed = parseFountainScript('BARRETT (O.S.) (CONT’D)\nPut her with the rest.');
+  assert.equal(parsed.elements.length, 1);
+  assert.equal(parsed.elements[0].type, 'DIALOGUE');
+  assert.equal(parsed.elements[0].character, 'BARRETT');
+});
+
+test('a joint Fountain cue speaks as both characters at once', () => {
+  const parsed = parseFountainScript([
+    'CICI', 'Where are we?', '',
+    'MAYA', 'No idea.', '',
+    'CICI AND MAYA', 'Holy shit.'
+  ].join('\n'));
+
+  assert.deepEqual(parsed.characters.map(character => character.name), ['CICI', 'MAYA']);
+  const shared = parsed.elements.filter(element => element.text === 'Holy shit.');
+  assert.deepEqual(shared.map(element => element.character), ['CICI', 'MAYA']);
+  assert.equal(shared[0].overlap, null);
+  assert.equal(shared[1].overlap.mode, 'simultaneous');
+  assert.equal(shared[1].overlap.source, 'shared-cue');
+});
+
+// The safety rule: without a solo cue for each half there is no evidence this is
+// two people rather than one oddly-named one, and inventing cast is the worse error.
+test('a joint cue whose halves never speak alone stays one character', () => {
+  const parsed = parseFountainScript('GUARD ONE AND GUARD TWO\nHalt.');
+  assert.deepEqual(parsed.characters.map(character => character.name), ['GUARD ONE AND GUARD TWO']);
+});
+
+test('a name that merely contains AND is never split', () => {
+  const parsed = parseFountainScript([
+    'ALEX', 'Ready.', '',
+    'ANDER', 'Ready.', '',
+    'ALEXANDER', 'Then go.'
+  ].join('\n'));
+  assert.ok(parsed.characters.some(character => character.name === 'ALEXANDER'));
+});
+
+// Splitting each fragment on its own leaves CICI following MAYA across a trailing
+// dash, which `annotateScriptFlow` reads as one half of the pair interrupting the
+// other half of its own line.
+test('a joint cue split by a direction does not interrupt itself', () => {
+  const parsed = parseFountainScript([
+    'CICI', 'Where are we?', '',
+    'MAYA', 'No idea.', '',
+    'CICI AND MAYA', 'Holy shit—', '(whispering)', 'what was that?'
+  ].join('\n'));
+  const shared = parsed.elements.slice(2);
+
+  assert.deepEqual(shared.map(element => [element.character, element.overlap && element.overlap.mode]), [
+    ['CICI', null],
+    ['MAYA', 'simultaneous'],
+    ['CICI', 'continuation'],
+    ['MAYA', 'simultaneous']
+  ]);
+  assert.ok(shared.every(element => element.cutOff === false));
+  assert.equal(shared[2].parenthetical, 'whispering');
+  assert.notEqual(shared[2].nuance, shared[3].nuance);
+});
+
+test('interrupting a joint cue cuts off every speaker sharing it', () => {
+  const parsed = parseFountainScript([
+    'CICI', 'Where are we?', '',
+    'MAYA', 'No idea.', '',
+    'CICI AND MAYA', 'Holy shit—', '',
+    'BARRETT', '(interrupting)', 'Enough.'
+  ].join('\n'));
+  const shared = parsed.elements.slice(2, 4);
+
+  assert.deepEqual(shared.map(element => element.character), ['CICI', 'MAYA']);
+  assert.ok(shared.every(element => element.cutOff === true));
+  assert.equal(parsed.elements[4].overlap.mode, 'interrupt');
+});
+
+test('a joint cue gives each speaker the extensions the cue carried', () => {
+  const parsed = parseFountainScript([
+    'CICI', 'Where are we?', '',
+    'MAYA', 'No idea.', '',
+    'CICI AND MAYA (CONT’D)', 'Holy shit.'
+  ].join('\n'));
+  const shared = parsed.elements.slice(2);
+
+  assert.deepEqual(shared.map(element => element.characterOriginal), ['CICI (CONT’D)', 'MAYA (CONT’D)']);
+});
+
 test('Fountain forced-character cues keep mixed-case names as dialogue', () => {
   const parsed = parseFountainScript('@McCLANE\nWelcome to the party.');
   assert.equal(parsed.elements.length, 1);
@@ -221,6 +309,84 @@ test('PDF uppercase dialogue and action do not become phantom speakers', async (
   assert.equal(parsed.characters[0].name, 'BOB');
   assert.equal(parsed.elements[0].text, 'RUN before it sees us.');
   assert.ok(parsed.elements.some(element => element.type === 'ACTION' && element.text === 'THE CAR EXPLODES'));
+});
+
+// The cue detector is geometric — centred, upper case, short, text underneath —
+// and a cover page is exactly that shape, so the film's title became a speaker
+// and the writer's email became something the narrator read out loud.
+test('a PDF cover page never becomes a cast member', async () => {
+  const processExtractedLines = await loadPdfLineProcessor();
+  const cover = { page: 1, pageWidth: 612, pageHeight: 792 };
+  const body = { page: 3, pageWidth: 612, pageHeight: 792 };
+  const parsed = processExtractedLines([
+    { ...cover, y: 507, minX: 250, maxX: 362, text: 'MIDNIGHT CARAVAN' },
+    { ...cover, y: 459, minX: 271, maxX: 341, text: 'Written by' },
+    { ...cover, y: 423, minX: 260, maxX: 351, text: 'Efrain Franco' },
+    { ...cover, y: 111, minX: 72, maxX: 191, text: 'effie85@gmail.com' },
+    { ...cover, y: 99, minX: 72, maxX: 156, text: 'WGA #2227534' },
+    { page: 2, pageWidth: 612, pageHeight: 792, y: 747, minX: 501, maxX: 522, text: 'ii.' },
+    { ...body, y: 711, minX: 108, maxX: 164, text: 'FADE IN:' },
+    { ...body, y: 675, minX: 108, maxX: 332, text: 'INT. DINER - NIGHT' },
+    { ...body, y: 651, minX: 108, maxX: 332, text: 'A cook wipes the counter.' }
+  ], 'Midnight_Caravan');
+
+  assert.deepEqual(parsed.characters, []);
+  assert.deepEqual(
+    parsed.elements.map(element => [element.type, element.text]),
+    [
+      ['TRANSITION', 'FADE IN:'],
+      ['SCENE_HEADING', 'INT. DINER - NIGHT'],
+      ['ACTION', 'A cook wipes the counter.']
+    ]
+  );
+  // The cover says what the file name only approximates.
+  assert.equal(parsed.title, 'MIDNIGHT CARAVAN');
+});
+
+// The cut is made at a page edge rather than at the marker, because a screenplay
+// is allowed to open on something before its first slug line.
+test('action before the first slug line is not mistaken for a cover page', async () => {
+  const processExtractedLines = await loadPdfLineProcessor();
+  const base = { page: 1, pageWidth: 612, pageHeight: 792 };
+  const parsed = processExtractedLines([
+    { ...base, y: 711, minX: 108, maxX: 300, text: 'BLACK SCREEN.' },
+    { ...base, y: 687, minX: 108, maxX: 320, text: 'A voice, unseen.' },
+    { ...base, y: 663, minX: 108, maxX: 332, text: 'INT. CAR - DAY' }
+  ], 'Opening');
+
+  assert.deepEqual(
+    parsed.elements.map(element => element.text),
+    ['BLACK SCREEN.', 'A voice, unseen.', 'INT. CAR - DAY']
+  );
+  assert.equal(parsed.title, 'Opening');
+});
+
+test('a joint PDF cue speaks as both characters and keeps the scene index honest', async () => {
+  const processExtractedLines = await loadPdfLineProcessor();
+  const base = { page: 1, pageWidth: 612, pageHeight: 792 };
+  const parsed = processExtractedLines([
+    { ...base, y: 700, minX: 252, maxX: 273, text: 'CICI' },
+    { ...base, y: 688, minX: 180, maxX: 260, text: 'Where are we?' },
+    { ...base, y: 664, minX: 252, maxX: 280, text: 'MAYA' },
+    { ...base, y: 652, minX: 180, maxX: 250, text: 'No idea.' },
+    { ...base, y: 628, minX: 252, maxX: 345, text: 'CICI AND MAYA' },
+    { ...base, y: 616, minX: 180, maxX: 250, text: 'Holy shit.' },
+    { ...base, y: 580, minX: 108, maxX: 300, text: 'EXT. GHOST TOWN - SAME' }
+  ], 'Joint');
+
+  assert.deepEqual(
+    parsed.characters.map(character => [character.name, character.lineCount]),
+    [['CICI', 2], ['MAYA', 2]]
+  );
+  const shared = parsed.elements.filter(element => element.text === 'Holy shit.');
+  assert.deepEqual(shared.map(element => element.character), ['CICI', 'MAYA']);
+  assert.equal(shared[1].overlap.mode, 'simultaneous');
+
+  // Renumbering and the scene remap travel together: the drawer jumps by index.
+  assert.ok(parsed.elements.every((element, index) => element.id === `line-${index}`));
+  const lastScene = parsed.scenes[parsed.scenes.length - 1];
+  assert.equal(parsed.elements[lastScene.lineIndex].type, 'SCENE_HEADING');
+  assert.equal(parsed.elements[lastScene.lineIndex].text, 'EXT. GHOST TOWN - SAME');
 });
 
 test('OpenAI keeps long speeches intact and uses exact transport speed', () => {

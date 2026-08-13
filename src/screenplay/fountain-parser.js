@@ -1,6 +1,7 @@
 import { analyzeLineNuance } from './emotion-analyzer.js';
 import { annotateScriptFlow, parsePaceDirective, DEFAULT_PACE } from './overlap-pacing.js';
 import { attachCharacterIntroductions } from './character-introductions.js';
+import { expandSharedDialogueCues } from './shared-cues.js';
 
 /**
  * Screenplay Parser for Fountain, Final Draft text, and plain screenplay formats.
@@ -55,7 +56,10 @@ export function parseFountainScript(text) {
   const PARENTHETICAL_REGEX = /^\s*\((.+)\)\s*$/;
   // The trailing `^` is Fountain's dual dialogue marker. It has to be part of
   // the pattern or a cue carrying one is not recognised as a cue at all.
-  const CHARACTER_REGEX = /^\s*([A-Za-z0-9\s._'-]+?)(\s*\([^)]*\))?\s*(\^)?\s*$/;
+  // Extensions repeat: `BARRETT (O.S.) (CONT'D)` is ordinary, and a PDF that gets
+  // round-tripped through Fountain to be persisted is full of them. Allowing only
+  // one turned that cue and its whole speech into narrator-read action on reload.
+  const CHARACTER_REGEX = /^\s*([A-Za-z0-9\s._'-]+?)(\s*\([^)]*\))*\s*(\^)?\s*$/;
 
   let inDialogueBlock = false;
   let pendingDialogueLines = [];
@@ -296,11 +300,13 @@ export function parseFountainScript(text) {
   // than in anything that character says — but that pass stays outside
   // `annotateScriptFlow`, whose whole job is to rewrite elements. Composing the
   // two keeps "introductions never touch elements" visible at the call site.
-  return attachCharacterIntroductions(annotateScriptFlow({
+  // Shared cues run innermost: splitting `CICI AND MAYA` creates the very
+  // adjacency `annotateScriptFlow` exists to resolve, so it has to happen first.
+  return attachCharacterIntroductions(annotateScriptFlow(expandSharedDialogueCues({
     title: scriptTitle,
     elements,
     characters,
     scenes: sceneList,
     totalLines: elements.length
-  }));
+  })));
 }

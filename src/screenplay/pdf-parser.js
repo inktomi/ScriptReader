@@ -6,6 +6,8 @@ import {
   shouldSplitPdfDialogueAtParenthetical
 } from './pdf-layout.js';
 import { attachCharacterIntroductions } from './character-introductions.js';
+import { splitPdfFrontMatter, readTitlePageTitle } from './front-matter.js';
+import { expandSharedDialogueCues } from './shared-cues.js';
 
 const pdfWorker = new URL(
   '../../node_modules/pdfjs-dist/build/pdf.worker.mjs',
@@ -213,7 +215,14 @@ export function reorderPdfDualDialogue(lines) {
  * Converts extracted raw PDF lines with X coordinates into structured screenplay elements
  */
 export function processExtractedLines(lines, scriptTitle) {
-  lines = reorderPdfDualDialogue(lines);
+  // A cover page has the exact geometry of a character cue, so it has to be gone
+  // before anything below runs — no later pass can tell an invented speaker from
+  // a real one. It also carries the screenplay's own title, which beats the file
+  // name the caller derived one.
+  const { frontMatter, body } = splitPdfFrontMatter(lines);
+  const titlePageTitle = readTitlePageTitle(frontMatter);
+
+  lines = reorderPdfDualDialogue(body);
   const elements = [];
   const characterSet = new Map();
   const sceneList = [];
@@ -434,11 +443,11 @@ export function processExtractedLines(lines, scriptTitle) {
   // Character introductions matter more here than in Fountain: a PDF wraps its
   // action at the page margin, so the description is routinely split across two
   // extracted rows and only reassembles at the paragraph level.
-  return attachCharacterIntroductions(annotateScriptFlow({
-    title: scriptTitle || 'Exported Screenplay',
+  return attachCharacterIntroductions(annotateScriptFlow(expandSharedDialogueCues({
+    title: titlePageTitle || scriptTitle || 'Exported Screenplay',
     elements,
     characters,
     scenes: sceneList,
     totalLines: elements.length
-  }));
+  })));
 }
