@@ -2,6 +2,8 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 
 import { ScriptStore } from '../src/screenplay/script-store.js';
+import { parseFountainScript } from '../src/screenplay/fountain-parser.js';
+import { SAMPLE_SCRIPTS } from '../src/screenplay/sample-scripts.js';
 import { ENGINE_IDS } from '../src/audio/engine-contract.js';
 import {
   generateScriptKey,
@@ -43,6 +45,17 @@ test('script keys include the full script rather than only the opening prefix', 
     generateScriptKey(makeScript('Same title', opening, 'ending A')),
     generateScriptKey(makeScript('Same title', opening, 'ending B'))
   );
+});
+
+test('a bundled script keeps the key its saved cast is filed under', () => {
+  // The key hashes every element's type, character, text and parenthetical, so
+  // any change to how a line is classified silently orphans the cast every user
+  // of that script already chose. Pinning one real script turns that into a
+  // failing test rather than a support ticket.
+  const parsed = parseFountainScript(
+    SAMPLE_SCRIPTS.find(script => script.id === 'neon-heist').fountainText
+  );
+  assert.equal(generateScriptKey(parsed), 'custom_the_neon_heist_a196eb38');
 });
 
 test('narrator choices are retained independently per engine', () => {

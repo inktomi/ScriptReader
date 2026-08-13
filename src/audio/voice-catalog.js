@@ -695,6 +695,12 @@ const FEMALE_KEYWORDS = [
   'NICOLE', 'BELLA', 'VALENTINA', 'AUNT', 'GRANDMOTHER', 'WIDOW', 'NUN', 'WAITRESS'
 ];
 
+// Pronouns in a character's introduction almost always refer to its subject, so
+// they outrank the name list above: nothing about CHEN says female, but
+// `COMMANDER CHEN (30s, weary, grease on her forehead)` says it outright.
+const FEMALE_PRONOUNS = ['SHE', 'HER', 'HERS', 'HERSELF'];
+const MALE_PRONOUNS = ['HE', 'HIM', 'HIS', 'HIMSELF'];
+
 const VILLAIN_KEYWORDS = ['SHADOW', 'BOSS', 'KILLER', 'ONYX', 'VILLAIN', 'BARON', 'LORD', 'MASTER', 'ASSASSIN', 'MONSTER', 'STRANGER'];
 const GRITTY_KEYWORDS = ['FENRIR', 'VALENTINE', 'JACK', 'SOLDIER', 'CAPTAIN', 'GUARD', 'SERGEANT', 'GRUNT', 'MILLER', 'BRIGGS', 'DETECTIVE', 'INSPECTOR', 'COP'];
 const ELDER_KEYWORDS = ['OLD', 'ELDER', 'PEMBERTON', 'GRANDFATHER', 'PROFESSOR', 'DOCTOR', 'DOC', 'WIZARD', 'HIGGINS', 'PRIEST', 'JUDGE'];
@@ -736,11 +742,69 @@ function stableHash(str) {
   return hash;
 }
 
-function pickShortlist(tokens, isFemale) {
+/**
+ * Tokens of a character's written introduction — `30s, weary, grease on her
+ * forehead` — as whole words, matched the same way cue names are.
+ */
+function introductionTokens(introduction) {
+  const text = typeof introduction?.text === 'string' ? introduction.text : '';
+  if (!text) return [];
+  return text.toUpperCase().split(/[^A-Z0-9]+/).filter(Boolean);
+}
+
+/**
+ * Years, from an age fragment written as `50s`, `mid-40s`, `52` or `late
+ * thirties`. Decade words resolve to the start of the decade, which is all the
+ * young/elder bands below need.
+ */
+function ageInYears(age) {
+  const raw = typeof age === 'string' ? age.toUpperCase() : '';
+  if (!raw) return null;
+
+  const digits = raw.match(/\d{1,3}/);
+  if (digits) {
+    const years = Number(digits[0]);
+    return years >= 1 && years <= 120 ? years : null;
+  }
+
+  const decades = {
+    TEENS: 15, TWENTIES: 20, THIRTIES: 30, FORTIES: 40, FIFTIES: 50,
+    SIXTIES: 60, SEVENTIES: 70, EIGHTIES: 80, NINETIES: 90
+  };
+  for (const [word, years] of Object.entries(decades)) {
+    if (raw.includes(word)) return years;
+  }
+  return null;
+}
+
+/**
+ * Sex, from the strongest evidence available. A pronoun in the introduction wins
+ * outright; otherwise fall back to the name keywords, then to gendered nouns in
+ * the introduction. Ties and silence both mean "no signal", which reads as male
+ * — the historical default this function has always had.
+ */
+function resolveIsFemale(nameTokens, introTokens) {
+  const female = introTokens.filter(token => FEMALE_PRONOUNS.includes(token)).length;
+  const male = introTokens.filter(token => MALE_PRONOUNS.includes(token)).length;
+  if (female !== male) return female > male;
+
+  if (FEMALE_KEYWORDS.some(kw => nameTokens.includes(kw))) return true;
+  return FEMALE_KEYWORDS.some(kw => introTokens.includes(kw));
+}
+
+function pickShortlist(tokens, isFemale, years) {
   const has = (list) => list.some(kw => tokens.includes(kw));
   const suffix = isFemale ? 'F' : 'M';
 
   if (has(VILLAIN_KEYWORDS)) return ROLE_PREFERENCES[`villain${suffix}`];
+
+  // An age the writer put on the page beats every keyword list below it. Those
+  // lists are guesses from a job title — and `ELDER_KEYWORDS` still hardcodes
+  // surnames out of the bundled samples — where this is the script saying so.
+  // It sits under the villain check so a seventy-year-old villain stays one.
+  if (years !== null && years >= 60) return ROLE_PREFERENCES[`elder${suffix}`];
+  if (years !== null && years <= 19) return ROLE_PREFERENCES[`young${suffix}`];
+
   if (has(ELDER_KEYWORDS)) return ROLE_PREFERENCES[`elder${suffix}`];
   if (has(GRITTY_KEYWORDS)) return ROLE_PREFERENCES[`gritty${suffix}`];
   if (has(YOUNG_KEYWORDS)) return ROLE_PREFERENCES[`young${suffix}`];
@@ -757,8 +821,14 @@ function pickShortlist(tokens, isFemale) {
  * `characters` that way), so walking a grade-ranked pool hands the best voices to
  * the biggest parts without anyone arranging it.
  *
+ * `context.introduction` is what the screenplay says about this character —
+ * `screenplay/character-introductions.js`. A name is a weak signal and the
+ * writer's own description is a strong one, so when it is present it decides sex
+ * and age band. It is absent for most characters and for every script parsed
+ * before this existed, in which case the name-only behaviour is unchanged.
+ *
  * @param {string} characterName
- * @param {{usedVoices?: Set<string>}} context
+ * @param {{usedVoices?: Set<string>, introduction?: {text: string, age: string|null}}} context
  * @returns {string} a voice id, always
  */
 export function getSuggestedVoiceForCharacter(characterName, context = {}) {
@@ -767,11 +837,14 @@ export function getSuggestedVoiceForCharacter(characterName, context = {}) {
 
   if (isNarratorName(raw)) return DEFAULT_NARRATOR_VOICE_ID;
 
-  const tokens = raw.split(/[^A-Z0-9]+/).filter(Boolean);
-  const isFemale = FEMALE_KEYWORDS.some(kw => tokens.includes(kw));
+  const nameTokens = raw.split(/[^A-Z0-9]+/).filter(Boolean);
+  const introTokens = introductionTokens(context.introduction);
+  const tokens = introTokens.length > 0 ? nameTokens.concat(introTokens) : nameTokens;
+  const isFemale = resolveIsFemale(nameTokens, introTokens);
+  const years = ageInYears(context.introduction?.age);
 
   // 1. Intent: first unused entry from the role shortlist.
-  for (const id of pickShortlist(tokens, isFemale)) {
+  for (const id of pickShortlist(tokens, isFemale, years)) {
     if (!used.has(id)) return id;
   }
 

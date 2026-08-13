@@ -72,6 +72,67 @@ test('initial casting requires a quick or detailed path before opening the playe
   }
 });
 
+test('a character introduction expands in place, keeping focus and the audition running', () => {
+  const dom = installDom();
+  try {
+    const introduction = {
+      text: '50s, nervous housekeeper, trembling hands',
+      age: '50s',
+      sourceText: 'MRS. HIGGINS (50s, nervous housekeeper, trembling hands) sets down a silver tea tray.',
+      elementId: 'line-6',
+      form: 'parenthetical'
+    };
+    const scriptStore = {
+      currentScript: {
+        title: 'Manor',
+        characters: [{ name: 'MRS. HIGGINS', lineCount: 3, sampleLine: 'Tea, sir?', introduction }],
+        elements: [{ type: 'DIALOGUE', character: 'MRS. HIGGINS', text: 'Tea, sir?' }]
+      },
+      castAssignments: new Map(),
+      getNarratorVoice: () => 'bf_emma',
+      updateCast() {}
+    };
+    const audioManager = {
+      engineId: ENGINE_IDS.KOKORO,
+      capabilities: { supportsInstructions: false },
+      getVoiceProfileForCharacter: () => ({ id: 'bf_emma' }),
+      stop() {},
+      setNarratorVoice() {},
+      setVoiceAssignment() {}
+    };
+
+    const casting = createVoiceConfigModal({ scriptStore, audioManager });
+    document.body.appendChild(casting);
+
+    assert.equal(casting.querySelector('.badge-age').textContent.trim(), '50s');
+    assert.match(casting.querySelector('.char-intro-text').textContent, /nervous housekeeper/);
+
+    const toggle = casting.querySelector('.char-intro-toggle');
+    const source = casting.querySelector('.char-intro-source');
+    assert.equal(source.hidden, true);
+
+    toggle.focus();
+    toggle.click();
+
+    // Expanding must not rebuild the card: the same nodes stay in the document,
+    // so focus never leaves the control the user is operating.
+    assert.equal(source.hidden, false);
+    assert.equal(toggle.getAttribute('aria-expanded'), 'true');
+    assert.equal(casting.querySelector('.char-intro-toggle'), toggle);
+    assert.equal(document.activeElement, toggle);
+    assert.match(source.textContent, /sets down a silver tea tray/);
+
+    // A later full re-render — triggered here by changing a voice — restores it.
+    const select = casting.querySelector('.modal-char-select');
+    select.value = 'af_bella';
+    select.dispatchEvent(new dom.window.Event('change', { bubbles: true }));
+    assert.equal(casting.querySelector('.char-intro-source').hidden, false);
+    assert.equal(casting.querySelector('.char-intro-toggle').getAttribute('aria-expanded'), 'true');
+  } finally {
+    removeDom(dom);
+  }
+});
+
 test('welcome screen exposes recent progress and the paste workflow', () => {
   const dom = installDom();
   try {

@@ -140,9 +140,15 @@ export function createCastPanel({
                 <div class="char-meta">
                   <div class="char-name">${escapeHtml(char.name)}</div>
                   <div class="char-badges">
+                    ${char.introduction?.age ? `<span class="badge-age" title="Age, as written in the screenplay">${escapeHtml(char.introduction.age)}</span>` : ''}
                     <span class="badge-lines">${char.lineCount} lines (${percent}%)</span>
                     <span class="badge-voice">${escapeHtml(voiceProfile.name)}</span>
                   </div>
+                  ${char.introduction?.text ? `
+                    <div class="char-intro-line" title="${escapeHtml(char.introduction.sourceText || char.introduction.text)}">
+                      ${escapeHtml(char.introduction.text)}
+                    </div>
+                  ` : ''}
                 </div>
               </div>
 

@@ -58,6 +58,47 @@ test('voice setup escapes a screenplay title before assigning innerHTML', () => 
   }
 });
 
+test('a character description from an uploaded script renders as text, not markup', () => {
+  const dom = installDom();
+  try {
+    // Everything here is the writer's own prose lifted out of the upload, so it
+    // reaches the casting card by exactly the route a cue name does.
+    const introduction = {
+      text: '<img src=x onerror="window.pwned=1">',
+      age: '<img src=x onerror="window.pwned=2">',
+      sourceText: '<img src=x onerror="window.pwned=3"> sets down a tray.',
+      elementId: 'line-4',
+      form: 'parenthetical'
+    };
+    const scriptStore = {
+      currentScript: {
+        title: 'Manor',
+        characters: [{ name: 'HIGGINS', lineCount: 1, sampleLine: 'Tea, sir?', introduction }],
+        elements: [{ type: 'DIALOGUE', character: 'HIGGINS', text: 'Tea, sir?' }]
+      },
+      castAssignments: new Map(),
+      getNarratorVoice: () => 'bf_emma'
+    };
+    const audioManager = {
+      engineId: ENGINE_IDS.KOKORO,
+      capabilities: { supportsInstructions: false },
+      getVoiceProfileForCharacter: () => ({ id: 'bf_emma' }),
+      stop() {}
+    };
+
+    const modal = createVoiceConfigModal({ scriptStore, audioManager });
+    document.body.appendChild(modal);
+    modal.querySelector('.char-intro-toggle').click();
+
+    assert.equal(modal.querySelector('img'), null);
+    assert.match(modal.querySelector('.char-intro-text').textContent, /<img src=x/);
+    assert.match(modal.querySelector('.char-intro-source').textContent, /<img src=x/);
+    assert.equal(dom.window.pwned, undefined);
+  } finally {
+    removeDom(dom);
+  }
+});
+
 test('Smart Auto-Cast preserves voice choices for the other engine', () => {
   const dom = installDom();
   try {

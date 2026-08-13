@@ -5,6 +5,7 @@ import {
   isPdfDialogueContinuation,
   shouldSplitPdfDialogueAtParenthetical
 } from './pdf-layout.js';
+import { attachCharacterIntroductions } from './character-introductions.js';
 
 const pdfWorker = new URL(
   '../../node_modules/pdfjs-dist/build/pdf.worker.mjs',
@@ -425,11 +426,14 @@ export function processExtractedLines(lines, scriptTitle) {
   // post-pass that serves Fountain gets an imported screenplay most of the way
   // there without this parser needing to know overlap exists. It also fills in
   // the pace/overlap fields, which is why they are absent above.
-  return annotateScriptFlow({
+  // Character introductions matter more here than in Fountain: a PDF wraps its
+  // action at the page margin, so the description is routinely split across two
+  // extracted rows and only reassembles at the paragraph level.
+  return attachCharacterIntroductions(annotateScriptFlow({
     title: scriptTitle || 'Exported Screenplay',
     elements,
     characters,
     scenes: sceneList,
     totalLines: elements.length
-  });
+  }));
 }

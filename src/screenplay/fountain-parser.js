@@ -1,5 +1,6 @@
 import { analyzeLineNuance } from './emotion-analyzer.js';
 import { annotateScriptFlow, parsePaceDirective, DEFAULT_PACE } from './overlap-pacing.js';
+import { attachCharacterIntroductions } from './character-introductions.js';
 
 /**
  * Screenplay Parser for Fountain, Final Draft text, and plain screenplay formats.
@@ -291,12 +292,15 @@ export function parseFountainScript(text) {
   characters.sort((a, b) => b.lineCount - a.lineCount);
 
   // Overlap is a relationship between neighbours, which only the finished array
-  // can see.
-  return annotateScriptFlow({
+  // can see. So is a character's introduction, which sits in the action rather
+  // than in anything that character says — but that pass stays outside
+  // `annotateScriptFlow`, whose whole job is to rewrite elements. Composing the
+  // two keeps "introductions never touch elements" visible at the call site.
+  return attachCharacterIntroductions(annotateScriptFlow({
     title: scriptTitle,
     elements,
     characters,
     scenes: sceneList,
     totalLines: elements.length
-  });
+  }));
 }

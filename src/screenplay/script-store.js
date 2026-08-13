@@ -267,6 +267,7 @@ export class ScriptStore {
         if (!this.castAssignments.has(key)) {
           const suggestedVoiceId = getSuggestedVoiceForCharacter(char.name, {
             sampleLine: char.sampleLine,
+            introduction: char.introduction,
             usedVoices
           });
           usedVoices.add(suggestedVoiceId);
@@ -291,6 +292,7 @@ export class ScriptStore {
       for (const char of parsedScript.characters) {
         const suggestedVoiceId = getSuggestedVoiceForCharacter(char.name, {
           sampleLine: char.sampleLine,
+          introduction: char.introduction,
           usedVoices
         });
         usedVoices.add(suggestedVoiceId);
@@ -408,6 +410,7 @@ export class ScriptStore {
 
       const replacement = getSuggestedVoiceForCharacter(char.name, {
         sampleLine: char.sampleLine,
+        introduction: char.introduction,
         usedVoices
       });
       usedVoices.add(replacement);
@@ -518,6 +521,7 @@ export class ScriptStore {
     for (const char of this.currentScript.characters) {
       const localVoiceId = getSuggestedVoiceForCharacter(char.name, {
         sampleLine: char.sampleLine,
+        introduction: char.introduction,
         usedVoices: usedLocalVoices
       });
       usedLocalVoices.add(localVoiceId);

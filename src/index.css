@@ -948,6 +948,92 @@ button:disabled {
   border-left: 2px solid var(--border-strong);
 }
 
+/*
+ * How the screenplay introduces a character. Distinct from `.char-sample-quote`
+ * on purpose: the quote is something the character says, this is the writer
+ * describing them, and confusing the two is exactly the mistake this feature
+ * exists to fix.
+ */
+.char-intro {
+  margin: 10px 0 0;
+}
+
+.char-intro-text {
+  margin: 0;
+  color: var(--text-primary);
+  font-size: 0.76rem;
+  line-height: 1.45;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.char-intro-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin-top: 4px;
+  padding: 0;
+  border: none;
+  background: none;
+  color: var(--text-muted);
+  font-family: inherit;
+  font-size: 0.68rem;
+  font-weight: 600;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+  cursor: pointer;
+}
+
+.char-intro-toggle:hover,
+.char-intro-toggle:focus-visible {
+  color: var(--brass);
+}
+
+.char-intro-toggle svg {
+  transition: transform 0.15s ease;
+}
+
+.char-intro-toggle[aria-expanded="true"] svg {
+  transform: rotate(90deg);
+}
+
+.char-intro-source {
+  margin: 6px 0 0;
+  padding: 7px 9px;
+  color: var(--text-secondary);
+  font-family: var(--font-script);
+  font-size: 0.71rem;
+  line-height: 1.45;
+  background: var(--bg-surface);
+  border-left: 2px solid var(--brass);
+}
+
+/* The 320px rail gets one line of it and the rest in a tooltip. */
+.char-intro-line {
+  margin-top: 3px;
+  color: var(--text-secondary);
+  font-size: 0.7rem;
+  line-height: 1.35;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.badge-age {
+  padding: 2px 6px;
+  border-radius: 3px;
+  background: var(--bg-surface);
+  border: 1px solid var(--border-strong);
+  color: var(--text-secondary);
+  font-size: 0.65rem;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  white-space: nowrap;
+}
+
 .voice-card-controls,
 .char-controls {
   margin-top: 11px;

@@ -60,6 +60,10 @@ export function createVoiceConfigModal({
   let currentlyPlayingChar = null;
   let auditionPhase = 'idle'; // 'idle' | 'preparing' | 'rendering' | 'playing' | 'error'
   let auditionGeneration = 0;
+  // Which introductions the user has expanded. Held out here rather than read
+  // back off the DOM because every voice change rebuilds these cards, and an
+  // expansion the user opened must survive that.
+  const expandedIntros = new Set();
   let setupMode = isInitialSetup ? 'choice' : 'detailed';
   let studioVoiceError = '';
   let addingStudioVoice = false;
@@ -111,6 +115,39 @@ export function createVoiceConfigModal({
       + buildGroup('Neutral voices', neutralVoices);
   }
 
+  /**
+   * How the screenplay introduces this character — the fact somebody choosing a
+   * voice actually wants, and one this app used to walk straight past. It is the
+   * writer's own words, so it is escaped like every other value lifted out of an
+   * uploaded script.
+   *
+   * Both halves are rendered up front and the toggle only flips `hidden`. This
+   * view rebuilds its entire subtree on every voice change, so a control that
+   * re-rendered to expand would collapse itself the next time anyone touched a
+   * dropdown, and would drop keyboard focus while doing it.
+   */
+  function characterIntroHtml(char, charAttr, index) {
+    const intro = char.introduction;
+    if (!intro || !intro.text) return '';
+
+    const source = intro.sourceText && intro.sourceText !== intro.text ? intro.sourceText : '';
+    const expanded = expandedIntros.has(char.name.toUpperCase().trim());
+    const sourceId = `char-intro-source-${index}`;
+
+    return `
+      <div class="char-intro">
+        <p class="char-intro-text">${escapeHtml(intro.text)}</p>
+        ${source ? `
+          <button type="button" class="char-intro-toggle" data-char="${charAttr}"
+                  aria-expanded="${expanded}" aria-controls="${sourceId}">
+            ${getIconSvg('chevronRight', 12)} As written
+          </button>
+          <p class="char-intro-source" id="${sourceId}" ${expanded ? '' : 'hidden'}>${escapeHtml(source)}</p>
+        ` : ''}
+      </div>
+    `;
+  }
+
   function applyRecommendedCast() {
     if (isStudio && enginePool.length === 0) return;
     const localNarrator = getDefaultNarratorVoice().id;
@@ -125,6 +162,7 @@ export function createVoiceConfigModal({
     for (const char of characters) {
       const localVoiceId = getSuggestedVoiceForCharacter(char.name, {
         sampleLine: char.sampleLine,
+        introduction: char.introduction,
         usedVoices: usedLocalVoices
       });
       usedLocalVoices.add(localVoiceId);
@@ -358,7 +396,7 @@ export function createVoiceConfigModal({
           </div>
 
           <div class="voice-cards-grid">
-            ${characters.map(char => {
+            ${characters.map((char, charIndex) => {
               const charKey = char.name.toUpperCase().trim();
               const assignment = workingAssignments.get(charKey) || makeDefaultAssignment();
               const voiceProfile = getVoiceById(voiceIdOf(assignment), engineId);
@@ -379,9 +417,12 @@ export function createVoiceConfigModal({
                       ${escapeHtml(char.name.substring(0, 2).toUpperCase())}
                     </div>
                     <div style="flex: 1; min-width: 0;">
-                      <div style="display: flex; align-items: center; justify-content: space-between;">
+                      <div style="display: flex; align-items: center; justify-content: space-between; gap: 6px;">
                         <span class="char-name" style="font-size: 0.95rem;">${escapeHtml(char.name)}</span>
-                        <span class="badge-lines">${char.lineCount} lines (${percent}%)</span>
+                        <span style="display: flex; align-items: center; gap: 5px; flex-shrink: 0;">
+                          ${char.introduction?.age ? `<span class="badge-age" title="Age, as written in the screenplay">${escapeHtml(char.introduction.age)}</span>` : ''}
+                          <span class="badge-lines">${char.lineCount} lines (${percent}%)</span>
+                        </span>
                       </div>
                       <div style="font-size: 0.75rem; color: #06B6D4; font-weight: 600; margin-top: 1px;">
                         ${escapeHtml(voiceProfile.name)} • ${escapeHtml(voiceProfile.sex)} ${escapeHtml(voiceProfile.accent)}
@@ -391,6 +432,9 @@ export function createVoiceConfigModal({
                       </div>
                     </div>
                   </div>
+
+                  <!-- How the screenplay introduces this character -->
+                  ${characterIntroHtml(char, charAttr, charIndex)}
 
                   <!-- Character Sample Line Quote -->
                   <div class="char-sample-quote" title="Excerpt from screenplay">
@@ -712,6 +756,24 @@ export function createVoiceConfigModal({
         const charObj = characters.find(c => c.name.toUpperCase().trim() === charKey);
         audioManager.prewarmAudition?.(e.target.value, charObj ? charObj.sampleLine : null, existing, engineId);
         renderContent();
+      });
+    });
+
+    // Introduction expanders. Deliberately no `renderContent()`: the expansion
+    // is already in the DOM, so flipping `hidden` shows it without disturbing
+    // focus, scroll, or a running audition. The Set keeps it open across the
+    // next full re-render.
+    modal.querySelectorAll('.char-intro-toggle').forEach(toggle => {
+      toggle.addEventListener('click', () => {
+        const charKey = toggle.dataset.char.toUpperCase().trim();
+        const source = modal.querySelector(`#${CSS.escape(toggle.getAttribute('aria-controls'))}`);
+        const expanded = !expandedIntros.has(charKey);
+
+        if (expanded) expandedIntros.add(charKey);
+        else expandedIntros.delete(charKey);
+
+        toggle.setAttribute('aria-expanded', String(expanded));
+        if (source) source.hidden = !expanded;
       });
     });
 
