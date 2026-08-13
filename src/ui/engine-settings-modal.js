@@ -488,6 +488,21 @@ export function createEngineSettingsModal({ audioManager, onClose, onEngineChang
 
   /** @returns {Promise<boolean>} whether the engine is ready to be switched to. */
   async function installStudio() {
+    // Refuse rather than start something that cannot finish. Without OPFS the
+    // worker hands the whole 1.4 GB to transformers.js, whose `readResponse`
+    // reallocates and copies its entire buffer per chunk when Hugging Face sends
+    // no Content-Length — enough to get the worker killed for memory, a death
+    // that fires no error event. The user would then watch a frozen bar until
+    // the engine's three-minute deadline timer gave up. `storable` is false
+    // exactly when the OPFS cache could not be created.
+    if (!studioStatus.storable) {
+      validationMessage = 'This browser cannot store a model this large, and Studio Local '
+        + 'is too big to load without storing it. Kokoro runs locally here instead.';
+      validationOk = false;
+      render();
+      return false;
+    }
+
     const estimate = await audioManager.modelCacheManager.getStorageEstimate();
     const available = Math.max(0, estimate.quota - estimate.usage);
     const needed = CHATTERBOX_DOWNLOAD_BYTES * 1.1;
@@ -540,7 +555,14 @@ export function createEngineSettingsModal({ audioManager, onClose, onEngineChang
       // the state from before the attempt.
       studioStatus = await audioManager.getChatterboxCacheStatus().catch(() => studioStatus);
       if (!error?.cancelled) {
-        validationMessage = short(error?.message) || 'Studio Local could not be installed.';
+        // Always keep a subject. This banner is a `role="alert"`, and what
+        // arrives here can be a raw browser binding error — the Safari install
+        // bug reached users as the four words "Not enough arguments" and nothing
+        // else. The detail is worth keeping; it just cannot stand alone.
+        const detail = short(error?.message);
+        validationMessage = detail
+          ? short(`Studio Local could not be installed: ${detail}`)
+          : 'Studio Local could not be installed.';
         validationOk = false;
       }
       render();

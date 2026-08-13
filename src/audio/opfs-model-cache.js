@@ -24,19 +24,65 @@
  * actually arrive: streamed to disk rather than buffered in memory.
  */
 
+// Two capabilities, shipped years apart, and both are needed. Reaching the OPFS
+// root is Safari 15.2; `createWritable` — which every write below goes through —
+// is Safari 26. Testing only the entry point handed four Safari versions a cache
+// object whose first write was `undefined is not a function`, with no path back
+// to the honest "this browser cannot store the model" copy the UI already has.
 function opfsAvailable() {
   return typeof navigator !== 'undefined'
     && !!navigator.storage
-    && typeof navigator.storage.getDirectory === 'function';
+    && typeof navigator.storage.getDirectory === 'function'
+    && typeof FileSystemFileHandle !== 'undefined'
+    && typeof FileSystemFileHandle.prototype.createWritable === 'function';
 }
 
-// `move()` lets a download land under a temporary name and be renamed on
-// success, so an interrupted write can never be served as a complete file. It
-// is not universally available yet, hence the feature test rather than a bare
-// call.
-function canRename() {
+// A cheap negative before the probe below bothers writing anything.
+//
+// The *presence* of `move` proves nothing, and that is not hypothetical: WebKit
+// has exposed `FileSystemHandle.prototype.move` since Safari 15.2 — inherited by
+// `FileSystemFileHandle`, so a `typeof` test passes — while declaring only
+// `move(destination, newName)` with both arguments required. The one-argument
+// `move(newName)` rename Chromium also accepts does not exist there, and
+// WebKit's binding layer throws a bare `TypeError: Not enough arguments` before
+// any of its implementation runs. That killed the first file of every Safari
+// install.
+function mayRename() {
   return typeof FileSystemFileHandle !== 'undefined'
     && typeof FileSystemFileHandle.prototype.move === 'function';
+}
+
+/**
+ * Give a storage failure a subject and an action.
+ *
+ * These messages reach the DOM verbatim, by way of the worker's `postError` and
+ * the settings modal's alert banner, and what lands here is written for browser
+ * implementers rather than users — "Not enough arguments", "undefined is not a
+ * function". Naming the file and the operation is the difference between a dead
+ * end and something a reader can act on. The original text is quoted inline and
+ * kept as `cause` rather than replaced: a bug report that loses it costs a
+ * diagnosis.
+ */
+function describeStorageFailure(name, error) {
+  // A cancelled install is the user's own Cancel, not a storage fault, and
+  // `abortInit` relies on it staying recognisable.
+  if (error?.name === 'AbortError') return error;
+
+  let label = name;
+  try {
+    label = decodeURIComponent(name).split('/').pop() || name;
+  } catch (_) {
+    // A name that will not decode is still better than no name at all.
+  }
+
+  const detail = error?.name ? `${error.name}: ${error.message}` : String(error?.message || error);
+  const message = error?.name === 'QuotaExceededError'
+    ? `This browser ran out of storage while saving ${label}. Free up space and try again.`
+    : `This browser could not save ${label} to local storage (${detail}).`;
+
+  const wrapped = new Error(message, { cause: error });
+  wrapped.name = 'ModelStorageError';
+  return wrapped;
 }
 
 function urlOf(request) {
@@ -70,6 +116,49 @@ export async function createOpfsModelCache(namespace) {
     return null;
   }
 
+  // Memoised for the life of this cache object. Only the worker ever commits, so
+  // in practice this runs at most once per install; the main-thread callers that
+  // just read install status never reach it.
+  let renameSupport = null;
+
+  /**
+   * Prove a rename works, on a throwaway pair of names.
+   *
+   * Deliberately not a try/catch around the real commit. `download`'s body is a
+   * single-use stream, so a `move` that fails *after* the bytes have landed
+   * cannot be retried — recovering would mean re-fetching the file, and for the
+   * speech encoder that is 591 MB, repeated identically on every attempt. Two
+   * empty files cost microseconds and answer the question while it is still
+   * free, for every engine including ones whose accepted signatures nobody has
+   * enumerated yet.
+   *
+   * A hard crash between create and remove can strand a zero-byte
+   * `.rename-probe-*`. Nothing reads it — install status only ever looks up
+   * expected names — and `clear()` removes the namespace recursively.
+   */
+  async function probeRename() {
+    if (!mayRename()) return false;
+    const id = globalThis.crypto?.randomUUID?.() || `${Date.now()}-${Math.random()}`;
+    const from = `.rename-probe-${id}`;
+    const to = `${from}.moved`;
+    try {
+      const handle = await dir.getFileHandle(from, { create: true });
+      await handle.move(dir, to);
+      return true;
+    } catch (error) {
+      console.warn('OPFS rename unavailable; model files will be written in place:', error);
+      return false;
+    } finally {
+      await dir.removeEntry(from).catch(() => {});
+      await dir.removeEntry(to).catch(() => {});
+    }
+  }
+
+  function canRename() {
+    if (!renameSupport) renameSupport = probeRename();
+    return renameSupport;
+  }
+
   /**
    * Write through a temporary name and only adopt the final one once the whole
    * body has landed. On the no-rename path the partial file is deleted instead,
@@ -77,16 +166,19 @@ export async function createOpfsModelCache(namespace) {
    * quota — even though it cannot cover a hard crash mid-write.
    */
   async function commit(name, write) {
-    const rename = canRename();
+    const rename = await canRename();
     const target = rename ? `${name}.part` : name;
     const handle = await dir.getFileHandle(target, { create: true });
 
     try {
       await write(handle);
-      if (rename) await handle.move(name);
+      // The destination directory is passed explicitly because that is the only
+      // spelling every engine implementing `move` accepts — see `mayRename`.
+      // `move(name)` reads more naturally and breaks Safari outright.
+      if (rename) await handle.move(dir, name);
     } catch (error) {
       await dir.removeEntry(target).catch(() => {});
-      throw error;
+      throw describeStorageFailure(name, error);
     }
   }
 

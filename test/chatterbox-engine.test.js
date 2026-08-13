@@ -13,6 +13,7 @@ import { createEngineSettingsModal } from '../src/ui/engine-settings-modal.js';
 import { listChatterboxVoices } from '../src/audio/chatterbox-voice-store.js';
 import { decodePcm16, encodePcm16, MAX_RENDER_CACHE_BYTES } from '../src/audio/chatterbox-render-store.js';
 import { installDom, removeDom } from './dom-helpers.js';
+import { installFakeOpfs } from './fake-opfs.js';
 
 const tick = () => new Promise(resolve => setTimeout(resolve, 0));
 // The modal coalesces progress writes into an animation frame, and with no
@@ -20,51 +21,17 @@ const tick = () => new Promise(resolve => setTimeout(resolve, 0));
 const nextFrame = () => new Promise(resolve => setTimeout(resolve, 40));
 
 /**
- * A minimal stand-in for the Origin Private File System.
- *
- * `sizes` maps a repo-relative model path to the bytes on disk. Anything absent
- * from it is absent from the cache, which is what lets these tests describe a
- * half-finished install precisely.
+ * Translate repo-relative model paths into the encoded URL keys the OPFS cache
+ * actually stores under, so these tests can keep describing a half-finished
+ * install in terms of the files a reader recognises.
  */
-function installFakeOpfs(sizes = {}) {
-  const files = new Map();
+function opfsSizes(sizes = {}) {
+  const encoded = {};
   for (const [path, size] of Object.entries(sizes)) {
     const file = expectedFilesFor('wasm').find(entry => entry.path === path);
-    files.set(encodeURIComponent(file ? file.url : path), size);
+    encoded[encodeURIComponent(file ? file.url : path)] = size;
   }
-
-  const dir = {
-    async getFileHandle(name, options) {
-      if (!files.has(name)) {
-        if (!options || !options.create) throw new Error('NotFoundError');
-        files.set(name, 0);
-      }
-      return { async getFile() { return { size: files.get(name) }; } };
-    },
-    async removeEntry(name) { files.delete(name); }
-  };
-
-  const original = Object.getOwnPropertyDescriptor(globalThis, 'navigator');
-  Object.defineProperty(globalThis, 'navigator', {
-    value: {
-      storage: {
-        async getDirectory() {
-          return {
-            async getDirectoryHandle() { return dir; },
-            async removeEntry() { files.clear(); }
-          };
-        },
-        async persisted() { return true; }
-      }
-    },
-    configurable: true,
-    writable: true
-  });
-
-  return () => {
-    if (original) Object.defineProperty(globalThis, 'navigator', original);
-    else delete globalThis.navigator;
-  };
+  return encoded;
 }
 
 const GRAPH_FILES = {
@@ -165,7 +132,7 @@ test('Studio Local reports not installed when no storage backend can hold the mo
 // `.onnx`-ish keys as a finished install. It then told the user the engine was
 // installed while every weight byte was missing.
 test('Studio Local is not installed when only the small graph files are present', async () => {
-  const restore = installFakeOpfs(GRAPH_FILES);
+  const opfs = installFakeOpfs({ sizes: opfsSizes(GRAPH_FILES) });
   try {
     const status = await getChatterboxCacheStatus();
     assert.equal(status.installed, false);
@@ -175,12 +142,12 @@ test('Studio Local is not installed when only the small graph files are present'
     assert.equal(status.weightFiles.expected, 4);
     assert.deepEqual(status.missing.sort(), Object.keys(WEIGHT_FILES).sort());
   } finally {
-    restore();
+    opfs.restore();
   }
 });
 
 test('Studio Local is installed once every weight file is on disk at full size', async () => {
-  const restore = installFakeOpfs({ ...GRAPH_FILES, ...WEIGHT_FILES });
+  const opfs = installFakeOpfs({ sizes: opfsSizes({ ...GRAPH_FILES, ...WEIGHT_FILES }) });
   try {
     const status = await getChatterboxCacheStatus();
     assert.equal(status.installed, true);
@@ -190,22 +157,75 @@ test('Studio Local is installed once every weight file is on disk at full size',
     assert.deepEqual(status.missing, []);
     assert.equal(status.device, 'wasm');
   } finally {
-    restore();
+    opfs.restore();
   }
 });
 
 test('a truncated weight file does not count as installed', async () => {
-  const restore = installFakeOpfs({
-    ...GRAPH_FILES,
-    ...WEIGHT_FILES,
-    'onnx/speech_encoder.onnx_data': 1024
+  const opfs = installFakeOpfs({
+    sizes: opfsSizes({
+      ...GRAPH_FILES,
+      ...WEIGHT_FILES,
+      'onnx/speech_encoder.onnx_data': 1024
+    })
   });
   try {
     const status = await getChatterboxCacheStatus();
     assert.equal(status.installed, false);
     assert.deepEqual(status.missing, ['onnx/speech_encoder.onnx_data']);
   } finally {
-    restore();
+    opfs.restore();
+  }
+});
+
+// `navigator.storage.getDirectory` is Safari 15.2; `createWritable` is Safari 26.
+// A browser in between reaches OPFS and cannot write to it, and reporting that
+// as a storable install is what sends it down a path with no honest ending.
+test('a browser that cannot write OPFS files reports Studio Local as unstorable', async () => {
+  const opfs = installFakeOpfs({ sizes: opfsSizes(GRAPH_FILES), writable: false });
+  try {
+    const status = await getChatterboxCacheStatus();
+    assert.equal(status.storable, false);
+    assert.equal(status.installed, false);
+  } finally {
+    opfs.restore();
+  }
+});
+
+// Without OPFS the worker hands 1.4 GB to transformers.js and is killed for
+// memory — a death that fires no error event, so the user watches a frozen bar
+// until the engine's three-minute deadline. Refusing up front is the only
+// outcome that tells them anything.
+test('an install is refused up front when the browser cannot store the model', async () => {
+  const dom = installDom();
+  try {
+    let prepared = 0;
+    const audioManager = {
+      engineId: ENGINE_IDS.CHATTERBOX,
+      modelCacheManager: { getStorageEstimate: async () => ({ quota: 0, usage: 0 }) },
+      getEngine: () => ({
+        capabilities: { id: ENGINE_IDS.CHATTERBOX },
+        onProgress() { return () => {}; }
+      }),
+      getChatterboxCacheStatus: async () => ({
+        installed: false, partial: false, storable: false, persisted: false, fileCount: 0
+      }),
+      prepareEngine: async () => { prepared++; },
+      setEngine() {}
+    };
+
+    const modal = createEngineSettingsModal({ audioManager });
+    document.body.appendChild(modal);
+    await tick();
+
+    modal.querySelector('#btn-engine-apply').dispatchEvent(new dom.window.Event('click', { bubbles: true }));
+    await tick();
+
+    assert.equal(prepared, 0, 'the install must not start');
+    assert.match(modal.querySelector('.engine-settings-message').textContent, /cannot store a model this large/);
+    assert.match(modal.querySelector('.engine-settings-message').textContent, /Kokoro/);
+  } finally {
+    removeDom(dom);
   }
 });
 
