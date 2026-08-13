@@ -71,6 +71,12 @@ const PRIME_SECONDS_INITIAL = 3.0;
 const PRIME_SECONDS_RECOVER = 1.5;
 const PRIME_TIMEOUT_MS = 20000;
 
+// How long buffering may make no progress at all before it is reported as a
+// failure. Generous, because a cold local engine really can take this long to
+// produce its first line — but finite, because the alternative is a spinner
+// that never resolves and says nothing about why.
+const STALL_TIMEOUT_MS = 45000;
+
 // Highlight the line a beat before its audio, so the teleprompter never lags.
 const PLAYHEAD_LEAD_SEC = 0.02;
 
@@ -139,6 +145,11 @@ export class ScreenplayAudioManager {
     this.reachedEnd = false;
     this.primed = false;
     this.primeDeadline = 0;
+    // Zero means "not buffering, nothing to watch". Set whenever the pipeline
+    // starves, cleared as soon as it recovers.
+    this.stallDeadline = 0;
+    // Engines the render pump has already tried to start during this run.
+    this._autoInitAttempted = new Set();
     this.tickHandle = null;
 
     // Bumped by every stop/seek/play. `play()` has to await engine init and the
@@ -257,6 +268,16 @@ export class ScreenplayAudioManager {
     // different proposition, so an uninstalled engine waits for an explicit
     // install or the first Play.
     if (this.engineId === ENGINE_IDS.CHATTERBOX) {
+      // Hybrid casting speaks the narration through Kokoro, so under Studio
+      // Local it is not a second engine the listener might one day pick — it is
+      // half of what is about to play. Warming only Chatterbox here is what let
+      // a script reach "100% pre-rendered" with every action line unrenderable.
+      if (this.hybridCasting) {
+        this.kokoroEngine.init().catch(err => {
+          console.warn('Kokoro narration preload notice:', err);
+        });
+      }
+
       const engine = this.engine;
       const generation = this.playGeneration;
       getChatterboxCacheStatus()
@@ -509,10 +530,119 @@ export class ScreenplayAudioManager {
   }
 
   _engineForUnit(unit) {
-    if (unit?.engineId && this._engines.has(unit.engineId)) {
+    // `this.engine` is authoritative for its own id. Looking the active id back
+    // up in the registry would resolve to a different instance whenever the two
+    // are not the same object, and readiness lives on the instance — so the
+    // pumps would then be waiting on an engine nothing is loading.
+    if (unit?.engineId && unit.engineId !== this.engine.capabilities.id &&
+        this._engines.has(unit.engineId)) {
       return this._engines.get(unit.engineId);
     }
     return this.engine;
+  }
+
+  /**
+   * Every engine the loaded script will actually pull audio from.
+   *
+   * Hybrid casting routes narration and non-dialogue to a second engine while a
+   * third can arrive through a per-character assignment, so "the engine" is not
+   * enough to decide what has to be loaded. Reads through the memoised
+   * `_unitsForLine` rather than re-deriving the routing, so this cannot drift
+   * from what the render pumps will ask for.
+   */
+  _requiredEngines() {
+    // The active engine is always in the set: `play()` gates on its readiness
+    // and reads its capabilities to decide what an outage means, even on a
+    // script where hybrid casting hands every line to somebody else.
+    const engines = new Set([this.engine]);
+    for (let line = 0; line < this.scriptElements.length; line++) {
+      for (const unit of this._unitsForLine(line) || []) {
+        engines.add(this._engineForUnit(unit));
+      }
+    }
+    return [...engines];
+  }
+
+  /**
+   * A cast member's engine failing is not the same as *the* engine failing: the
+   * rest of the cast is ready, and the listener has a one-click way out. Name
+   * whichever characters are stranded so the message is about the reading rather
+   * than about an engine id.
+   */
+  _charactersOnEngine(engine) {
+    const names = [];
+    for (let line = 0; line < this.scriptElements.length; line++) {
+      const element = this.scriptElements[line];
+      if (!element) continue;
+      const units = this._unitsForLine(line) || [];
+      if (!units.some(unit => this._engineForUnit(unit) === engine)) continue;
+
+      const name = element.type !== 'DIALOGUE'
+        ? 'the narration'
+        : (element.characterOriginal || element.character || '').trim();
+      if (name && !names.includes(name)) names.push(name);
+    }
+    return names;
+  }
+
+  /** Required engines that are not loaded yet. Empty means nothing to await. */
+  _coldEngines() {
+    return this._requiredEngines().filter(engine => !engine.isReady);
+  }
+
+  /**
+   * Load every engine the script needs, in parallel.
+   *
+   * The two kinds of failure are reported separately rather than thrown,
+   * because they mean different things: the primary engine falling over is
+   * answered by `capabilities.onUnavailable`, while a supporting engine only
+   * strands part of the cast and has a one-click way out.
+   *
+   * @returns {Promise<{primaryError: Error|null, failed: object[]}>}
+   */
+  async _initRequiredEngines() {
+    let primaryError = null;
+    const failed = [];
+
+    await Promise.all(this._requiredEngines().map(async (engine) => {
+      if (engine.isReady) return;
+      try {
+        await engine.init();
+      } catch (err) {
+        if (engine === this.engine) {
+          primaryError = err;
+          console.warn(`Engine ${this.engineId} unavailable:`, err);
+        } else {
+          console.warn(`Supporting engine ${engine.capabilities.id} unavailable:`, err);
+        }
+      }
+      if (!engine.isReady && engine !== this.engine) failed.push(engine);
+    }));
+
+    return { primaryError, failed };
+  }
+
+  /**
+   * A supporting engine could not load. Say which part of the reading is
+   * stranded, and — when the split is one the listener never asked for — offer
+   * the single setting that removes it, so the answer is not "go and find the
+   * right toggle in Voice Engine settings".
+   */
+  _emitSupportingEngineError(engine) {
+    const cast = this._charactersOnEngine(engine);
+    const who = cast.length === 0 ? 'part of the cast'
+      : cast.length <= 2 ? cast.join(' and ')
+      : `${cast.slice(0, 2).join(', ')} and ${cast.length - 2} more`;
+    const label = engine.capabilities.label || engine.capabilities.id;
+    const error = engine.lastError;
+
+    this.emit('engineError', {
+      engineId: engine.capabilities.id,
+      code: (error && error.code) || 'supporting_unavailable',
+      action: this.hybridCasting ? 'disableHybridCasting' : null,
+      message: `${label} could not load for ${who}.` +
+        (error && error.message ? ` ${error.message}` : '')
+    });
   }
 
   setMasterSpeed(speed) {
@@ -766,7 +896,17 @@ export class ScreenplayAudioManager {
       if (cached) {
         seconds += cached.duration / (u.playbackRate || 1);
       } else {
-        engine.request(u, count);
+        // A cold engine answers with null rather than throwing. Discarding that
+        // is what turned a missing supporting engine into a permanent stall, so
+        // start it instead. Once per engine per run: a failed init clears its
+        // own single-flight latch, and this pump runs every 60 ms, so retrying
+        // unconditionally would spawn a worker and a model download sixteen
+        // times a second. One attempt, then the watchdog has the last word.
+        if (engine.request(u, count) === null && !engine.isReady &&
+            !this._autoInitAttempted.has(engine)) {
+          this._autoInitAttempted.add(engine);
+          engine.init().catch(() => { /* the watchdog reports a stall that persists */ });
+        }
         seconds += u.estimatedDuration;
       }
 
@@ -997,11 +1137,51 @@ export class ScreenplayAudioManager {
     if (starving && this.playbackState !== PLAYBACK_STATES.BUFFERING) {
       this.primed = false;
       this.primeDeadline = Date.now() + PRIME_TIMEOUT_MS;
+      this.stallDeadline = Date.now() + STALL_TIMEOUT_MS;
       this._setState(PLAYBACK_STATES.BUFFERING);
       if (this.visualizer) this.visualizer.setSpeaking(false);
     } else if (!starving && this.playbackState === PLAYBACK_STATES.BUFFERING) {
+      this.stallDeadline = 0;
       this._setState(PLAYBACK_STATES.PLAYING);
     }
+
+    if (this.playbackState === PLAYBACK_STATES.BUFFERING) this._checkStall();
+  }
+
+  /**
+   * Buffering forever is not a state anything recovers from on its own, and it
+   * is indistinguishable on screen from buffering that is about to end. If the
+   * runway has been empty for long enough that no plausible render is still
+   * coming, name the engine that owes us audio and stop pretending.
+   */
+  _checkStall() {
+    if (!this.stallDeadline || Date.now() < this.stallDeadline) return;
+    if (this._readyRunway().seconds > 0) {
+      this.stallDeadline = Date.now() + STALL_TIMEOUT_MS;
+      return;
+    }
+
+    const blocked = this._blockedEngine();
+    this.stallDeadline = 0;
+    this.stop();
+
+    if (blocked && blocked !== this.engine) {
+      this._emitSupportingEngineError(blocked);
+      return;
+    }
+
+    const label = blocked ? (blocked.capabilities.label || blocked.capabilities.id) : 'The voice engine';
+    this.emit('engineError', {
+      engineId: blocked ? blocked.capabilities.id : this.engineId,
+      code: 'render_stalled',
+      message: `${label} stopped producing audio, so playback could not continue.`
+    });
+  }
+
+  /** The engine that owes the cursor its next unit, if there is one. */
+  _blockedEngine() {
+    const unit = this._unitAtCursor();
+    return unit ? this._engineForUnit(unit) : null;
   }
 
   _tick() {
@@ -1045,6 +1225,7 @@ export class ScreenplayAudioManager {
     this.cursorUnit = 0;
     this.reachedEnd = false;
     this.primed = false;
+    this.stallDeadline = 0;
     if (this.visualizer) this.visualizer.setSpeaking(false);
     this._setState(PLAYBACK_STATES.IDLE);
     this.emit('complete', {});
@@ -1094,6 +1275,14 @@ export class ScreenplayAudioManager {
   }
 
   async _runStudioPrewarm(engine, unitGeneration) {
+    // Claim "not ready" before the first await. A prewarm that begins by
+    // awaiting engine loads would otherwise leave a stale canPlay standing for
+    // a microtask — long enough for a Play arriving in the same turn to be
+    // waved through onto audio that has not been rendered.
+    if (this._ownsStudioPrewarm(engine, unitGeneration)) {
+      this._setRenderStatus({ visible: true, active: true, canPlay: false, error: null });
+    }
+
     try {
       if (!engine.isReady) {
         // Selecting Studio Local is explicit consent to install it, but a saved
@@ -1106,6 +1295,21 @@ export class ScreenplayAudioManager {
       }
 
       if (!engine.isReady || !this._ownsStudioPrewarm(engine, unitGeneration)) return false;
+
+      // The plan now spans every engine in the cast, so the supporting ones have
+      // to be up before any of it is requested — a cold engine returns null from
+      // `request()` and the batch would silently bank nothing. Only actually
+      // wait when something is cold: with everything warm this stays on the
+      // synchronous path and the first batch still leaves in this turn.
+      if (this._coldEngines().length > 0) {
+        const { failed } = await this._initRequiredEngines();
+        if (!this._ownsStudioPrewarm(engine, unitGeneration)) return false;
+        if (failed.length > 0) {
+          this._emitSupportingEngineError(failed[0]);
+          return false;
+        }
+      }
+
       await this._queueStudioPrewarm(engine, unitGeneration);
       return true;
     } catch (err) {
@@ -1173,9 +1377,10 @@ export class ScreenplayAudioManager {
     const units = [];
     const appendRange = (start, end) => {
       for (let line = start; line < end && units.length <= STUDIO_PREWARM_UNITS; line++) {
-        const lineUnits = (this._unitsForLine(line) || [])
-          .filter(u => !u.engineId || u.engineId === ENGINE_IDS.CHATTERBOX);
-        units.push(...lineUnits);
+        // Every unit, whichever engine speaks it. Counting only the Chatterbox
+        // half made the bar reach 100% — and `canPlay` go true — while the
+        // narration had had no work done on it at all.
+        units.push(...(this._unitsForLine(line) || []));
       }
     };
     // What the listener will hear next is rendered first. Wrapping around later
@@ -1270,8 +1475,12 @@ export class ScreenplayAudioManager {
       const batchStartedAt = Date.now();
       const results = await Promise.allSettled(
         batchUnits.map((unit, index) => {
-          const request = engine.request(unit, offset + index);
-          return request || Promise.reject(new Error('Studio Local stopped accepting render requests.'));
+          // Route per unit: under hybrid casting this batch can hold narration
+          // bound for Kokoro alongside dialogue bound for Chatterbox.
+          const unitEngine = this._engineForUnit(unit);
+          const request = unitEngine.request(unit, offset + index);
+          return request || Promise.reject(
+            new Error(`${unitEngine.capabilities.label} stopped accepting render requests.`));
         })
       );
       if (!this._ownsStudioPrewarm(engine, unitGeneration)) return;
@@ -1345,15 +1554,17 @@ export class ScreenplayAudioManager {
       return;
     }
 
-    let initError = null;
-    if (!this.engine.isReady) {
-      try {
-        await this.engine.init();
-      } catch (err) {
-        initError = err;
-        console.warn(`Engine ${this.engineId} unavailable:`, err);
-      }
-      if (generation !== this.playGeneration) return;
+    // Every engine the cast uses, not just the selected one. Under hybrid
+    // casting the narration is spoken by a second engine, and a cold engine
+    // answers `request()` with a silent null — which the render pumps read as
+    // "not ready yet, try next tick" and wait on forever.
+    const { primaryError: initError, failed } = await this._initRequiredEngines();
+    if (generation !== this.playGeneration) return;
+
+    if (this.engine.isReady && failed.length > 0) {
+      this._setState(PLAYBACK_STATES.IDLE);
+      this._emitSupportingEngineError(failed[0]);
+      return;
     }
 
     if (!this.engine.isReady) {
@@ -1393,6 +1604,11 @@ export class ScreenplayAudioManager {
     this.reachedEnd = false;
     this.primed = false;
     this.primeDeadline = Date.now() + PRIME_TIMEOUT_MS;
+    // This sets BUFFERING directly rather than by starving into it, so the
+    // watchdog has to be armed here too or the opening stall goes unwatched.
+    this.stallDeadline = Date.now() + STALL_TIMEOUT_MS;
+    // A fresh run earns each engine another attempt.
+    this._autoInitAttempted.clear();
 
     this.cursorLine = Math.max(0, Math.min(this.scriptElements.length - 1, fromIndex));
     this.cursorUnit = 0;
@@ -1409,6 +1625,8 @@ export class ScreenplayAudioManager {
     }
 
     this._stopTick();
+    // Paused time is not stalled time; the clock restarts when playback does.
+    this.stallDeadline = 0;
     this._setState(PLAYBACK_STATES.PAUSED);
 
     if (this.visualizer) this.visualizer.setSpeaking(false);
@@ -1430,10 +1648,15 @@ export class ScreenplayAudioManager {
     if (!preservePrewarm) {
       this.prewarmGeneration++;
       if (this.engineId === ENGINE_IDS.CHATTERBOX && this.scriptElements.length > 0) {
+        // `_setRenderStatus` is a shallow merge, so a percent left over from the
+        // completed run would sit next to canPlay:false — a bar reading 100%
+        // above a Play button that refuses to start.
         this._setRenderStatus({
           visible: true,
           active: false,
           canPlay: false,
+          completed: 0,
+          percent: 0,
           error: null,
           message: 'Studio Local pre-render paused'
         });
@@ -1466,6 +1689,8 @@ export class ScreenplayAudioManager {
     this._resetPlayheadState();
     this.reachedEnd = false;
     this.primed = false;
+    this.stallDeadline = 0;
+    this._autoInitAttempted.clear();
 
     if (this.visualizer) this.visualizer.setSpeaking(false);
 

@@ -94,11 +94,15 @@ export function createTransportBar({
 
     <div class="transport-scrub-row">
       <span id="transport-line-counter">Line 0 / 0</span>
+      <!-- The buffering notice sits left of the track, away from the scrub
+           percentage. Adjacent, they read as one sentence — "Rendering
+           voices… 3%" looked like render progress stuck at 3% when the 3%
+           was the playhead's position in the script. -->
+      <span id="transport-buffer-status" class="transport-buffer-status"></span>
       <div class="scrub-track" id="scrub-track" title="Click to jump to a line in the screenplay">
         <div class="scrub-fill" id="scrub-fill"></div>
       </div>
-      <span id="transport-buffer-status" class="transport-buffer-status"></span>
-      <span id="transport-progress-percent">0%</span>
+      <span id="transport-progress-percent" title="Position in the screenplay">0%</span>
     </div>
   `;
 
@@ -238,7 +242,14 @@ export function createTransportBar({
     if (latestRenderStatus.error) {
       renderDetail.textContent = latestRenderStatus.error;
     } else if (!latestRenderStatus.active) {
-      renderDetail.textContent = 'Ready for uninterrupted playback';
+      // `active` only says the render loop is not running — a paused or
+      // abandoned run is idle too. Promising uninterrupted playback on that
+      // alone is what put "Ready" above a Play button that could not start.
+      // The idle-but-unready wording stays factual rather than telling anyone to
+      // press Play, because Play is disabled in exactly this state.
+      renderDetail.textContent = latestRenderStatus.canPlay
+        ? 'Ready for uninterrupted playback'
+        : 'Pre-render paused — not ready yet';
     } else if (latestRenderStatus.canPlay) {
       const eta = formatEta(latestRenderStatus.etaSeconds);
       renderDetail.textContent = `Ready to play · rendering continues${eta ? ` · ${eta}` : ''}`;

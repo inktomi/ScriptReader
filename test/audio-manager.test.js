@@ -481,6 +481,183 @@ test('hybrid casting routes narration to Kokoro and character dialogue to Chatte
   assert.equal(dialogueEngine.capabilities.id, ENGINE_IDS.CHATTERBOX);
 });
 
+/**
+ * A hybrid cast is two engines deep, but only the selected one used to be
+ * loaded. The narration engine then answered every render request with a silent
+ * null, the scheduler found no buffer for the opening action line, and playback
+ * sat in BUFFERING forever behind a bar that read "100% — ready".
+ */
+test('hybrid casting loads the narration engine, not just the selected one', async () => {
+  const manager = new ScreenplayAudioManager();
+  manager.engineId = ENGINE_IDS.CHATTERBOX;
+  manager.hybridCasting = true;
+  manager.scheduler = {};
+  manager._ensureAudio = async () => manager.scheduler;
+
+  manager.engine = fakeEngine({ capabilities: { id: ENGINE_IDS.CHATTERBOX, metered: false } });
+  let narratorInits = 0;
+  const narrator = fakeEngine({
+    isReady: false,
+    capabilities: { id: ENGINE_IDS.KOKORO, metered: false },
+    async init() { narratorInits++; this.isReady = true; }
+  });
+  manager._engines.set(ENGINE_IDS.KOKORO, narrator);
+
+  manager.scriptElements = [
+    { type: 'ACTION', character: 'NARRATOR', text: 'Rain lashes against the glass.' },
+    { type: 'DIALOGUE', character: 'VALENTINE', text: 'Kira, breach is done.' }
+  ];
+
+  let started = 0;
+  manager._beginNeuralPlayback = () => { started++; };
+  await manager.play();
+
+  assert.equal(narratorInits, 1);
+  assert.equal(started, 1);
+});
+
+test('a narration engine that will not load reports it instead of buffering forever', async () => {
+  const manager = new ScreenplayAudioManager();
+  manager.engineId = ENGINE_IDS.CHATTERBOX;
+  manager.hybridCasting = true;
+  manager.scheduler = {};
+  manager._ensureAudio = async () => manager.scheduler;
+
+  manager.engine = fakeEngine({ capabilities: { id: ENGINE_IDS.CHATTERBOX, metered: false } });
+  manager._engines.set(ENGINE_IDS.KOKORO, fakeEngine({
+    isReady: false,
+    capabilities: { id: ENGINE_IDS.KOKORO, metered: false },
+    async init() { throw new Error('Model weights unavailable'); }
+  }));
+
+  manager.scriptElements = [
+    { type: 'ACTION', character: 'NARRATOR', text: 'Rain lashes against the glass.' }
+  ];
+
+  const events = [];
+  manager.subscribe((event, data) => events.push({ event, data }));
+  let started = 0;
+  manager._beginNeuralPlayback = () => { started++; };
+
+  const originalWarn = console.warn;
+  console.warn = () => {};
+  try {
+    await manager.play();
+  } finally {
+    console.warn = originalWarn;
+  }
+
+  assert.equal(started, 0);
+  const error = events.findLast(entry => entry.event === 'engineError');
+  assert.ok(error, 'a failed narration engine must be reported');
+  // The listener never asked for the split, so the fix is one click away rather
+  // than a hunt through Voice Engine settings.
+  assert.equal(error.data.action, 'disableHybridCasting');
+  assert.match(error.data.message, /the narration/);
+  assert.equal(manager.playbackState, PLAYBACK_STATES.IDLE);
+});
+
+test('the Studio pre-render plan counts narration units, not just Chatterbox ones', () => {
+  const manager = new ScreenplayAudioManager();
+  manager.engineId = ENGINE_IDS.CHATTERBOX;
+  manager.hybridCasting = true;
+  manager.engine = fakeEngine({ capabilities: { id: ENGINE_IDS.CHATTERBOX, metered: false } });
+  manager._engines.set(ENGINE_IDS.KOKORO, fakeEngine({
+    capabilities: { id: ENGINE_IDS.KOKORO, metered: false }
+  }));
+
+  manager.scriptElements = [
+    { type: 'ACTION', character: 'NARRATOR', text: 'Rain lashes against the glass.' },
+    { type: 'DIALOGUE', character: 'VALENTINE', text: 'Kira, breach is done.' }
+  ];
+
+  const engineIds = manager._studioRenderUnits().units.map(unit => unit.engineId);
+  assert.ok(engineIds.includes(ENGINE_IDS.KOKORO),
+    'narration must be in the plan the progress bar reports against');
+  assert.ok(engineIds.includes(ENGINE_IDS.CHATTERBOX));
+});
+
+/**
+ * The pump self-heals a cold engine, but a failed init clears its own
+ * single-flight latch — so an unconditional retry would spawn a worker and a
+ * model download on every 60 ms tick.
+ */
+test('a cold engine is started once per run, not once per tick', () => {
+  const manager = new ScreenplayAudioManager();
+  let inits = 0;
+
+  // The selected engine is up — `_pumpRequests` gates on that. The narration
+  // engine underneath it is the cold one.
+  manager.engine = fakeEngine({ capabilities: { id: ENGINE_IDS.CHATTERBOX, metered: false } });
+  const cold = fakeEngine({
+    isReady: false,
+    capabilities: { id: ENGINE_IDS.KOKORO, metered: false },
+    async init() { inits++; throw new Error('weights unavailable'); },
+    request: () => null
+  });
+  manager._engineForUnit = () => cold;
+
+  manager.scriptElements = [{ type: 'ACTION', character: 'NARRATOR', text: 'Opening' }];
+  manager._unitsForLine = line => line === 0
+    ? [{ key: 'unit-0', estimatedDuration: 4, leadPause: 0 }]
+    : null;
+
+  for (let tick = 0; tick < 25; tick++) manager._pumpRequests();
+  assert.equal(inits, 1);
+
+  // A fresh run is allowed one more attempt.
+  manager._autoInitAttempted.clear();
+  manager._pumpRequests();
+  assert.equal(inits, 2);
+});
+
+test('buffering that never progresses is reported rather than spun on forever', () => {
+  const manager = new ScreenplayAudioManager();
+  manager.engineId = ENGINE_IDS.CHATTERBOX;
+  manager.engine = fakeEngine({ capabilities: { id: ENGINE_IDS.CHATTERBOX, metered: false } });
+  manager.scriptElements = [{ type: 'ACTION', character: 'NARRATOR', text: 'Opening' }];
+  manager._unitsForLine = line => line === 0
+    ? [{ key: 'unit-0', estimatedDuration: 4, leadPause: 0, engineId: ENGINE_IDS.CHATTERBOX }]
+    : null;
+  manager.scheduler = { bufferedAhead: 0, currentTime: 0, stopAll() {} };
+  manager.playbackState = PLAYBACK_STATES.BUFFERING;
+
+  const events = [];
+  manager.subscribe((event, data) => events.push({ event, data }));
+
+  // Nothing has been rendered and the deadline has passed.
+  manager.stallDeadline = Date.now() - 1;
+  manager._pumpState();
+
+  const error = events.findLast(entry => entry.event === 'engineError');
+  assert.ok(error, 'a permanently starved pipeline must surface an error');
+  assert.equal(error.data.code, 'render_stalled');
+  assert.equal(manager.playbackState, PLAYBACK_STATES.IDLE);
+});
+
+test('a stall watchdog that sees progress rearms instead of firing', () => {
+  const manager = new ScreenplayAudioManager();
+  manager.engine = fakeEngine({
+    capabilities: { id: ENGINE_IDS.KOKORO, metered: false },
+    getCached: () => ({ duration: 12 })
+  });
+  manager.scriptElements = [{ type: 'ACTION', character: 'NARRATOR', text: 'Opening' }];
+  manager._unitsForLine = line => line === 0
+    ? [{ key: 'unit-0', estimatedDuration: 4, leadPause: 0 }]
+    : null;
+  manager.scheduler = { bufferedAhead: 0, currentTime: 0 };
+  manager.playbackState = PLAYBACK_STATES.BUFFERING;
+
+  const events = [];
+  manager.subscribe((event, data) => events.push({ event, data }));
+  manager.stallDeadline = Date.now() - 1;
+  manager._pumpState();
+
+  assert.equal(events.filter(entry => entry.event === 'engineError').length, 0);
+  assert.equal(manager.playbackState, PLAYBACK_STATES.BUFFERING);
+  assert.ok(manager.stallDeadline > Date.now(), 'the watchdog must rearm on progress');
+});
+
 test('short script safe runway calculates small cushion without forcing 5-minute requirement', () => {
   const manager = new ScreenplayAudioManager();
   manager.engineId = ENGINE_IDS.CHATTERBOX;

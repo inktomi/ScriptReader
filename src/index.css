@@ -1689,7 +1689,9 @@ button:disabled {
 
 .transport-scrub-row {
   display: grid;
-  grid-template-columns: 90px 1fr auto 40px;
+  /* counter · buffering notice · scrub track · position. The notice sits before
+     the track so it cannot be read as a qualifier on the position percentage. */
+  grid-template-columns: 90px auto 1fr 40px;
   align-items: center;
   gap: 10px;
   color: var(--text-muted);

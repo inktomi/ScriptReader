@@ -423,7 +423,18 @@ async function initApp() {
       // fallback voice and letting them conclude the engine sounds bad.
       case 'engineError':
         transportBar.updatePlaybackState(PLAYBACK_STATES.IDLE);
-        showActionToast(data.message, 'Settings', () => openEngineSettingsModal());
+        // A supporting engine that will not load is a problem with one obvious
+        // answer — read those lines with the engine that *did* load — so offer
+        // that directly instead of sending the listener into settings to work
+        // out which of two engines failed and which toggle un-splits the cast.
+        if (data.action === 'disableHybridCasting') {
+          showActionToast(data.message, 'Use one voice engine', () => {
+            audioManager.setHybridCasting(false);
+            audioManager.play();
+          });
+        } else {
+          showActionToast(data.message, 'Settings', () => openEngineSettingsModal());
+        }
         break;
     }
   });
