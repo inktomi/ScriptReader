@@ -96,9 +96,9 @@ export function formatPitchOffset(sliderValue) {
  */
 export function chunkSpeech(text, maxChars = MAX_CHUNK_CHARS) {
   const trimmed = (text || '').trim();
-  if (!trimmed) return [];
+  if (!trimmed || !/[a-z0-9]/i.test(trimmed)) return [];
 
-  const sentences = trimmed.match(/[^.!?]+[.!?]+["')\]]*\s*|[^.!?]+$/g) || [trimmed];
+  const sentences = trimmed.match(/[^.!?]+[.!?]+["'’”»›)\]}]*\s*|[^.!?]+$/g) || [trimmed];
   if (sentences.length <= 1 && trimmed.length <= maxChars) return [trimmed];
 
   const chunks = [];
@@ -154,7 +154,18 @@ export function chunkSpeech(text, maxChars = MAX_CHUNK_CHARS) {
   }
   flush();
 
-  return chunks.length > 0 ? chunks : [trimmed];
+  const rawChunks = chunks.length > 0 ? chunks : [trimmed];
+  const validChunks = [];
+  for (const c of rawChunks) {
+    const trimmedChunk = c.trim();
+    if (!trimmedChunk) continue;
+    if (/[a-z0-9]/i.test(trimmedChunk)) {
+      validChunks.push(trimmedChunk);
+    } else if (validChunks.length > 0) {
+      validChunks[validChunks.length - 1] += ` ${trimmedChunk}`;
+    }
+  }
+  return validChunks;
 }
 
 /**
@@ -409,43 +420,45 @@ export function buildLineUnits({
   const timingScale = 1 / Math.max(0.5, masterSpeed);
   const trimTailSec = element.cutOff ? interruptTrimSec() * timingScale : 0;
 
-  return chunks.map((text, chunkIndex) => ({
-    lineIndex,
-    chunkIndex,
-    chunkCount: chunks.length,
-    isFirstChunk: chunkIndex === 0,
-    isLastChunk: chunkIndex === chunks.length - 1,
+  return chunks
+    .map((text, chunkIndex) => ({
+      lineIndex,
+      chunkIndex,
+      chunkCount: chunks.length,
+      isFirstChunk: chunkIndex === 0,
+      isLastChunk: chunkIndex === chunks.length - 1,
 
-    text,
-    voiceId,
-    voiceCacheId: cacheVoiceId,
-    engineId: caps.id,
-    synthSpeed: delivery.synthSpeed,
-    instructions,
-    playbackRate: delivery.playbackRate,
-    gain,
-    filter: delivery.filter,
-    pan,
-
-    anchor: chunkIndex === 0 ? firstAnchor : 'chunk',
-    overlapMode,
-    // Silence before this unit, in seconds. Negative means it starts early.
-    leadPause: chunkIndex === 0 ? firstLead : chunkGap / 1000,
-    trimTailSec: chunkIndex === chunks.length - 1 ? trimTailSec : 0,
-    interruptFadeSec: chunkIndex === chunks.length - 1 ? 0.08 * timingScale : 0,
-
-    estimatedDuration: estimateDuration(text, delivery.tempo, caps.supportsSpeed),
-    key: makeCacheKey({
+      text,
+      voiceId,
+      voiceCacheId: cacheVoiceId,
       engineId: caps.id,
-      voiceId: cacheVoiceId,
       synthSpeed: delivery.synthSpeed,
       instructions,
-      text,
-    }),
+      playbackRate: delivery.playbackRate,
+      gain,
+      filter: delivery.filter,
+      pan,
 
-    nuance,
-    character: element.character,
-  }));
+      anchor: chunkIndex === 0 ? firstAnchor : 'chunk',
+      overlapMode,
+      // Silence before this unit, in seconds. Negative means it starts early.
+      leadPause: chunkIndex === 0 ? firstLead : chunkGap / 1000,
+      trimTailSec: chunkIndex === chunks.length - 1 ? trimTailSec : 0,
+      interruptFadeSec: chunkIndex === chunks.length - 1 ? 0.08 * timingScale : 0,
+
+      estimatedDuration: estimateDuration(text, delivery.tempo, caps.supportsSpeed),
+      key: makeCacheKey({
+        engineId: caps.id,
+        voiceId: cacheVoiceId,
+        synthSpeed: delivery.synthSpeed,
+        instructions,
+        text,
+      }),
+
+      nuance,
+      character: element.character,
+    }))
+    .filter((unit) => /[a-z0-9]/i.test(unit.text));
 }
 
 /**

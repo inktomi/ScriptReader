@@ -559,3 +559,30 @@ test('buildLineUnits returns an empty array for lines without speakable dialogue
   assert.equal(spokenUnits.length, 1);
   assert.equal(spokenUnits[0].text, 'Hello world!');
 });
+
+test('chunkSpeech handles smart quotes and never produces non-alphanumeric orphan chunks', () => {
+  const quoteTests = [
+    '“CHOKE ON YOUR PRIDE, YOU DEVIL-WHORE.”',
+    '“LeVal.”',
+    'CANDIDATE’S SON’S CAMPAIGN.”',
+    'them to “Lantern City.”',
+    '“Wait!” she shouted. “Don’t go!”',
+    'He whispered: ‘Run.’',
+  ];
+
+  for (const text of quoteTests) {
+    const chunks = chunkSpeech(text, 125);
+    assert.ok(chunks.length > 0, `Expected chunks for: ${text}`);
+    for (const chunk of chunks) {
+      assert.ok(
+        /[a-z0-9]/i.test(chunk),
+        `Chunk must contain alphanumeric characters, got: ${JSON.stringify(chunk)} from ${JSON.stringify(text)}`,
+      );
+    }
+  }
+
+  // Pure punctuation or symbols should return an empty array
+  assert.deepEqual(chunkSpeech('”', 125), []);
+  assert.deepEqual(chunkSpeech('“ ”', 125), []);
+  assert.deepEqual(chunkSpeech('... -- !?', 125), []);
+});
