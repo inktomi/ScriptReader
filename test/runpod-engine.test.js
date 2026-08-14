@@ -1005,3 +1005,69 @@ test('RunPod registerVoices polls when serverless job is queued or in progress',
     globalThis.fetch = originalFetch;
   }
 });
+
+test('RunPod batch automatically recovers and retries when a distributed worker reports missing reference recording', async () => {
+  const originalFetch = globalThis.fetch;
+  const validAudioB64 = 'UklGRigAAABXQVZFZm10IBAAAAABAAEARKwAAIhYAQACABAAZGF0YQAAAAA=';
+  let batchCalls = 0;
+  let singleCalls = 0;
+
+  globalThis.fetch = async (_url, options) => {
+    const body = JSON.parse(options.body);
+    if (body.input?.batch) {
+      batchCalls++;
+      // Simulate Worker B returning missing reference recording error
+      return jsonResponse({
+        status: 'COMPLETED',
+        output: {
+          batch_results: [{ id: 'u1', error: "Chatterbox voice 'studio-alice@1' has no reference recording" }],
+        },
+      });
+    }
+    // Single unit retry request
+    singleCalls++;
+    return jsonResponse({
+      status: 'COMPLETED',
+      output: { audio_base64: validAudioB64, sample_rate: 24000, duration: 1.0 },
+    });
+  };
+
+  const origAudioContext = globalThis.AudioContext;
+  globalThis.AudioContext = class {
+    async decodeAudioData() {
+      return { duration: 1.0, getChannelData: () => new Float32Array([0.1, -0.1, 0.2]), sampleRate: 24000 };
+    }
+  };
+
+  try {
+    const engine = new RunPodServerlessEngine({
+      getApiKey: () => 'test-key',
+      getEndpointId: () => 'test-endpoint',
+    });
+    engine.isReady = true;
+    engine._getVoiceReferenceB64 = async () => 'SAMPLE_B64';
+
+    const item = {
+      unit: { key: 'u1', text: 'Hello', voiceId: 'studio-alice', voiceCacheId: 'studio-alice@1' },
+      controller: new AbortController(),
+      generation: engine.generation,
+      promise: null,
+      resolve: () => {},
+      reject: (err) => {
+        throw err;
+      },
+    };
+    let resolvedBuffer = null;
+    item.resolve = (buf) => {
+      resolvedBuffer = buf;
+    };
+
+    await engine._synthesizeBatch([item]);
+    assert.ok(resolvedBuffer, 'unit should resolve successfully after automatic reference retry');
+    assert.equal(batchCalls, 1);
+    assert.equal(singleCalls, 1);
+  } finally {
+    globalThis.fetch = originalFetch;
+    globalThis.AudioContext = origAudioContext;
+  }
+});

@@ -557,7 +557,13 @@ export class RunPodServerlessEngine {
     let audioB64 = '';
 
     if (data.status === 'COMPLETED') {
-      if (data.output?.error) throw new Error(data.output.error);
+      if (data.output?.error) {
+        if (data.output.error.includes('has no reference recording') && !refB64) {
+          this._registeredVoiceIds.delete(voiceCacheId);
+          return this._synthesize(unit, signal);
+        }
+        throw new Error(data.output.error);
+      }
       audioB64 = data.output?.audio_base64 || '';
     } else if (data.id && (data.status === 'IN_QUEUE' || data.status === 'IN_PROGRESS')) {
       audioB64 = await this._pollJob(endpointId, data.id, key, signal);
@@ -647,7 +653,7 @@ export class RunPodServerlessEngine {
     const endpointId = this.getEndpointId().trim() || DEFAULT_RUNPOD_ENDPOINT;
 
     const payloadBatch = [];
-    const newlyRegistered = new Set();
+    const seenVoicesInBatch = new Set();
     for (const item of items) {
       const unit = item.unit;
       const voiceIdStr = String(unit.voiceId || '');
@@ -662,14 +668,15 @@ export class RunPodServerlessEngine {
       const voiceCacheId = unit.voiceCacheId || unit.voiceId;
       let refB64 = null;
       if (!isKokoro) {
-        if (this._registeredVoiceIds.has(voiceCacheId)) {
-          refB64 = null;
-        } else {
+        // RunPod serverless routes batches across independent ephemeral workers.
+        // Include reference audio once per unique voice per batch so any worker
+        // instance handling this request has the prompt.
+        if (!seenVoicesInBatch.has(voiceCacheId)) {
           refB64 = await this._getVoiceReferenceB64(unit.voiceId, voiceCacheId);
           if (!refB64) {
             throw new Error('This Studio voice is missing its reference recording. Add it again in casting.');
           }
-          newlyRegistered.add(voiceCacheId);
+          seenVoicesInBatch.add(voiceCacheId);
         }
       }
 
@@ -736,7 +743,7 @@ export class RunPodServerlessEngine {
       throw new Error(data.error || `RunPod returned unexpected response (${data.status || 'unknown'})`);
     }
 
-    for (const id of newlyRegistered) {
+    for (const id of seenVoicesInBatch) {
       this._registeredVoiceIds.add(id);
     }
 
@@ -754,6 +761,28 @@ export class RunPodServerlessEngine {
         continue;
       }
       if (match.error) {
+        if (match.error.includes('has no reference recording')) {
+          try {
+            const buffer = await this._synthesize(item.unit, item.controller.signal);
+            if (this.renderStore) {
+              try {
+                const channelData =
+                  typeof buffer.getChannelData === 'function'
+                    ? buffer.getChannelData(0)
+                    : buffer.channelData?.[0] || null;
+                if (channelData) {
+                  await this.renderStore.put(item.unit.key, channelData, buffer.sampleRate || 24000);
+                }
+              } catch (_) {}
+            }
+            this._cacheBuffer(item.unit.key, buffer);
+            item.resolve(buffer);
+            continue;
+          } catch (retryErr) {
+            item.reject(retryErr);
+            continue;
+          }
+        }
         item.reject(new Error(match.error));
         continue;
       }
