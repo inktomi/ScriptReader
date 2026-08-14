@@ -70,13 +70,18 @@ export function createHeader({
 
     const isCloud = engineId === ENGINE_TYPES.OPENAI;
     const isStudio = engineId === ENGINE_TYPES.CHATTERBOX;
-    badgeText.textContent = isCloud ? 'Cloud voices' : (isStudio ? 'Studio Local' : 'Local voices');
-    badge.classList.toggle('is-cloud', isCloud);
+    const isRunPod = engineId === ENGINE_TYPES.RUNPOD;
+    badgeText.textContent = isCloud
+      ? 'Cloud voices'
+      : (isRunPod ? 'RunPod GPU' : (isStudio ? 'Studio Local' : 'Local voices'));
+    badge.classList.toggle('is-cloud', isCloud || isRunPod);
     badge.title = isCloud
       ? 'OpenAI voices — dialogue is sent to OpenAI. Click to change.'
-      : (isStudio
-        ? 'Chatterbox Studio voices — generated privately on this device. Click to change.'
-        : 'Kokoro voices — screenplay audio is generated on this device. Click to change.');
+      : (isRunPod
+        ? 'RunPod Serverless GPU (L40S) — fast cloud neural rendering. Click to change.'
+        : (isStudio
+          ? 'Chatterbox Studio voices — generated privately on this device. Click to change.'
+          : 'Kokoro voices — screenplay audio is generated on this device. Click to change.'));
   }
 
   /**

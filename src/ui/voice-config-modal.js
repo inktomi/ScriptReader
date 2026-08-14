@@ -35,6 +35,8 @@ export function createVoiceConfigModal({
   const totalDialogue = characters.reduce((sum, c) => sum + c.lineCount, 0) || 1;
   const engineId = audioManager.engineId;
   const isStudio = engineId === ENGINE_IDS.CHATTERBOX;
+  const isRunPod = engineId === ENGINE_IDS.RUNPOD;
+  const hasReferenceVoices = isStudio || isRunPod;
   const isHybrid = isStudio && audioManager.hybridCasting;
   const narratorEngineId = isHybrid ? ENGINE_IDS.KOKORO : engineId;
   let enginePool = getVoicesForEngine(engineId);
@@ -88,6 +90,13 @@ export function createVoiceConfigModal({
    */
   function qualityBadge(voiceId, forEngineId = engineId) {
     if (forEngineId === ENGINE_IDS.CHATTERBOX) return voiceId ? 'Studio reference' : 'Reference needed';
+    if (forEngineId === ENGINE_IDS.RUNPOD) {
+      if (voiceId && !voiceId.startsWith('af_') && !voiceId.startsWith('am_') && !voiceId.startsWith('bf_') && !voiceId.startsWith('bm_')) {
+        return 'Studio reference';
+      }
+      const grade = KOKORO_GRADES[voiceId];
+      return grade ? `Kokoro · ${grade}` : 'RunPod GPU';
+    }
     const grade = KOKORO_GRADES[voiceId];
     return grade ? `${gradeLabel(voiceId)} · ${grade}` : (forEngineId === ENGINE_IDS.KOKORO ? 'Kokoro Neural' : 'Cloud');
   }
@@ -277,21 +286,31 @@ export function createVoiceConfigModal({
             <div>
               ${getIconSvg('cpu', 17)}
               <span>
-                <strong>${engineId === ENGINE_IDS.OPENAI ? 'OpenAI cloud voices' : (isStudio ? 'Studio Local · Chatterbox' : 'Kokoro local voices')}</strong>
-                <small>${engineId === ENGINE_IDS.OPENAI
-                  ? 'Dialogue is sent to OpenAI for synthesis.'
-                  : (isStudio ? 'Highest-quality local voices cloned from private reference recordings.' : 'Audio is generated on this device. Your screenplay stays local.')}</small>
+                <strong>${
+                  engineId === ENGINE_IDS.OPENAI
+                    ? 'OpenAI cloud voices'
+                    : (isRunPod
+                        ? 'RunPod Serverless GPU (L40S)'
+                        : (isStudio ? 'Studio Local · Chatterbox' : 'Kokoro local voices'))
+                }</strong>
+                <small>${
+                  engineId === ENGINE_IDS.OPENAI
+                    ? 'Dialogue is sent to OpenAI for synthesis.'
+                    : (isRunPod
+                        ? 'High-speed Chatterbox and Kokoro neural synthesis on dedicated NVIDIA L40S GPUs.'
+                        : (isStudio ? 'Highest-quality local voices cloned from private reference recordings.' : 'Audio is generated on this device. Your screenplay stays local.'))
+                }</small>
               </span>
             </div>
             <button id="btn-casting-engine" class="btn btn-quiet" type="button">Change engine</button>
           </div>
 
-          ${isStudio ? `
+          ${hasReferenceVoices ? `
             <section class="studio-voice-library" aria-labelledby="studio-voice-title">
               <div>
                 <span class="eyebrow">Private voice library</span>
                 <strong id="studio-voice-title">${enginePool.length
-                  ? `${enginePool.length} reference voice${enginePool.length === 1 ? '' : 's'} available`
+                  ? `${enginePool.length} voice${enginePool.length === 1 ? '' : 's'} available`
                   : 'Add your first reference voice'}</strong>
                 <small>Use a clean 5–10 second recording with one speaker and little background noise. Stored only in this browser.</small>
               </div>
