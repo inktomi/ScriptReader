@@ -61,5 +61,6 @@ These instructions apply to the entire repository.
 
 - Every defect fix must include a regression test that reproduces the failing ordering or boundary where practical.
 - For feature changes, run the focused tests first, then the complete test suite and production build.
+- Before every commit, run `npm run check` and resolve all Biome lint, formatting, and import-organization failures.
 - Before handoff, run `git diff --check` and inspect the complete pending diff, including untracked files.
 - Review cross-layer features as a system: provider API, normalization, UI lifecycle, audio resources, persistence, and existing assignments can fail at their boundaries even when each happy path works independently.
