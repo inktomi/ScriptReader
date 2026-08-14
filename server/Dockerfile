@@ -2,7 +2,7 @@ FROM pytorch/pytorch:2.13.0-cuda13.0-cudnn9-runtime
 
 ENV DEBIAN_FRONTEND=noninteractive
 ENV PYTHONUNBUFFERED=1
-ENV LD_LIBRARY_PATH=/opt/conda/lib/python3.11/site-packages/nvidia/cublas/lib:/opt/conda/lib/python3.11/site-packages/nvidia/cudnn/lib:/opt/conda/lib/python3.11/site-packages/nvidia/cuda_runtime/lib:/opt/conda/lib/python3.11/site-packages/nvidia/cufft/lib:/opt/conda/lib/python3.11/site-packages/nvidia/curand/lib:/usr/local/cuda/lib64:$LD_LIBRARY_PATH
+ENV PIP_BREAK_SYSTEM_PACKAGES=1
 
 # Install audio processing utilities and git
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -17,7 +17,7 @@ WORKDIR /app
 
 # Install Python requirements
 COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+RUN pip install --no-cache-dir --break-system-packages -r requirements.txt
 
 # Bake model weights directly into container layer
 COPY download_weights.py .
