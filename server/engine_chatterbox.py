@@ -68,9 +68,12 @@ class ChatterboxEngine:
         for lm_name in ["language_model.onnx", "language_model_fp16.onnx", "language_model_q4f16.onnx", "language_model_q4.onnx"]:
             path = os.path.join(onnx_dir, lm_name)
             if os.path.exists(path):
-                self.sessions["language_model"] = ort.InferenceSession(path, sess_options, providers=providers)
-                print(f"[ChatterboxEngine] Selected language model: {lm_name}")
-                break
+                try:
+                    self.sessions["language_model"] = ort.InferenceSession(path, sess_options, providers=providers)
+                    print(f"[ChatterboxEngine] Selected language model: {lm_name}")
+                    break
+                except Exception as e:
+                    print(f"[ChatterboxEngine] Notice: Could not load {lm_name} with {providers}: {e}")
 
         print(f"[ChatterboxEngine] Successfully loaded sessions: {list(self.sessions.keys())}")
         active = {name: s.get_providers()[0] for name, s in self.sessions.items()}
