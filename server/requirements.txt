@@ -17,4 +17,4 @@ kokoro==0.9.4
 misaki[en]==0.9.4
 huggingface-hub==0.29.1
 python-multipart==0.0.20
-requests==2.32.3
+requests==2.34.2
