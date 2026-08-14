@@ -28,14 +28,14 @@ export const DTYPE_CONFIGS = {
     embed_tokens: 'fp32',
     speech_encoder: 'fp32',
     language_model: 'q4',
-    conditional_decoder: 'fp32'
+    conditional_decoder: 'fp32',
   },
   webgpu: {
     embed_tokens: 'fp32',
     speech_encoder: 'fp32',
     language_model: 'q4f16',
-    conditional_decoder: 'fp32'
-  }
+    conditional_decoder: 'fp32',
+  },
 };
 
 /**
@@ -58,7 +58,7 @@ const FILE_BYTES = {
   'onnx/language_model_q4.onnx': 227_911,
   'onnx/language_model_q4.onnx_data': 353_621_248,
   'onnx/language_model_q4f16.onnx': 229_388,
-  'onnx/language_model_q4f16.onnx_data': 304_737_408
+  'onnx/language_model_q4f16.onnx_data': 304_737_408,
 };
 
 export function modelFileUrl(path) {
@@ -146,7 +146,4 @@ export function expectedBytesForUrl(url) {
  * device is known, and refusing to start is far better than running out of
  * quota 1.3 GB in.
  */
-export const CHATTERBOX_DOWNLOAD_BYTES = Math.max(
-  expectedTotalBytes('wasm'),
-  expectedTotalBytes('webgpu')
-);
+export const CHATTERBOX_DOWNLOAD_BYTES = Math.max(expectedTotalBytes('wasm'), expectedTotalBytes('webgpu'));

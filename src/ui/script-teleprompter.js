@@ -1,12 +1,8 @@
-import { getIconSvg } from '../utils/icons.js';
-import { escapeHtml } from '../utils/escape-html.js';
 import { PACE_PROFILES } from '../screenplay/overlap-pacing.js';
+import { escapeHtml } from '../utils/escape-html.js';
+import { getIconSvg } from '../utils/icons.js';
 
-export function createScriptTeleprompter({
-  scriptStore,
-  audioManager,
-  onLineClick
-}) {
+export function createScriptTeleprompter({ scriptStore, onLineClick }) {
   const container = document.createElement('main');
   container.className = 'screenplay-viewport';
 
@@ -103,30 +99,37 @@ export function createScriptTeleprompter({
           break;
 
         case 'CHARACTER':
-        case 'DIALOGUE':
+        case 'DIALOGUE': {
           lineClass += ' dialogue';
           const overlapMode = elem.overlap && elem.overlap.mode;
           if (overlapMode === 'simultaneous') lineClass += ' is-simultaneous';
           if (overlapMode === 'interrupt') lineClass += ' is-interrupting';
 
-          const directionTag = elem.parenthetical ? `
+          const directionTag = elem.parenthetical
+            ? `
             <div class="script-line parenthetical" style="padding-left: 0; padding-right: 0;">
               (${escapeHtml(elem.parenthetical)})
             </div>
-          ` : '';
+          `
+            : '';
 
-          const emotionBadge = nuance.emotionKey && nuance.emotionKey !== 'neutral' ? `
+          const emotionBadge =
+            nuance.emotionKey && nuance.emotionKey !== 'neutral'
+              ? `
             <span class="emotion-badge" style="background: ${nuance.badgeColor}22; border-color: ${nuance.badgeColor}66; color: ${nuance.badgeColor};">
               ${nuance.emotionLabel || nuance.emotionKey}
             </span>
-          ` : '';
+          `
+              : '';
 
           const visibleOverlap = overlapMode === 'simultaneous' || overlapMode === 'interrupt';
-          const overlapBadge = visibleOverlap ? (() => {
-            const color = overlapMode === 'simultaneous' ? '#06B6D4' : '#F43F5E';
-            const text = overlapMode === 'simultaneous' ? '⇉ Simultaneous' : '⏵ Interrupts';
-            return `<span class="emotion-badge" style="background: ${color}22; border-color: ${color}66; color: ${color};">${text}</span>`;
-          })() : '';
+          const overlapBadge = visibleOverlap
+            ? (() => {
+                const color = overlapMode === 'simultaneous' ? '#06B6D4' : '#F43F5E';
+                const text = overlapMode === 'simultaneous' ? '⇉ Simultaneous' : '⏵ Interrupts';
+                return `<span class="emotion-badge" style="background: ${color}22; border-color: ${color}66; color: ${color};">${text}</span>`;
+              })()
+            : '';
 
           // The dash the author wrote is already in the text; this just marks
           // that somebody actually took the line away.
@@ -142,6 +145,7 @@ export function createScriptTeleprompter({
             <div>${escapeHtml(elem.text)}${cutMark}</div>
           `;
           break;
+        }
 
         case 'TRANSITION':
           lineClass += ' transition';
@@ -155,9 +159,10 @@ export function createScriptTeleprompter({
 
       // Mark where the pace changes, not every line that inherits it.
       const prevPace = index > 0 ? script.elements[index - 1].pace : 'natural';
-      const paceMarker = elem.pace && elem.pace !== prevPace
-        ? `<div class="pace-marker">${PACE_PROFILES[elem.pace] ? PACE_PROFILES[elem.pace].label : elem.pace}</div>`
-        : '';
+      const paceMarker =
+        elem.pace && elem.pace !== prevPace
+          ? `<div class="pace-marker">${PACE_PROFILES[elem.pace] ? PACE_PROFILES[elem.pace].label : elem.pace}</div>`
+          : '';
 
       html += `
         ${paceMarker}
@@ -171,10 +176,10 @@ export function createScriptTeleprompter({
     pageContent.innerHTML = html;
 
     // Attach click to play listener on each line
-    pageContent.querySelectorAll('.script-line').forEach(el => {
+    pageContent.querySelectorAll('.script-line').forEach((el) => {
       el.addEventListener('click', () => {
         const idx = parseInt(el.dataset.index, 10);
-        if (!isNaN(idx)) {
+        if (!Number.isNaN(idx)) {
           onLineClick(idx);
         }
       });
@@ -188,8 +193,7 @@ export function createScriptTeleprompter({
    * once characters talk over each other.
    */
   function setActiveLines(indices, shouldScroll = true) {
-    const active = (Array.isArray(indices) ? indices : [indices])
-      .filter(index => Number.isInteger(index));
+    const active = (Array.isArray(indices) ? indices : [indices]).filter((index) => Number.isInteger(index));
     const next = new Set(active);
 
     for (const index of activeLineSet) {
@@ -225,7 +229,7 @@ export function createScriptTeleprompter({
     setActiveLines([index], shouldScroll);
   }
 
-  function scrollToActiveLine(force = false) {
+  function scrollToActiveLine(_force = false) {
     const activeEl = pageContent.querySelector('.script-line.active');
     if (!activeEl) return;
 
@@ -233,11 +237,11 @@ export function createScriptTeleprompter({
     const activeRect = activeEl.getBoundingClientRect();
 
     // Center the element in viewport
-    const offset = (activeRect.top - scrollRect.top) - (scrollRect.height / 3);
+    const offset = activeRect.top - scrollRect.top - scrollRect.height / 3;
 
     scrollArea.scrollBy({
       top: offset,
-      behavior: 'smooth'
+      behavior: 'smooth',
     });
   }
 
@@ -255,6 +259,6 @@ export function createScriptTeleprompter({
     renderScript,
     setActiveLines,
     highlightActiveLine,
-    scrollToActiveLine
+    scrollToActiveLine,
   };
 }

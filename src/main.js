@@ -1,27 +1,27 @@
 import './index.css';
-import { ScriptStore } from './screenplay/script-store.js';
-import { ScreenplayAudioManager, ENGINE_TYPES, PLAYBACK_STATES } from './audio/audio-manager.js';
+import { ENGINE_TYPES, PLAYBACK_STATES, ScreenplayAudioManager } from './audio/audio-manager.js';
 import { AudioVisualizer } from './audio/audio-visualizer.js';
-import { createHeader } from './ui/header.js';
+import { reconcileChatterboxVoiceStorage } from './audio/chatterbox-voice-store.js';
+import { SAMPLE_SCRIPTS } from './screenplay/sample-scripts.js';
+import { ScriptStore } from './screenplay/script-store.js';
 import { createCastPanel } from './ui/cast-panel.js';
-import { createScriptTeleprompter } from './ui/script-teleprompter.js';
-import { createTransportBar } from './ui/transport-bar.js';
-import { createSceneDrawer } from './ui/scene-drawer.js';
+import { createEngineSettingsModal } from './ui/engine-settings-modal.js';
+import { createHeader } from './ui/header.js';
 import { createHelpModal } from './ui/help-modal.js';
 import { createHfModelHubModal } from './ui/hf-model-hub.js';
-import { createVoiceConfigModal } from './ui/voice-config-modal.js';
-import { createEngineSettingsModal } from './ui/engine-settings-modal.js';
 import { createResumeToastElement } from './ui/resume-toast.js';
+import { createSceneDrawer } from './ui/scene-drawer.js';
+import { createScriptTeleprompter } from './ui/script-teleprompter.js';
+import { createTransportBar } from './ui/transport-bar.js';
+import { createVoiceConfigModal } from './ui/voice-config-modal.js';
 import { createWelcomeScreen } from './ui/welcome-screen.js';
 import { escapeHtml } from './utils/escape-html.js';
 import { loadAppState, restoreCastBackup } from './utils/storage.js';
-import { SAMPLE_SCRIPTS } from './screenplay/sample-scripts.js';
-import { reconcileChatterboxVoiceStorage } from './audio/chatterbox-voice-store.js';
 
 const APP_VIEWS = Object.freeze({
   WELCOME: 'WELCOME',
   CASTING: 'CASTING',
-  PLAYER: 'PLAYER'
+  PLAYER: 'PLAYER',
 });
 
 // Application Orchestrator
@@ -55,29 +55,30 @@ async function initApp() {
       scriptStore,
       audioManager,
       isInitialSetup,
-      onOpenEngineSettings: () => openEngineSettingsModal(() => {
-        if (isInitialSetup) openVoiceConfigModal(true);
-      }),
-      onSave: ({ narratorVoiceId, castAssignments }) => {
+      onOpenEngineSettings: () =>
+        openEngineSettingsModal(() => {
+          if (isInitialSetup) openVoiceConfigModal(true);
+        }),
+      onSave: ({ narratorVoiceId }) => {
         audioManager.setNarratorVoice(narratorVoiceId);
         audioManager.setScript(
           scriptStore.currentScript.elements,
           scriptStore.castAssignments,
-          scriptStore.activeLineIndex
+          scriptStore.activeLineIndex,
         );
         castPanel.render();
         teleprompter.renderScript();
         transportBar.updateProgress(scriptStore.activeLineIndex, scriptStore.currentScript.elements.length);
-        
+
         const activeElem = scriptStore.currentScript.elements[scriptStore.activeLineIndex];
         if (activeElem) {
           transportBar.updateActiveSpeaker(
             activeElem,
             audioManager.getVoiceProfileForCharacter(activeElem.character),
-            activeElem.nuance
+            activeElem.nuance,
           );
         }
-        
+
         header.setScript(scriptStore.currentScript);
         if (isInitialSetup) {
           showPlayer();
@@ -89,7 +90,7 @@ async function initApp() {
       onCancel: () => {
         activeVoiceModal = null;
         if (isInitialSetup) showWelcome();
-      }
+      },
     });
 
     (isInitialSetup ? appRoot : document.body).appendChild(activeVoiceModal);
@@ -100,16 +101,16 @@ async function initApp() {
     onChangeScript: () => showWelcome(),
     onOpenVoiceConfig: () => openVoiceConfigModal(false),
     onToggleLibrary: () => toggleLibraryRail(),
-    onShowLibrary: tab => showLibraryTab(tab),
+    onShowLibrary: (tab) => showLibraryTab(tab),
     onToggleHelp: () => openHelpModal(),
     onOpenEngineSettings: () => openEngineSettingsModal(),
-    currentEngine: audioManager.engineId
+    currentEngine: audioManager.engineId,
   });
 
   const castPanel = createCastPanel({
     scriptStore,
     audioManager,
-    onOpenVoiceConfig: () => openVoiceConfigModal(false)
+    onOpenVoiceConfig: () => openVoiceConfigModal(false),
   });
 
   const teleprompter = createScriptTeleprompter({
@@ -118,7 +119,7 @@ async function initApp() {
     onLineClick: (lineIndex) => {
       audioManager.seek(lineIndex);
       scriptStore.setActiveLine(lineIndex);
-    }
+    },
   });
 
   const sceneDrawer = createSceneDrawer({
@@ -129,7 +130,7 @@ async function initApp() {
     },
     onClose: () => {
       setLibraryState(false);
-    }
+    },
   });
 
   const transportBar = createTransportBar({
@@ -150,7 +151,7 @@ async function initApp() {
     onSeek: (index) => {
       audioManager.seek(index);
       scriptStore.setActiveLine(index);
-    }
+    },
   });
 
   // Assemble the listening room. The rail contains one library at a time so the
@@ -184,7 +185,7 @@ async function initApp() {
     libraryRail.classList.toggle('is-collapsed', !isOpen);
     castPanel.element.hidden = showScenes;
     sceneDrawer.element.hidden = !showScenes;
-    libraryRail.querySelectorAll('.library-tab').forEach(button => {
+    libraryRail.querySelectorAll('.library-tab').forEach((button) => {
       const active = button.dataset.libraryTab === tab;
       button.classList.toggle('is-active', active);
       button.setAttribute('aria-selected', String(active));
@@ -209,7 +210,7 @@ async function initApp() {
     }
   }
 
-  libraryRail.querySelectorAll('.library-tab').forEach(button => {
+  libraryRail.querySelectorAll('.library-tab').forEach((button) => {
     button.addEventListener('click', () => showLibraryTab(button.dataset.libraryTab));
   });
   libraryRail.querySelector('.library-close').addEventListener('click', () => {
@@ -237,11 +238,7 @@ async function initApp() {
     if (!scriptStore.currentScript) return;
     const activeLine = scriptStore.activeLineIndex;
     audioManager.setNarratorVoice(scriptStore.getNarratorVoice(audioManager.engineId));
-    audioManager.setScript(
-      scriptStore.currentScript.elements,
-      scriptStore.castAssignments,
-      activeLine
-    );
+    audioManager.setScript(scriptStore.currentScript.elements, scriptStore.castAssignments, activeLine);
     header.setScript(scriptStore.currentScript);
     teleprompter.renderScript();
     teleprompter.highlightActiveLine(activeLine, true);
@@ -254,7 +251,7 @@ async function initApp() {
       transportBar.updateActiveSpeaker(
         activeElem,
         audioManager.getVoiceProfileForCharacter(activeElem.character),
-        activeElem.nuance
+        activeElem.nuance,
       );
     }
   }
@@ -262,14 +259,12 @@ async function initApp() {
   function recentScriptSummary() {
     const saved = loadAppState();
     if (!saved || !saved.activeScriptKey) return null;
-    const sample = saved.sampleId
-      ? SAMPLE_SCRIPTS.find(item => item.id === saved.sampleId)
-      : null;
+    const sample = saved.sampleId ? SAMPLE_SCRIPTS.find((item) => item.id === saved.sampleId) : null;
     const title = sample?.title || saved.customScriptData?.title;
     if (!title) return null;
     return {
       title,
-      detail: `${saved.scriptType === 'sample' ? 'Sample screenplay' : 'Imported screenplay'} · saved at line ${(saved.activeLineIndex || 0) + 1}`
+      detail: `${saved.scriptType === 'sample' ? 'Sample screenplay' : 'Imported screenplay'} · saved at line ${(saved.activeLineIndex || 0) + 1}`,
     };
   }
 
@@ -284,19 +279,19 @@ async function initApp() {
 
     const welcome = createWelcomeScreen({
       recentScript: recentScriptSummary(),
-      onFileSelected: file => loadWelcomeFile(file, welcome),
+      onFileSelected: (file) => loadWelcomeFile(file, welcome),
       onPasteSubmitted: (text, title) => {
         scriptStore.loadFountainText(text, title, true);
         enterCasting();
       },
-      onSelectSample: sampleId => {
+      onSelectSample: (sampleId) => {
         scriptStore.loadSample(sampleId, false);
         enterCasting();
       },
       onContinueRecent: () => {
         if (scriptStore.restoreSavedSession()) enterCasting();
       },
-      onOpenHelp: () => openHelpModal()
+      onOpenHelp: () => openHelpModal(),
     });
     appRoot.prepend(welcome);
   }
@@ -367,20 +362,22 @@ async function initApp() {
       const script = scriptStore.currentScript;
       if (!script) return;
       console.log(`%cParse: ${script.title}`, 'font-weight:bold');
-      console.table(script.elements.map((e, i) => ({
-        i,
-        type: e.type,
-        character: e.character,
-        pace: e.pace,
-        linePace: e.linePace || '',
-        overlap: (e.overlap && e.overlap.mode) || '',
-        via: (e.overlap && e.overlap.source) || '',
-        cutOff: !!e.cutOff,
-        pan: audioManager.getPanForCharacter(e.character).toFixed(2),
-        spoken: (e.nuance && e.nuance.cleanSpeech) || ''
-      })));
+      console.table(
+        script.elements.map((e, i) => ({
+          i,
+          type: e.type,
+          character: e.character,
+          pace: e.pace,
+          linePace: e.linePace || '',
+          overlap: (e.overlap && e.overlap.mode) || '',
+          via: (e.overlap && e.overlap.source) || '',
+          cutOff: !!e.cutOff,
+          pan: audioManager.getPanForCharacter(e.character).toFixed(2),
+          spoken: (e.nuance && e.nuance.cleanSpeech) || '',
+        })),
+      );
     };
-    scriptStore.subscribe(event => {
+    scriptStore.subscribe((event) => {
       if (event === 'scriptLoaded') dumpParse();
     });
     window.__dumpParse = dumpParse;
@@ -409,8 +406,10 @@ async function initApp() {
         scriptStore.setActiveLine(data.index);
         teleprompter.setActiveLines(audioManager.getActiveLineIndices(), data.isClusterHead);
         transportBar.updateActiveSpeaker(
-          data.element, data.voice, data.nuance,
-          data.concurrent.map(i => scriptStore.currentScript.elements[i])
+          data.element,
+          data.voice,
+          data.nuance,
+          data.concurrent.map((i) => scriptStore.currentScript.elements[i]),
         );
         transportBar.updateProgress(data.index, scriptStore.currentScript.elements.length);
         castPanel.setSpeakingCharacters(audioManager.getActiveCharacters());
@@ -433,7 +432,7 @@ async function initApp() {
           transportBar.updateActiveSpeaker(
             data.element,
             audioManager.getVoiceProfileForCharacter(data.element.character),
-            data.element.nuance
+            data.element.nuance,
           );
         }
         break;
@@ -470,14 +469,14 @@ async function initApp() {
     const modal = createHfModelHubModal({
       currentModelId: 'onnx-community/Kokoro-82M-v1.0-ONNX',
       isModelBusy: () => audioManager.kokoroEngine.isLoading,
-      onSelectModel: async (modelId) => {
+      onSelectModel: async (_modelId) => {
         if (!audioManager.kokoroEngine.isReady && !audioManager.kokoroEngine.isLoading) {
           // The progress subscriber owns the toast for every phase, failure
           // included. Driving it from here too would dismiss the error state
           // three seconds later and take the Retry button with it.
           audioManager.kokoroEngine.init().catch(() => {});
         }
-      }
+      },
     });
     document.body.appendChild(modal);
   }
@@ -496,7 +495,9 @@ async function initApp() {
     engineModalOpen = true;
     const modal = createEngineSettingsModal({
       audioManager,
-      onClose: () => { engineModalOpen = false; },
+      onClose: () => {
+        engineModalOpen = false;
+      },
       onOpenModelHub: () => {
         engineModalOpen = false;
         openHfHubModal();
@@ -508,18 +509,18 @@ async function initApp() {
         audioManager.setScript(
           scriptStore.currentScript ? scriptStore.currentScript.elements : [],
           scriptStore.castAssignments,
-          scriptStore.activeLineIndex
+          scriptStore.activeLineIndex,
         );
         header.setEngineBadge(engineId);
         castPanel.render();
         showResumeToast(
           engineId === ENGINE_TYPES.OPENAI
             ? 'Cloud voices on — dialogue is sent to OpenAI to be spoken.'
-            : (engineId === ENGINE_TYPES.CHATTERBOX
+            : engineId === ENGINE_TYPES.CHATTERBOX
               ? 'Studio Local on — Chatterbox voices run privately on this device.'
-              : (engineId === ENGINE_TYPES.RUNPOD
+              : engineId === ENGINE_TYPES.RUNPOD
                 ? 'RunPod GPU on — high-speed neural rendering on NVIDIA L40S.'
-                : 'Local Kokoro voices on — nothing leaves this device.'))
+                : 'Local Kokoro voices on — nothing leaves this device.',
         );
         if (afterEngineChanged) {
           afterEngineChanged(engineId);
@@ -529,7 +530,7 @@ async function initApp() {
           // the engine can never be selected with an unexplained empty cast.
           openVoiceConfigModal(false);
         }
-      }
+      },
     });
     document.body.appendChild(modal);
   }
@@ -578,7 +579,9 @@ async function initApp() {
       toast.classList.add('toast-fadeout');
       setTimeout(() => toast.remove(), 300);
     };
-    const arm = () => { dismissTimer = setTimeout(dismiss, 16000); };
+    const arm = () => {
+      dismissTimer = setTimeout(dismiss, 16000);
+    };
 
     toast.addEventListener('mouseenter', () => clearTimeout(dismissTimer));
     toast.addEventListener('mouseleave', arm);
@@ -602,29 +605,25 @@ async function initApp() {
     scriptStore.pendingCastMigration = null;
 
     const roleWord = migration.count === 1 ? 'role' : 'roles';
-    showActionToast(
-      `Recast ${migration.count} ${roleWord} with higher-quality voices`,
-      'Undo',
-      () => {
-        if (!restoreCastBackup(migration.scriptKey)) return;
-        audioManager.stop();
-        scriptStore.setScriptData(scriptStore.currentScript, {
-          scriptKey: scriptStore.scriptKey,
-          scriptType: scriptStore.scriptType,
-          sampleId: scriptStore.sampleId,
-          customData: scriptStore.customScriptData,
-          resetProgress: false
-        });
-        audioManager.setNarratorVoice(scriptStore.getNarratorVoice(audioManager.engineId));
-        audioManager.setScript(
-          scriptStore.currentScript.elements,
-          scriptStore.castAssignments,
-          scriptStore.activeLineIndex
-        );
-        castPanel.render();
-        showResumeToast('Original cast restored.');
-      }
-    );
+    showActionToast(`Recast ${migration.count} ${roleWord} with higher-quality voices`, 'Undo', () => {
+      if (!restoreCastBackup(migration.scriptKey)) return;
+      audioManager.stop();
+      scriptStore.setScriptData(scriptStore.currentScript, {
+        scriptKey: scriptStore.scriptKey,
+        scriptType: scriptStore.scriptType,
+        sampleId: scriptStore.sampleId,
+        customData: scriptStore.customScriptData,
+        resetProgress: false,
+      });
+      audioManager.setNarratorVoice(scriptStore.getNarratorVoice(audioManager.engineId));
+      audioManager.setScript(
+        scriptStore.currentScript.elements,
+        scriptStore.castAssignments,
+        scriptStore.activeLineIndex,
+      );
+      castPanel.render();
+      showResumeToast('Original cast restored.');
+    });
   }
 
   function surfaceLegacyCastOffer() {
@@ -632,43 +631,36 @@ async function initApp() {
     if (!candidate) return;
     scriptStore.pendingLegacyConfig = null;
 
-    showActionToast(
-      `Found an older saved cast for "${candidate.scriptTitle}"`,
-      'Restore cast',
-      () => {
-        if (scriptStore.scriptKey !== candidate.scriptKey) return;
-        audioManager.stop();
-        scriptStore.setScriptData(scriptStore.currentScript, {
-          scriptKey: scriptStore.scriptKey,
-          scriptType: scriptStore.scriptType,
-          sampleId: scriptStore.sampleId,
-          customData: scriptStore.customScriptData,
-          resetProgress: false,
-          legacyConfigKey: candidate.legacyKey
-        });
-        audioManager.setNarratorVoice(scriptStore.getNarratorVoice(audioManager.engineId));
-        audioManager.setScript(
-          scriptStore.currentScript.elements,
-          scriptStore.castAssignments,
-          scriptStore.activeLineIndex
+    showActionToast(`Found an older saved cast for "${candidate.scriptTitle}"`, 'Restore cast', () => {
+      if (scriptStore.scriptKey !== candidate.scriptKey) return;
+      audioManager.stop();
+      scriptStore.setScriptData(scriptStore.currentScript, {
+        scriptKey: scriptStore.scriptKey,
+        scriptType: scriptStore.scriptType,
+        sampleId: scriptStore.sampleId,
+        customData: scriptStore.customScriptData,
+        resetProgress: false,
+        legacyConfigKey: candidate.legacyKey,
+      });
+      audioManager.setNarratorVoice(scriptStore.getNarratorVoice(audioManager.engineId));
+      audioManager.setScript(
+        scriptStore.currentScript.elements,
+        scriptStore.castAssignments,
+        scriptStore.activeLineIndex,
+      );
+      transportBar.updateProgress(scriptStore.activeLineIndex, scriptStore.currentScript.elements.length);
+      const activeElem = scriptStore.currentScript.elements[scriptStore.activeLineIndex];
+      if (activeElem) {
+        transportBar.updateActiveSpeaker(
+          activeElem,
+          audioManager.getVoiceProfileForCharacter(activeElem.character),
+          activeElem.nuance,
         );
-        transportBar.updateProgress(
-          scriptStore.activeLineIndex,
-          scriptStore.currentScript.elements.length
-        );
-        const activeElem = scriptStore.currentScript.elements[scriptStore.activeLineIndex];
-        if (activeElem) {
-          transportBar.updateActiveSpeaker(
-            activeElem,
-            audioManager.getVoiceProfileForCharacter(activeElem.character),
-            activeElem.nuance
-          );
-        }
       }
-    );
+    });
   }
 
-  scriptStore.subscribe(event => {
+  scriptStore.subscribe((event) => {
     if (event === 'scriptLoaded') {
       surfaceLegacyCastOffer();
       surfaceCastMigration();
@@ -750,9 +742,7 @@ async function initApp() {
     };
   }
 
-  audioManager.kokoroEngine.onProgress(
-    engineProgressHandler(audioManager.kokoroEngine, 'Kokoro-82M')
-  );
+  audioManager.kokoroEngine.onProgress(engineProgressHandler(audioManager.kokoroEngine, 'Kokoro-82M'));
   const studioEngine = audioManager.getEngine(ENGINE_TYPES.CHATTERBOX);
   if (studioEngine) {
     studioEngine.onProgress(engineProgressHandler(studioEngine, 'Studio Local'));
@@ -763,16 +753,18 @@ async function initApp() {
     // Studio Local's install is eight files in OPFS, not one cached blob, so it
     // answers "is this ready offline?" through its own probe.
     if (engineId === ENGINE_TYPES.CHATTERBOX) {
-      audioManager.getChatterboxCacheStatus()
-        .then(status => header.updateEngineCacheBadge({ engineId, studioInstalled: status.installed }))
-        .catch(err => console.warn('Studio Local cache status notice:', err));
+      audioManager
+        .getChatterboxCacheStatus()
+        .then((status) => header.updateEngineCacheBadge({ engineId, studioInstalled: status.installed }))
+        .catch((err) => console.warn('Studio Local cache status notice:', err));
       return;
     }
-    audioManager.getCacheStatus()
+    audioManager
+      .getCacheStatus()
       // The engine id rides along so a cloud session's badge is not overwritten
       // by a status report about Kokoro's weights.
-      .then(status => header.updateEngineCacheBadge({ ...status, engineId }))
-      .catch(err => console.warn('Cache status notice:', err));
+      .then((status) => header.updateEngineCacheBadge({ ...status, engineId }))
+      .catch((err) => console.warn('Cache status notice:', err));
   }
 
   // Initial check of local cache status
@@ -869,13 +861,13 @@ async function initApp() {
   // Global Keyboard Shortcuts
   window.addEventListener('keydown', (e) => {
     const target = e.target;
-    const isTextInput = target && (
-      target.tagName === 'TEXTAREA' ||
-      target.tagName === 'INPUT' ||
-      target.tagName === 'SELECT' ||
-      target.tagName === 'BUTTON' ||
-      target.isContentEditable
-    );
+    const isTextInput =
+      target &&
+      (target.tagName === 'TEXTAREA' ||
+        target.tagName === 'INPUT' ||
+        target.tagName === 'SELECT' ||
+        target.tagName === 'BUTTON' ||
+        target.isContentEditable);
     if (isTextInput) return;
 
     if (e.key === '?') {
@@ -887,8 +879,10 @@ async function initApp() {
     if (e.code === 'Space' || e.key === ' ' || e.keyCode === 32) {
       e.preventDefault();
       e.stopPropagation();
-      if (audioManager.playbackState === PLAYBACK_STATES.PLAYING ||
-          audioManager.playbackState === PLAYBACK_STATES.BUFFERING) {
+      if (
+        audioManager.playbackState === PLAYBACK_STATES.PLAYING ||
+        audioManager.playbackState === PLAYBACK_STATES.BUFFERING
+      ) {
         audioManager.pause();
       } else {
         audioManager.play();
@@ -918,4 +912,4 @@ async function initApp() {
 }
 
 // Start application
-initApp().catch(err => console.error('App initialization error:', err));
+initApp().catch((err) => console.error('App initialization error:', err));

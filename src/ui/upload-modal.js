@@ -1,10 +1,6 @@
 import { getIconSvg } from '../utils/icons.js';
 
-export function createUploadModal({
-  onPdfSelected,
-  onFountainTextSubmitted,
-  onClose
-}) {
+export function createUploadModal({ onPdfSelected, onFountainTextSubmitted, onClose }) {
   const modal = document.createElement('div');
   modal.className = 'modal-overlay';
 

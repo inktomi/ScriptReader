@@ -55,18 +55,25 @@ function ortWasmFromCdn() {
 
       const version = resolveOrtVersion(id);
       if (!version) {
-        throw new Error(`[ort-wasm-from-cdn] ${id} references an ORT wasm binary but no onnxruntime-web could be resolved from it.`);
+        throw new Error(
+          `[ort-wasm-from-cdn] ${id} references an ORT wasm binary but no onnxruntime-web could be resolved from it.`,
+        );
       }
       // Each bundle embeds the version of the ORT it was built against. If it
       // does not match what resolution found, the CDN copy would be the wrong
       // build — fail loudly rather than ship a runtime that cannot start.
       if (!code.includes(version)) {
-        throw new Error(`[ort-wasm-from-cdn] resolved onnxruntime-web@${version} for ${id}, but that version string does not appear in the file. Re-check which ORT build it bundles before trusting the CDN URL.`);
+        throw new Error(
+          `[ort-wasm-from-cdn] resolved onnxruntime-web@${version} for ${id}, but that version string does not appear in the file. Re-check which ORT build it bundles before trusting the CDN URL.`,
+        );
       }
 
       const base = `https://cdn.jsdelivr.net/npm/onnxruntime-web@${version}/dist/`;
       return {
-        code: code.replace(ORT_WASM_URL, (_match, quote, file) => `new URL(${quote}${file}${quote}, ${quote}${base}${quote})`),
+        code: code.replace(
+          ORT_WASM_URL,
+          (_match, quote, file) => `new URL(${quote}${file}${quote}, ${quote}${base}${quote})`,
+        ),
         map: null,
       };
     },
@@ -159,7 +166,9 @@ function assertWorkersAssetSizes() {
       if (!fs.existsSync(outDir)) return;
       walk(outDir);
       if (oversized.length) {
-        throw new Error(`Cloudflare Workers rejects assets over 25 MiB, and these would fail the deploy:\n  ${oversized.join('\n  ')}`);
+        throw new Error(
+          `Cloudflare Workers rejects assets over 25 MiB, and these would fail the deploy:\n  ${oversized.join('\n  ')}`,
+        );
       }
     },
   };

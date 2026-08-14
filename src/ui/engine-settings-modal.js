@@ -1,28 +1,28 @@
-import { getIconSvg } from '../utils/icons.js';
-import { escapeHtml } from '../utils/escape-html.js';
-import { ENGINE_IDS } from '../audio/engine-contract.js';
 import { CHATTERBOX_DOWNLOAD_BYTES, clearChatterboxCache } from '../audio/chatterbox-engine.js';
+import { ENGINE_IDS } from '../audio/engine-contract.js';
 import { ModelCacheManager } from '../audio/model-cache-manager.js';
-import { createFocusPreservingRenderer } from '../utils/focus-preserving-render.js';
 import {
-  loadOpenAIKey,
-  saveOpenAIKey,
   clearOpenAIKey,
-  loadRunPodKey,
-  saveRunPodKey,
   clearRunPodKey,
-  loadRunPodEndpointId,
-  saveRunPodEndpointId,
-  validateRunPodConnection,
-  describeRunPodValidationReason,
   DEFAULT_RUNPOD_ENDPOINT,
-  maskKey,
-  hasCloudConsent,
+  describeRunPodValidationReason,
+  describeValidationReason,
   grantCloudConsent,
+  hasCloudConsent,
+  loadOpenAIKey,
+  loadRunPodEndpointId,
+  loadRunPodKey,
+  maskKey,
   revokeCloudConsent,
+  saveOpenAIKey,
+  saveRunPodEndpointId,
+  saveRunPodKey,
   validateOpenAIKey,
-  describeValidationReason
+  validateRunPodConnection,
 } from '../utils/credentials.js';
+import { escapeHtml } from '../utils/escape-html.js';
+import { createFocusPreservingRenderer } from '../utils/focus-preserving-render.js';
+import { getIconSvg } from '../utils/icons.js';
 
 /**
  * Voice engine picker, consent gate, and API key entry.
@@ -42,7 +42,7 @@ const STAGE_COPY = {
   probe: 'Checking what is already on this device',
   download: 'Downloading — you can close this window, the install keeps going',
   building: 'Building the speech models',
-  done: 'Ready'
+  done: 'Ready',
 };
 
 const MAX_MESSAGE_CHARS = 300;
@@ -99,12 +99,9 @@ export function createEngineSettingsModal({ audioManager, onClose, onEngineChang
   const focusRenderer = createFocusPreservingRenderer(modal, {
     valueSelectors: ['#openai-key-input', '#runpod-key-input', '#runpod-endpoint-input'],
     scrollSelectors: ['.modal-body'],
-    fallback: ({ findByIdentity, focusables }) => (
-      findByIdentity('id:btn-test-runpod-key')
-      || findByIdentity('id:btn-engine-apply')
-      || focusables()[0]
-    ),
-    keepFocusInside: () => hasRendered && modal.isConnected && !closed
+    fallback: ({ findByIdentity, focusables }) =>
+      findByIdentity('id:btn-test-runpod-key') || findByIdentity('id:btn-engine-apply') || focusables()[0],
+    keepFocusInside: () => hasRendered && modal.isConnected && !closed,
   });
 
   function studioChipLabel() {
@@ -163,11 +160,15 @@ export function createEngineSettingsModal({ audioManager, onClose, onEngineChang
             </div>
           </label>
 
-          ${selectedEngine === ENGINE_IDS.KOKORO && onOpenModelHub ? `
+          ${
+            selectedEngine === ENGINE_IDS.KOKORO && onOpenModelHub
+              ? `
             <button id="btn-manage-local-model" class="btn btn-secondary" type="button" style="align-self:flex-start;">
               ${getIconSvg('cpu', 15)} Manage local model and cache
             </button>
-          ` : ''}
+          `
+              : ''
+          }
 
           <label class="engine-option ${isStudio() ? 'selected' : ''}" data-engine="${ENGINE_IDS.CHATTERBOX}" style="
             display: block; padding: 14px; border-radius: 10px; cursor: pointer;
@@ -190,7 +191,9 @@ export function createEngineSettingsModal({ audioManager, onClose, onEngineChang
             </div>
           </label>
 
-          ${isStudio() ? `
+          ${
+            isStudio()
+              ? `
             <div class="studio-install-panel">
               <div>
                 <strong>${studioStatus.installed ? 'Available offline' : 'Install only when you choose'}</strong>
@@ -217,14 +220,20 @@ export function createEngineSettingsModal({ audioManager, onClose, onEngineChang
                   </span>
                 </div>
               </label>
-              ${studioStatus.fileCount > 0 && !installingStudio ? `
+              ${
+                studioStatus.fileCount > 0 && !installingStudio
+                  ? `
                 <button id="btn-studio-remove" class="btn btn-secondary" type="button"
                         style="align-self:flex-start; font-size: 0.72rem; padding: 5px 10px; margin-top: 6px;">
                   Remove Studio Local
                 </button>
-              ` : ''}
+              `
+                  : ''
+              }
             </div>
-          ` : ''}
+          `
+              : ''
+          }
 
           <label class="engine-option" data-engine="${ENGINE_IDS.OPENAI}" style="
             display: block; padding: 14px; border-radius: 10px; cursor: pointer;
@@ -245,7 +254,9 @@ export function createEngineSettingsModal({ audioManager, onClose, onEngineChang
             </div>
           </label>
 
-          ${isCloud() ? `
+          ${
+            isCloud()
+              ? `
             <div style="border-top: 1px solid rgba(255,255,255,0.08); padding-top: 16px; display: flex; flex-direction: column; gap: 12px;">
 
               <label style="display: flex; gap: 10px; align-items: flex-start; cursor: pointer;
@@ -280,15 +291,23 @@ export function createEngineSettingsModal({ audioManager, onClose, onEngineChang
                   </button>
                 </div>
 
-                ${keyReady && !validationMessage ? `
+                ${
+                  keyReady && !validationMessage
+                    ? `
                   <div style="font-size: 0.75rem; color: var(--text-muted); margin-top: 6px;">
                     Stored: <code>${escapeHtml(maskKey(storedKey))}</code>
-                  </div>` : ''}
+                  </div>`
+                    : ''
+                }
 
-                ${validationMessage ? `
+                ${
+                  validationMessage
+                    ? `
                   <div style="font-size: 0.78rem; margin-top: 6px; color: ${validationOk ? '#10B981' : '#F87171'};">
                     ${escapeHtml(validationMessage)}
-                  </div>` : ''}
+                  </div>`
+                    : ''
+                }
 
                 <div style="font-size: 0.75rem; color: var(--text-muted); margin-top: 10px; line-height: 1.5;">
                   The key is stored in this browser's local storage, which any script on this
@@ -298,12 +317,18 @@ export function createEngineSettingsModal({ audioManager, onClose, onEngineChang
                 </div>
               </div>
 
-              ${keyReady ? `
+              ${
+                keyReady
+                  ? `
                 <button id="btn-forget-key" class="btn btn-secondary" style="align-self: flex-start; font-size: 0.75rem; padding: 5px 10px;">
                   Forget this key
-                </button>` : ''}
+                </button>`
+                  : ''
+              }
             </div>
-          ` : ''}
+          `
+              : ''
+          }
 
           <label class="engine-option" data-engine="${ENGINE_IDS.RUNPOD}" style="
             display: block; padding: 14px; border-radius: 10px; cursor: pointer;
@@ -323,7 +348,9 @@ export function createEngineSettingsModal({ audioManager, onClose, onEngineChang
             </div>
           </label>
 
-          ${isRunPod() ? `
+          ${
+            isRunPod()
+              ? `
             <div style="border-top: 1px solid rgba(255,255,255,0.08); padding-top: 16px; display: flex; flex-direction: column; gap: 12px;">
               <label style="display: flex; gap: 10px; align-items: flex-start; cursor: pointer;
                             padding: 12px; border-radius: 8px; background: rgba(56,189,248,0.06);
@@ -356,10 +383,14 @@ export function createEngineSettingsModal({ audioManager, onClose, onEngineChang
                     ${validatingRunPod ? 'Testing…' : 'Test connection'}
                   </button>
                 </div>
-                ${runpodKeyReady && !runpodValidationMessage ? `
+                ${
+                  runpodKeyReady && !runpodValidationMessage
+                    ? `
                   <div style="font-size: 0.75rem; color: var(--text-muted); margin-top: 6px;">
                     Stored: <code>${escapeHtml(maskKey(storedRunPodKey))}</code>
-                  </div>` : ''}
+                  </div>`
+                    : ''
+                }
               </div>
 
               <div>
@@ -376,23 +407,37 @@ export function createEngineSettingsModal({ audioManager, onClose, onEngineChang
                 </div>
               </div>
 
-              ${runpodValidationMessage ? `
+              ${
+                runpodValidationMessage
+                  ? `
                 <div style="font-size: 0.78rem; margin-top: 6px; color: ${runpodValidationOk ? '#10B981' : '#F87171'};">
                   ${escapeHtml(runpodValidationMessage)}
-                </div>` : ''}
+                </div>`
+                  : ''
+              }
 
-              ${runpodKeyReady ? `
+              ${
+                runpodKeyReady
+                  ? `
                 <button id="btn-forget-runpod-key" class="btn btn-secondary" style="align-self: flex-start; font-size: 0.75rem; padding: 5px 10px;">
                   Forget RunPod key
-                </button>` : ''}
+                </button>`
+                  : ''
+              }
             </div>
-          ` : ''}
+          `
+              : ''
+          }
 
-          ${validationMessage && !isCloud() && !isRunPod() ? `
+          ${
+            validationMessage && !isCloud() && !isRunPod()
+              ? `
             <div class="engine-settings-message ${validationOk ? 'is-success' : 'is-error'}" role="alert">
               ${escapeHtml(validationMessage)}
             </div>
-          ` : ''}
+          `
+              : ''
+          }
         </div>
 
         <div class="modal-footer" style="display: flex; justify-content: flex-end; gap: 10px;">
@@ -414,8 +459,10 @@ export function createEngineSettingsModal({ audioManager, onClose, onEngineChang
 
   function studioInstallBlurb() {
     if (!studioStatus.storable) {
-      return 'This browser cannot store a model this large, so Studio Local will download again '
-        + 'each session. Kokoro is the better local choice here.';
+      return (
+        'This browser cannot store a model this large, so Studio Local will download again ' +
+        'each session. Kokoro is the better local choice here.'
+      );
     }
     if (studioStatus.installed) {
       return studioStatus.persisted
@@ -446,12 +493,12 @@ export function createEngineSettingsModal({ audioManager, onClose, onEngineChang
     const panel = modal.querySelector('.studio-install-progress');
     studioRefs = panel
       ? {
-        panel,
-        bar: panel.querySelector('.studio-install-bar'),
-        fill: panel.querySelector('.studio-install-fill'),
-        text: panel.querySelector('.studio-install-text'),
-        stage: panel.querySelector('.studio-install-stage')
-      }
+          panel,
+          bar: panel.querySelector('.studio-install-bar'),
+          fill: panel.querySelector('.studio-install-fill'),
+          text: panel.querySelector('.studio-install-text'),
+          stage: panel.querySelector('.studio-install-stage'),
+        }
       : null;
     // Seed straight away so a structural render mid-install does not blank the
     // readout until the next progress event arrives.
@@ -478,13 +525,13 @@ export function createEngineSettingsModal({ audioManager, onClose, onEngineChang
     // background tab. Left on rAF alone, the first suppressed frame would latch
     // and every later update would be dropped until the tab came back.
     const hidden = typeof document !== 'undefined' && document.visibilityState === 'hidden';
-    const schedule = !hidden && typeof requestAnimationFrame === 'function'
-      ? requestAnimationFrame
-      : (cb) => setTimeout(cb, 16);
-    studioFrame = schedule(() => {
-      studioFrame = 0;
-      paintStudioProgress();
-    }) || 1;
+    const schedule =
+      !hidden && typeof requestAnimationFrame === 'function' ? requestAnimationFrame : (cb) => setTimeout(cb, 16);
+    studioFrame =
+      schedule(() => {
+        studioFrame = 0;
+        paintStudioProgress();
+      }) || 1;
   }
 
   function attach() {
@@ -505,7 +552,7 @@ export function createEngineSettingsModal({ audioManager, onClose, onEngineChang
       onOpenModelHub();
     });
 
-    modal.querySelectorAll('input[name="engine"]').forEach(radio => {
+    modal.querySelectorAll('input[name="engine"]').forEach((radio) => {
       radio.addEventListener('change', (e) => {
         if (installingStudio) return;
         selectedEngine = e.target.value;
@@ -516,7 +563,7 @@ export function createEngineSettingsModal({ audioManager, onClose, onEngineChang
     });
     // The whole card is a click target, but clicking the radio inside it must not
     // then toggle twice.
-    modal.querySelectorAll('.engine-option').forEach(card => {
+    modal.querySelectorAll('.engine-option').forEach((card) => {
       card.addEventListener('click', (e) => {
         if (e.target.tagName === 'INPUT' || installingStudio) return;
         selectedEngine = card.dataset.engine;
@@ -531,7 +578,11 @@ export function createEngineSettingsModal({ audioManager, onClose, onEngineChang
       removeStudio.addEventListener('click', async () => {
         if (installingStudio) return;
         const held = studioStatus.cachedBytes ? formatBytes(studioStatus.cachedBytes) : downloadSize;
-        if (!confirm(`Remove the Studio Local model from this device? That frees about ${held}, and it will have to download again.`)) {
+        if (
+          !confirm(
+            `Remove the Studio Local model from this device? That frees about ${held}, and it will have to download again.`,
+          )
+        ) {
           return;
         }
         removeStudio.disabled = true;
@@ -664,7 +715,7 @@ export function createEngineSettingsModal({ audioManager, onClose, onEngineChang
           result = await validateRunPodConnection({
             key: runpodKeyDraft,
             endpointId: runpodEndpointDraft,
-            signal: controller.signal
+            signal: controller.signal,
           });
         } catch (error) {
           if (error?.name === 'AbortError') return;
@@ -705,10 +756,10 @@ export function createEngineSettingsModal({ audioManager, onClose, onEngineChang
   async function onApply() {
     if (isStudio() && !(await installStudio())) return;
 
-    const runPodConfigChanged = isRunPod() && (
-      runpodKeyDraft.trim() !== initialRunPodKey.trim()
-      || (runpodEndpointDraft.trim() || DEFAULT_RUNPOD_ENDPOINT) !== initialRunPodEndpoint
-    );
+    const runPodConfigChanged =
+      isRunPod() &&
+      (runpodKeyDraft.trim() !== initialRunPodKey.trim() ||
+        (runpodEndpointDraft.trim() || DEFAULT_RUNPOD_ENDPOINT) !== initialRunPodEndpoint);
     if (isRunPod()) {
       saveRunPodKey(runpodKeyDraft);
       saveRunPodEndpointId(runpodEndpointDraft);
@@ -743,8 +794,9 @@ export function createEngineSettingsModal({ audioManager, onClose, onEngineChang
     // the engine's three-minute deadline timer gave up. `storable` is false
     // exactly when the OPFS cache could not be created.
     if (!studioStatus.storable) {
-      validationMessage = 'This browser cannot store a model this large, and Studio Local '
-        + 'is too big to load without storing it. Kokoro runs locally here instead.';
+      validationMessage =
+        'This browser cannot store a model this large, and Studio Local ' +
+        'is too big to load without storing it. Kokoro runs locally here instead.';
       validationOk = false;
       render();
       return false;
@@ -754,8 +806,9 @@ export function createEngineSettingsModal({ audioManager, onClose, onEngineChang
     const available = Math.max(0, estimate.quota - estimate.usage);
     const needed = CHATTERBOX_DOWNLOAD_BYTES * 1.1;
     if (!studioStatus.installed && estimate.quota > 0 && available < needed) {
-      validationMessage = `Studio Local needs about ${formatBytes(needed)} free in browser storage; `
-        + `this browser reports ${formatBytes(available)} available.`;
+      validationMessage =
+        `Studio Local needs about ${formatBytes(needed)} free in browser storage; ` +
+        `this browser reports ${formatBytes(available)} available.`;
       validationOk = false;
       render();
       return false;
@@ -777,7 +830,7 @@ export function createEngineSettingsModal({ audioManager, onClose, onEngineChang
       studioMessage = studioEngine.statusMessage || studioMessage;
       studioStage = studioEngine.stage || studioStage;
     }
-    unsubscribeStudioProgress = studioEngine.onProgress(payload => {
+    unsubscribeStudioProgress = studioEngine.onProgress((payload) => {
       // Number.isFinite, not a truthiness check: the error and cancel paths both
       // report 0, which a falsy test silently discards.
       if (Number.isFinite(payload.progress)) studioProgress = payload.progress;
@@ -828,13 +881,15 @@ export function createEngineSettingsModal({ audioManager, onClose, onEngineChang
   const readStudioStatus = audioManager.getChatterboxCacheStatus
     ? audioManager.getChatterboxCacheStatus()
     : Promise.resolve({ installed: false, partial: false, storable: true, persisted: false, fileCount: 0 });
-  readStudioStatus.then(status => {
-    studioStatus = status;
-    studioStatusReady = true;
-    render();
-  }).catch(() => {
-    studioStatusReady = true;
-    render();
-  });
+  readStudioStatus
+    .then((status) => {
+      studioStatus = status;
+      studioStatusReady = true;
+      render();
+    })
+    .catch(() => {
+      studioStatusReady = true;
+      render();
+    });
   return modal;
 }

@@ -1,11 +1,11 @@
 import { SAMPLE_SCRIPTS } from '../screenplay/sample-scripts.js';
-import { getIconSvg } from '../utils/icons.js';
 import { escapeHtml } from '../utils/escape-html.js';
+import { getIconSvg } from '../utils/icons.js';
 
 const ESTIMATED_MINUTES = {
   'neon-heist': 5,
   'midnight-manor': 5,
-  crossfire: 2
+  crossfire: 2,
 };
 
 export function createWelcomeScreen({
@@ -14,7 +14,7 @@ export function createWelcomeScreen({
   onPasteSubmitted,
   onSelectSample,
   onContinueRecent,
-  onOpenHelp
+  onOpenHelp,
 }) {
   const screen = document.createElement('main');
   screen.className = 'welcome-screen';
@@ -76,7 +76,8 @@ export function createWelcomeScreen({
           <span class="sample-count">${SAMPLE_SCRIPTS.length} scripts</span>
         </div>
         <div class="sample-list">
-          ${SAMPLE_SCRIPTS.map(sample => `
+          ${SAMPLE_SCRIPTS.map(
+            (sample) => `
             <button class="sample-card" type="button" data-sample-id="${escapeHtml(sample.id)}">
               <span class="sample-card-main">
                 <strong>${escapeHtml(sample.title)}</strong>
@@ -89,12 +90,15 @@ export function createWelcomeScreen({
                 ${getIconSvg('chevronRight', 16)}
               </span>
             </button>
-          `).join('')}
+          `,
+          ).join('')}
         </div>
       </div>
     </section>
 
-    ${recentScript ? `
+    ${
+      recentScript
+        ? `
       <section class="recent-section" aria-label="Recent screenplay">
         <div>
           <span class="recent-icon">${getIconSvg('replay', 18)}</span>
@@ -108,7 +112,9 @@ export function createWelcomeScreen({
           Continue script ${getIconSvg('chevronRight', 16)}
         </button>
       </section>
-    ` : ''}
+    `
+        : ''
+    }
 
     <footer class="welcome-footer">
       <span>${getIconSvg('cpu', 15)} Processed locally by default</span>
@@ -121,18 +127,18 @@ export function createWelcomeScreen({
   const pastePanel = screen.querySelector('#welcome-paste-panel');
   const pasteToggle = screen.querySelector('#welcome-paste-toggle');
 
-  const selectFile = file => {
+  const selectFile = (file) => {
     if (file && onFileSelected) onFileSelected(file);
   };
 
   dropzone.addEventListener('click', () => fileInput.click());
   fileInput.addEventListener('change', () => selectFile(fileInput.files && fileInput.files[0]));
-  dropzone.addEventListener('dragover', event => {
+  dropzone.addEventListener('dragover', (event) => {
     event.preventDefault();
     dropzone.classList.add('is-dragging');
   });
   dropzone.addEventListener('dragleave', () => dropzone.classList.remove('is-dragging'));
-  dropzone.addEventListener('drop', event => {
+  dropzone.addEventListener('drop', (event) => {
     event.preventDefault();
     dropzone.classList.remove('is-dragging');
     selectFile(event.dataTransfer.files && event.dataTransfer.files[0]);
@@ -147,7 +153,7 @@ export function createWelcomeScreen({
     pastePanel.hidden = true;
     dropzone.hidden = false;
   });
-  pastePanel.addEventListener('submit', event => {
+  pastePanel.addEventListener('submit', (event) => {
     event.preventDefault();
     const text = screen.querySelector('#welcome-paste-text').value.trim();
     if (!text) return;
@@ -155,12 +161,12 @@ export function createWelcomeScreen({
     onPasteSubmitted(text, title);
   });
 
-  screen.querySelectorAll('[data-sample-id]').forEach(card => {
+  screen.querySelectorAll('[data-sample-id]').forEach((card) => {
     card.addEventListener('click', () => onSelectSample(card.dataset.sampleId));
   });
   screen.querySelector('#welcome-continue')?.addEventListener('click', onContinueRecent);
   screen.querySelector('.welcome-help').addEventListener('click', onOpenHelp);
-  screen.querySelector('.wordmark').addEventListener('click', event => event.preventDefault());
+  screen.querySelector('.wordmark').addEventListener('click', (event) => event.preventDefault());
 
   return screen;
 }

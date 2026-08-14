@@ -1,11 +1,8 @@
-import test from 'node:test';
 import assert from 'node:assert/strict';
+import test from 'node:test';
 
 import { KokoroNeuralEngine } from '../src/audio/kokoro-engine.js';
-import {
-  KokoroDownloadProgress,
-  expectedBytesForKokoroFile
-} from '../src/audio/kokoro-model-files.js';
+import { expectedBytesForKokoroFile, KokoroDownloadProgress } from '../src/audio/kokoro-model-files.js';
 
 // What `kokoro-worker.js` actually asks for: fp16 on WebGPU, q8 on WASM — which
 // transformers.js spells `_quantized`.
@@ -28,7 +25,7 @@ test('the published size is known for every dtype the repo ships', () => {
   // A caller holding a full URL should not have to take it apart first.
   assert.equal(
     expectedBytesForKokoroFile(`https://huggingface.co/onnx-community/Kokoro-82M-v1.0-ONNX/resolve/main/${FP16}`),
-    FP16_BYTES
+    FP16_BYTES,
   );
   assert.equal(expectedBytesForKokoroFile('onnx/model_not_published.onnx'), 0);
   assert.equal(expectedBytesForKokoroFile(undefined), 0);
@@ -42,16 +39,22 @@ test('the published size is known for every dtype the repo ships', () => {
  */
 test('progress advances when every event claims loaded === total', () => {
   const engine = new KokoroNeuralEngine();
-  const seen = record(engine, [20_000_000, 60_000_000, 120_000_000, FP16_BYTES].map(loaded => ({
-    file: FP16,
-    loaded,
-    total: loaded,
-    progress: 100
-  })));
+  const seen = record(
+    engine,
+    [20_000_000, 60_000_000, 120_000_000, FP16_BYTES].map((loaded) => ({
+      file: FP16,
+      loaded,
+      total: loaded,
+      progress: 100,
+    })),
+  );
 
   assert.ok(seen.length >= 4, `expected an update per event, saw ${seen.length}`);
-  const values = seen.map(entry => entry.progress);
-  assert.ok(values.every((value, i) => i === 0 || value >= values[i - 1]), 'progress went backwards');
+  const values = seen.map((entry) => entry.progress);
+  assert.ok(
+    values.every((value, i) => i === 0 || value >= values[i - 1]),
+    'progress went backwards',
+  );
   assert.ok(values[0] < 40, `should start low in the band, got ${values[0]}`);
   assert.ok(values.at(-1) > values[0], 'progress never advanced');
   // 20 (floor) + 70 (band) = 90 is where the old code parked on chunk one.
@@ -75,10 +78,13 @@ test('the metadata files are not enough to move the bar', () => {
   const engine = new KokoroNeuralEngine();
   const seen = record(engine, [
     { file: 'config.json', loaded: 44, total: 44, progress: 100 },
-    { file: 'tokenizer.json', loaded: 3497, total: 3497, progress: 100 }
+    { file: 'tokenizer.json', loaded: 3497, total: 3497, progress: 100 },
   ]);
 
-  assert.ok(seen.every(entry => entry.progress === 20), `expected the floor, got ${seen.map(e => e.progress)}`);
+  assert.ok(
+    seen.every((entry) => entry.progress === 20),
+    `expected the floor, got ${seen.map((e) => e.progress)}`,
+  );
   assert.match(seen.at(-1).message, /Fetching model metadata/);
 });
 
@@ -90,11 +96,14 @@ test('the bar does not walk backwards when a WASM retry swaps the weights file',
   const engine = new KokoroNeuralEngine();
   const seen = record(engine, [
     { file: FP16, loaded: 150_000_000, total: 150_000_000, progress: 100 },
-    { file: Q8, loaded: 1_000_000, total: 1_000_000, progress: 100 }
+    { file: Q8, loaded: 1_000_000, total: 1_000_000, progress: 100 },
   ]);
 
-  const values = seen.map(entry => entry.progress);
-  assert.ok(values.every((value, i) => i === 0 || value >= values[i - 1]), `progress went backwards: ${values}`);
+  const values = seen.map((entry) => entry.progress);
+  assert.ok(
+    values.every((value, i) => i === 0 || value >= values[i - 1]),
+    `progress went backwards: ${values}`,
+  );
 });
 
 test('a file with no trustworthy total and no published size is left out of the denominator', () => {

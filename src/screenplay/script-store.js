@@ -1,25 +1,25 @@
-import { parseFountainScript } from './fountain-parser.js';
-import { SAMPLE_SCRIPTS } from './sample-scripts.js';
 import { ENGINE_IDS as ENGINE_ID_MAP } from '../audio/engine-contract.js';
 import {
-  getSuggestedVoiceForCharacter,
+  DEFAULT_NARRATOR_VOICE_ID,
   getDefaultNarratorVoice,
-  makeDefaultAssignment,
+  getSuggestedVoiceForCharacter,
   isCastable,
+  makeDefaultAssignment,
   mapVoiceAcrossEngines,
-  DEFAULT_NARRATOR_VOICE_ID
 } from '../audio/voice-catalog.js';
 import {
-  generateScriptKey,
+  backupCastConfig,
+  CAST_VERSION,
   generateLegacyScriptKey,
-  saveScriptCastConfig,
+  generateScriptKey,
+  loadAppState,
   loadScriptCastConfig,
   saveAppState,
-  loadAppState,
   savePlaybackPosition,
-  backupCastConfig,
-  CAST_VERSION
+  saveScriptCastConfig,
 } from '../utils/storage.js';
+import { parseFountainScript } from './fountain-parser.js';
+import { SAMPLE_SCRIPTS } from './sample-scripts.js';
 
 export class ScriptStore {
   constructor() {
@@ -77,7 +77,7 @@ export class ScriptStore {
           appState.customScriptData.fountainText,
           appState.customScriptData.title || 'Custom Screenplay',
           false,
-          appState.activeScriptKey
+          appState.activeScriptKey,
         );
         return true;
       }
@@ -92,7 +92,7 @@ export class ScriptStore {
    * Loads a pre-packaged sample screenplay
    */
   loadSample(sampleId, resetProgress = false) {
-    const sample = SAMPLE_SCRIPTS.find(s => s.id === sampleId) || SAMPLE_SCRIPTS[0];
+    const sample = SAMPLE_SCRIPTS.find((s) => s.id === sampleId) || SAMPLE_SCRIPTS[0];
     const parsed = parseFountainScript(sample.fountainText);
     parsed.id = sample.id;
     parsed.title = sample.title;
@@ -101,7 +101,7 @@ export class ScriptStore {
       scriptKey: `sample_${sample.id}`,
       scriptType: 'sample',
       sampleId: sample.id,
-      resetProgress
+      resetProgress,
     });
   }
 
@@ -124,35 +124,32 @@ export class ScriptStore {
         // and would now cost overlap markings too.
         fountainText: (() => {
           let previousPace = 'natural';
-          return parsed.elements.map(e => {
-            let out = '';
-            if (e.pace && e.pace !== previousPace) {
-              out += `\n[[pace: ${e.pace}]]\n`;
-              previousPace = e.pace;
-            }
-            if (e.type === 'DIALOGUE') {
-              const dual = e.overlap && e.overlap.mode === 'simultaneous' ? ' ^' : '';
-              const paren = e.parenthetical ? `(${e.parenthetical})\n` : '';
-              // e.text keeps its raw trailing dash, so interruptions re-derive.
-              return `${out}\n${e.characterOriginal || e.character}${dual}\n${paren}${e.text}\n`;
-            }
-            return `${out}\n${e.text}\n`;
-          }).join('');
-        })()
+          return parsed.elements
+            .map((e) => {
+              let out = '';
+              if (e.pace && e.pace !== previousPace) {
+                out += `\n[[pace: ${e.pace}]]\n`;
+                previousPace = e.pace;
+              }
+              if (e.type === 'DIALOGUE') {
+                const dual = e.overlap && e.overlap.mode === 'simultaneous' ? ' ^' : '';
+                const paren = e.parenthetical ? `(${e.parenthetical})\n` : '';
+                // e.text keeps its raw trailing dash, so interruptions re-derive.
+                return `${out}\n${e.characterOriginal || e.character}${dual}\n${paren}${e.text}\n`;
+              }
+              return `${out}\n${e.text}\n`;
+            })
+            .join('');
+        })(),
       },
-      resetProgress: true
+      resetProgress: true,
     });
   }
 
   /**
    * Loads a screenplay from Fountain or Text string
    */
-  loadFountainText(
-    text,
-    title = 'Custom Screenplay',
-    resetProgress = false,
-    legacyConfigKey = null
-  ) {
+  loadFountainText(text, title = 'Custom Screenplay', resetProgress = false, legacyConfigKey = null) {
     const parsed = parseFountainScript(text);
     if (title && (parsed.title === 'Screenplay' || !parsed.title)) {
       parsed.title = title;
@@ -164,24 +161,27 @@ export class ScriptStore {
       scriptType: 'custom',
       customData: {
         title: parsed.title,
-        fountainText: text
+        fountainText: text,
       },
       resetProgress,
-      legacyConfigKey
+      legacyConfigKey,
     });
   }
 
   /**
    * Sets new script data and resolves voice configuration from LocalStorage or auto-cast
    */
-  setScriptData(parsedScript, {
-    scriptKey = null,
-    scriptType = 'sample',
-    sampleId = null,
-    customData = null,
-    resetProgress = false,
-    legacyConfigKey = null
-  } = {}) {
+  setScriptData(
+    parsedScript,
+    {
+      scriptKey = null,
+      scriptType = 'sample',
+      sampleId = null,
+      customData = null,
+      resetProgress = false,
+      legacyConfigKey = null,
+    } = {},
+  ) {
     if (this.savePositionTimeout) {
       clearTimeout(this.savePositionTimeout);
       this.savePositionTimeout = null;
@@ -198,15 +198,11 @@ export class ScriptStore {
     this.pendingLegacyConfig = null;
 
     // Check if we have saved voice configuration and progress for this script in LocalStorage
-    const expectedLegacyKey = scriptType === 'custom'
-      ? generateLegacyScriptKey(parsedScript)
-      : null;
+    const expectedLegacyKey = scriptType === 'custom' ? generateLegacyScriptKey(parsedScript) : null;
     const useExplicitLegacyConfig = Boolean(
-      legacyConfigKey
-      && legacyConfigKey === expectedLegacyKey
-      && legacyConfigKey !== this.scriptKey
+      legacyConfigKey && legacyConfigKey === expectedLegacyKey && legacyConfigKey !== this.scriptKey,
     );
-    let savedConfig = useExplicitLegacyConfig
+    const savedConfig = useExplicitLegacyConfig
       ? loadScriptCastConfig(legacyConfigKey)
       : loadScriptCastConfig(this.scriptKey);
     let migratedLegacyConfig = false;
@@ -218,7 +214,7 @@ export class ScriptStore {
         this.pendingLegacyConfig = {
           legacyKey: expectedLegacyKey,
           scriptKey: this.scriptKey,
-          scriptTitle: parsedScript.title
+          scriptTitle: parsedScript.title,
         };
       }
     }
@@ -229,7 +225,7 @@ export class ScriptStore {
         castAssignments: savedConfig.castAssignments,
         activeLineIndex: savedConfig.activeLineIndex,
         scriptTitle: parsedScript.title,
-        castVersion: savedConfig.castVersion
+        castVersion: savedConfig.castVersion,
       });
     }
     let isConfigured = false;
@@ -237,12 +233,11 @@ export class ScriptStore {
     if (savedConfig && savedConfig.configured) {
       isConfigured = true;
       this.narratorVoiceIds = { ...(savedConfig.narratorVoiceIds || {}) };
-      this.narratorVoiceId = this.narratorVoiceIds[ENGINE_ID_MAP.KOKORO]
-        || getDefaultNarratorVoice().id;
+      this.narratorVoiceId = this.narratorVoiceIds[ENGINE_ID_MAP.KOKORO] || getDefaultNarratorVoice().id;
       if (!this.narratorVoiceIds[ENGINE_ID_MAP.KOKORO]) {
         this.narratorVoiceIds[ENGINE_ID_MAP.KOKORO] = this.narratorVoiceId;
       }
-      
+
       // Load saved character assignments
       if (savedConfig.castAssignments) {
         for (const [charKey, assignment] of savedConfig.castAssignments.entries()) {
@@ -268,7 +263,7 @@ export class ScriptStore {
           const suggestedVoiceId = getSuggestedVoiceForCharacter(char.name, {
             sampleLine: char.sampleLine,
             introduction: char.introduction,
-            usedVoices
+            usedVoices,
           });
           usedVoices.add(suggestedVoiceId);
           this.castAssignments.set(key, makeDefaultAssignment(suggestedVoiceId));
@@ -293,7 +288,7 @@ export class ScriptStore {
         const suggestedVoiceId = getSuggestedVoiceForCharacter(char.name, {
           sampleLine: char.sampleLine,
           introduction: char.introduction,
-          usedVoices
+          usedVoices,
         });
         usedVoices.add(suggestedVoiceId);
         this.castAssignments.set(char.name.toUpperCase().trim(), makeDefaultAssignment(suggestedVoiceId));
@@ -311,7 +306,7 @@ export class ScriptStore {
       scriptType: this.scriptType,
       sampleId: this.sampleId,
       customScriptData: this.customScriptData,
-      activeLineIndex: this.activeLineIndex
+      activeLineIndex: this.activeLineIndex,
     });
 
     if (migratedLegacyConfig) this.saveCurrentState();
@@ -323,7 +318,7 @@ export class ScriptStore {
       totalLines: this.currentScript.elements.length,
       scriptKey: this.scriptKey,
       isConfigured,
-      activeLineIndex: this.activeLineIndex
+      activeLineIndex: this.activeLineIndex,
     });
   }
 
@@ -338,7 +333,7 @@ export class ScriptStore {
       narratorVoiceIds: this.narratorVoiceIds,
       castAssignments: this.castAssignments,
       activeLineIndex: this.activeLineIndex,
-      scriptTitle: this.currentScript.title
+      scriptTitle: this.currentScript.title,
     });
 
     saveAppState({
@@ -346,7 +341,7 @@ export class ScriptStore {
       scriptType: this.scriptType,
       sampleId: this.sampleId,
       customScriptData: this.customScriptData,
-      activeLineIndex: this.activeLineIndex
+      activeLineIndex: this.activeLineIndex,
     });
   }
 
@@ -388,7 +383,7 @@ export class ScriptStore {
       this.narratorVoiceId = DEFAULT_NARRATOR_VOICE_ID;
       this.narratorVoiceIds = {
         ...this.narratorVoiceIds,
-        [ENGINE_ID_MAP.KOKORO]: DEFAULT_NARRATOR_VOICE_ID
+        [ENGINE_ID_MAP.KOKORO]: DEFAULT_NARRATOR_VOICE_ID,
       };
       changed.push('NARRATOR');
     }
@@ -411,38 +406,40 @@ export class ScriptStore {
       const replacement = getSuggestedVoiceForCharacter(char.name, {
         sampleLine: char.sampleLine,
         introduction: char.introduction,
-        usedVoices
+        usedVoices,
       });
       usedVoices.add(replacement);
       this.castAssignments.set(key, { ...existing, voiceId: replacement, auto: true });
       changed.push(key);
     }
 
-    this.pendingCastMigration = changed.length > 0
-      ? { scriptKey: this.scriptKey, changed, count: changed.length }
-      : null;
+    this.pendingCastMigration =
+      changed.length > 0 ? { scriptKey: this.scriptKey, changed, count: changed.length } : null;
 
     // Stamp the new version even when nothing changed, so this does not re-run
     // on every load of an already-fine cast.
     this.saveCurrentState();
   }
 
-  updateCharacterVoice(characterName, {
-    voiceId,
-    voiceIds: incomingVoiceIds,
-    pitchOffset,
-    speedMultiplier,
-    tonePreset,
-    direction,
-    engineId,
-    deferRender = false
-  }) {
+  updateCharacterVoice(
+    characterName,
+    {
+      voiceId,
+      voiceIds: incomingVoiceIds,
+      pitchOffset,
+      speedMultiplier,
+      tonePreset,
+      direction,
+      engineId,
+      deferRender = false,
+    },
+  ) {
     const key = characterName.toUpperCase().trim();
     // This runs for slider drags too, so a character with no assignment yet had
     // `am_adam` — the worst-graded voice in the set — written to localStorage
     // simply because someone nudged their pitch.
     const existing = this.castAssignments.get(key) || makeDefaultAssignment();
-    
+
     // A voice choice belongs to the engine it was made under. Writing it into
     // that engine's slot is what lets a listener keep a Kokoro cast and an OpenAI
     // cast for the same script and switch between them without losing either.
@@ -452,18 +449,16 @@ export class ScriptStore {
     this.castAssignments.set(key, {
       // The legacy flat field tracks the local engine, which is what saved
       // configs and any older code still expect to find here.
-      voiceId: (voiceId !== undefined && (!engineId || engineId === ENGINE_ID_MAP.KOKORO))
-        ? voiceId
-        : existing.voiceId,
+      voiceId: voiceId !== undefined && (!engineId || engineId === ENGINE_ID_MAP.KOKORO) ? voiceId : existing.voiceId,
       voiceIds,
-      direction: direction !== undefined ? direction : (existing.direction || ''),
+      direction: direction !== undefined ? direction : existing.direction || '',
       pitchOffset: pitchOffset !== undefined ? pitchOffset : existing.pitchOffset,
       speedMultiplier: speedMultiplier !== undefined ? speedMultiplier : existing.speedMultiplier,
-      tonePreset: tonePreset !== undefined ? tonePreset : (existing.tonePreset || 'natural'),
+      tonePreset: tonePreset !== undefined ? tonePreset : existing.tonePreset || 'natural',
       // Every path into here is a human touching a control, so this assignment
       // is now a decision. The cast migration reads this to know what it may
       // safely re-cast and what it must leave alone.
-      auto: false
+      auto: false,
     });
 
     this.saveCurrentState();
@@ -471,7 +466,7 @@ export class ScriptStore {
     this.notify('castUpdated', {
       character: key,
       assignment: this.castAssignments.get(key),
-      deferRender
+      deferRender,
     });
   }
 
@@ -489,14 +484,12 @@ export class ScriptStore {
   updateCast({ narratorVoiceId, narratorEngineId, castAssignments }) {
     this.narratorVoiceIds = {
       ...this.narratorVoiceIds,
-      [narratorEngineId]: narratorVoiceId
+      [narratorEngineId]: narratorVoiceId,
     };
     if (narratorEngineId === ENGINE_ID_MAP.KOKORO) {
       this.narratorVoiceId = narratorVoiceId;
     }
-    this.castAssignments = new Map(
-      Array.from(castAssignments, ([name, assignment]) => [name, { ...assignment }])
-    );
+    this.castAssignments = new Map(Array.from(castAssignments, ([name, assignment]) => [name, { ...assignment }]));
     this.saveCurrentState();
     this.notify('castUpdated', { bulk: true });
     this.notify('narratorUpdated', { voiceId: narratorVoiceId, engineId: narratorEngineId });
@@ -506,12 +499,11 @@ export class ScriptStore {
     if (!this.currentScript) return;
 
     const localNarrator = getDefaultNarratorVoice().id;
-    const activeNarrator = engineId === ENGINE_ID_MAP.KOKORO
-      ? localNarrator
-      : mapVoiceAcrossEngines(localNarrator, engineId);
+    const activeNarrator =
+      engineId === ENGINE_ID_MAP.KOKORO ? localNarrator : mapVoiceAcrossEngines(localNarrator, engineId);
     this.narratorVoiceIds = {
       ...this.narratorVoiceIds,
-      [engineId]: activeNarrator
+      [engineId]: activeNarrator,
     };
     if (engineId === ENGINE_ID_MAP.KOKORO) this.narratorVoiceId = localNarrator;
 
@@ -522,12 +514,13 @@ export class ScriptStore {
       const localVoiceId = getSuggestedVoiceForCharacter(char.name, {
         sampleLine: char.sampleLine,
         introduction: char.introduction,
-        usedVoices: usedLocalVoices
+        usedVoices: usedLocalVoices,
       });
       usedLocalVoices.add(localVoiceId);
-      const activeVoiceId = engineId === ENGINE_ID_MAP.KOKORO
-        ? localVoiceId
-        : mapVoiceAcrossEngines(localVoiceId, engineId, usedEngineVoices);
+      const activeVoiceId =
+        engineId === ENGINE_ID_MAP.KOKORO
+          ? localVoiceId
+          : mapVoiceAcrossEngines(localVoiceId, engineId, usedEngineVoices);
       usedEngineVoices.add(activeVoiceId);
 
       const key = char.name.toUpperCase().trim();
@@ -539,7 +532,7 @@ export class ScriptStore {
         pitchOffset: 0,
         speedMultiplier: 1.0,
         tonePreset: 'natural',
-        auto: true
+        auto: true,
       });
     }
     this.castAssignments = nextAssignments;
@@ -547,7 +540,7 @@ export class ScriptStore {
     this.notify('castUpdated', { bulk: true, autoCast: true });
     this.notify('narratorUpdated', {
       voiceId: activeNarrator,
-      engineId
+      engineId,
     });
   }
 
@@ -565,7 +558,7 @@ export class ScriptStore {
 
     this.notify('activeLineChanged', {
       index,
-      element: this.currentScript.elements[index]
+      element: this.currentScript.elements[index],
     });
   }
 
@@ -576,7 +569,7 @@ export class ScriptStore {
 
   jumpToScene(sceneNumber) {
     if (!this.currentScript) return;
-    const scene = this.currentScript.scenes.find(s => s.number === sceneNumber);
+    const scene = this.currentScript.scenes.find((s) => s.number === sceneNumber);
     if (scene) {
       this.setActiveLine(scene.lineIndex);
       return scene.lineIndex;

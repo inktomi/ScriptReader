@@ -1,8 +1,7 @@
-import test from 'node:test';
 import assert from 'node:assert/strict';
-
-import { createTransportBar } from '../src/ui/transport-bar.js';
+import test from 'node:test';
 import { PLAYBACK_STATES } from '../src/audio/audio-manager.js';
+import { createTransportBar } from '../src/ui/transport-bar.js';
 import { installDom, removeDom } from './dom-helpers.js';
 
 function audioManagerStub() {
@@ -13,7 +12,7 @@ function audioManagerStub() {
     setVolume() {},
     setMuted() {},
     setPacingMode() {},
-    setMasterSpeed() {}
+    setMasterSpeed() {},
   };
 }
 
@@ -28,7 +27,7 @@ test('Studio pre-render progress patches the persistent bar and unlocks Play at 
       onStop() {},
       onSkipNext() {},
       onSkipPrev() {},
-      onSeek() {}
+      onSeek() {},
     });
     document.body.appendChild(transport.element);
 
@@ -37,7 +36,7 @@ test('Studio pre-render progress patches the persistent bar and unlocks Play at 
       active: true,
       canPlay: false,
       percent: 24,
-      etaSeconds: 480
+      etaSeconds: 480,
     });
     const row = transport.element.querySelector('#transport-render-row');
     const fill = transport.element.querySelector('#transport-render-fill');
@@ -52,7 +51,7 @@ test('Studio pre-render progress patches the persistent bar and unlocks Play at 
       active: true,
       canPlay: true,
       percent: 61,
-      etaSeconds: 180
+      etaSeconds: 180,
     });
 
     assert.equal(transport.element.querySelector('#transport-render-row'), row);
@@ -80,8 +79,12 @@ test('an idle pre-render only claims readiness when playback can actually start'
     const transport = createTransportBar({
       audioManager: audioManagerStub(),
       scriptStore: { currentScript: { elements: [{}] } },
-      onPlay() {}, onPause() {}, onStop() {},
-      onSkipNext() {}, onSkipPrev() {}, onSeek() {}
+      onPlay() {},
+      onPause() {},
+      onStop() {},
+      onSkipNext() {},
+      onSkipPrev() {},
+      onSeek() {},
     });
     document.body.appendChild(transport.element);
     const row = transport.element.querySelector('#transport-render-row');
@@ -110,8 +113,12 @@ test('Play button remains enabled while playback is paused, even if canPlay is f
     const transport = createTransportBar({
       audioManager: audioManagerStub(),
       scriptStore: { currentScript: { elements: [{}] } },
-      onPlay() {}, onPause() {}, onStop() {},
-      onSkipNext() {}, onSkipPrev() {}, onSeek() {}
+      onPlay() {},
+      onPause() {},
+      onStop() {},
+      onSkipNext() {},
+      onSkipPrev() {},
+      onSeek() {},
     });
     document.body.appendChild(transport.element);
     const row = transport.element.querySelector('#transport-render-row');
@@ -147,8 +154,12 @@ test('the buffering notice is not adjacent to the scrub percentage', () => {
     const transport = createTransportBar({
       audioManager: audioManagerStub(),
       scriptStore: { currentScript: { elements: [{}] } },
-      onPlay() {}, onPause() {}, onStop() {},
-      onSkipNext() {}, onSkipPrev() {}, onSeek() {}
+      onPlay() {},
+      onPause() {},
+      onStop() {},
+      onSkipNext() {},
+      onSkipPrev() {},
+      onSeek() {},
     });
     document.body.appendChild(transport.element);
 

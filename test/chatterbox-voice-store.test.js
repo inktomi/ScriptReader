@@ -1,10 +1,7 @@
-import test from 'node:test';
 import assert from 'node:assert/strict';
+import test from 'node:test';
 
-import {
-  reconcileChatterboxVoiceStorage,
-  saveChatterboxVoice
-} from '../src/audio/chatterbox-voice-store.js';
+import { reconcileChatterboxVoiceStorage, saveChatterboxVoice } from '../src/audio/chatterbox-voice-store.js';
 import { installDom, removeDom } from './dom-helpers.js';
 
 function installDecodingAudioContext(dom) {
@@ -16,18 +13,23 @@ function installDecodingAudioContext(dom) {
         length: audio.length,
         numberOfChannels: 1,
         sampleRate: 24_000,
-        getChannelData: () => audio
+        getChannelData: () => audio,
       };
     }
   };
 }
 
 function audioFile(name = 'voice.wav') {
-  return { name, async arrayBuffer() { return new ArrayBuffer(8); } };
+  return {
+    name,
+    async arrayBuffer() {
+      return new ArrayBuffer(8);
+    },
+  };
 }
 
 function cloneMetadata(items) {
-  return items.map(item => ({ ...item }));
+  return items.map((item) => ({ ...item }));
 }
 
 function fakePersistence({ metadata = [], samples = new Map(), onPut, onWrite, onDelete } = {}) {
@@ -48,12 +50,12 @@ function fakePersistence({ metadata = [], samples = new Map(), onPut, onWrite, o
       samples.delete(id);
     },
     async inspectSampleRecords() {
-      return [...samples.values()].map(record => ({
+      return [...samples.values()].map((record) => ({
         id: record.id,
-        usable: Number(record.audio?.length ?? record.audio?.byteLength ?? 0) > 0
+        usable: Number(record.audio?.length ?? record.audio?.byteLength ?? 0) > 0,
       }));
     },
-    metadata: () => cloneMetadata(storedMetadata)
+    metadata: () => cloneMetadata(storedMetadata),
   };
 }
 
@@ -61,7 +63,7 @@ const existingMetadata = {
   id: 'studio-existing',
   name: 'Old voice',
   sourceVoiceId: 'catalog-voice',
-  duration: 4
+  duration: 4,
 };
 
 test('replacement aborted while staged preserves the old stable sample and metadata', async () => {
@@ -83,9 +85,17 @@ test('replacement aborted while staged preserves the old stable sample and metad
       return metadata;
     };
 
-    await assert.rejects(saveChatterboxVoice(audioFile(), 'New voice', {
-      sourceVoiceId: 'catalog-voice'
-    }, { signal: controller.signal, persistence }), error => error?.name === 'AbortError');
+    await assert.rejects(
+      saveChatterboxVoice(
+        audioFile(),
+        'New voice',
+        {
+          sourceVoiceId: 'catalog-voice',
+        },
+        { signal: controller.signal, persistence },
+      ),
+      (error) => error?.name === 'AbortError',
+    );
 
     assert.equal(persistence.samples.get(existingMetadata.id), oldRecord);
     assert.deepEqual(persistence.metadata(), [existingMetadata]);
@@ -106,12 +116,17 @@ test('replacement aborted after durable commit finishes metadata and keeps the s
       samples: new Map([[existingMetadata.id, { id: existingMetadata.id, audio: new Float32Array([0.75]) }]]),
       onPut(record) {
         if (record.id === existingMetadata.id && ++stablePuts === 1) controller.abort();
-      }
+      },
     });
 
-    const saved = await saveChatterboxVoice(audioFile(), 'New voice', {
-      sourceVoiceId: 'catalog-voice'
-    }, { signal: controller.signal, persistence });
+    const saved = await saveChatterboxVoice(
+      audioFile(),
+      'New voice',
+      {
+        sourceVoiceId: 'catalog-voice',
+      },
+      { signal: controller.signal, persistence },
+    );
 
     assert.equal(controller.signal.aborted, true);
     assert.equal(saved.id, existingMetadata.id);
@@ -134,12 +149,20 @@ test('a durable IndexedDB failure leaves the old replacement unchanged', async (
       samples: new Map([[existingMetadata.id, oldRecord]]),
       onPut(record) {
         if (record.id === existingMetadata.id) throw new Error('IndexedDB commit failed');
-      }
+      },
     });
 
-    await assert.rejects(saveChatterboxVoice(audioFile(), 'New voice', {
-      sourceVoiceId: 'catalog-voice'
-    }, { persistence }), /IndexedDB commit failed/);
+    await assert.rejects(
+      saveChatterboxVoice(
+        audioFile(),
+        'New voice',
+        {
+          sourceVoiceId: 'catalog-voice',
+        },
+        { persistence },
+      ),
+      /IndexedDB commit failed/,
+    );
     assert.equal(persistence.samples.get(existingMetadata.id), oldRecord);
     assert.deepEqual(persistence.metadata(), [existingMetadata]);
     assert.deepEqual([...persistence.samples.keys()], [existingMetadata.id]);
@@ -153,7 +176,9 @@ test('metadata failure removes a newly committed orphan and preserves the metada
   try {
     installDecodingAudioContext(dom);
     const persistence = fakePersistence({
-      onWrite() { throw new Error('localStorage failed'); }
+      onWrite() {
+        throw new Error('localStorage failed');
+      },
     });
 
     await assert.rejects(saveChatterboxVoice(audioFile(), 'New voice', {}, { persistence }), /localStorage failed/);
@@ -171,12 +196,22 @@ test('replacement metadata failure retains the newly durable sample under the ol
     const persistence = fakePersistence({
       metadata: [existingMetadata],
       samples: new Map([[existingMetadata.id, { id: existingMetadata.id, audio: new Float32Array([0.75]) }]]),
-      onWrite() { throw new Error('localStorage failed'); }
+      onWrite() {
+        throw new Error('localStorage failed');
+      },
     });
 
-    await assert.rejects(saveChatterboxVoice(audioFile(), 'New voice', {
-      sourceVoiceId: 'catalog-voice'
-    }, { persistence }), /localStorage failed/);
+    await assert.rejects(
+      saveChatterboxVoice(
+        audioFile(),
+        'New voice',
+        {
+          sourceVoiceId: 'catalog-voice',
+        },
+        { persistence },
+      ),
+      /localStorage failed/,
+    );
     assert.deepEqual(persistence.metadata(), [existingMetadata]);
     assert.equal(persistence.samples.get(existingMetadata.id).audio.length, 4 * 24_000);
     assert.deepEqual([...persistence.samples.keys()], [existingMetadata.id]);
@@ -190,14 +225,18 @@ test('voice-store reconciliation removes stale metadata and orphan samples in sa
   const persistence = fakePersistence({
     metadata: [
       { id: 'valid', name: 'Valid' },
-      { id: 'stale', name: 'Missing sample' }
+      { id: 'stale', name: 'Missing sample' },
     ],
     samples: new Map([
       ['valid', { id: 'valid', audio: new Float32Array([1]) }],
-      ['orphan', { id: 'orphan', audio: new Float32Array([1]) }]
+      ['orphan', { id: 'orphan', audio: new Float32Array([1]) }],
     ]),
-    onWrite() { events.push('metadata'); },
-    onDelete(id) { events.push(`delete:${id}`); }
+    onWrite() {
+      events.push('metadata');
+    },
+    onDelete(id) {
+      events.push(`delete:${id}`);
+    },
   });
 
   const result = await reconcileChatterboxVoiceStorage({ persistence });
@@ -210,7 +249,7 @@ test('voice-store reconciliation removes stale metadata and orphan samples in sa
 test('voice-store reconciliation removes metadata backed by a record without usable audio', async () => {
   const persistence = fakePersistence({
     metadata: [{ id: 'broken', name: 'Broken' }],
-    samples: new Map([['broken', { id: 'broken' }]])
+    samples: new Map([['broken', { id: 'broken' }]]),
   });
 
   const result = await reconcileChatterboxVoiceStorage({ persistence });
@@ -223,21 +262,24 @@ test('overlapping voice saves serialize metadata snapshots so neither import is 
   const dom = installDom();
   try {
     installDecodingAudioContext(dom);
-    const firstMetadataWrite = new Promise(resolve => setTimeout(resolve, 0));
+    const firstMetadataWrite = new Promise((resolve) => setTimeout(resolve, 0));
     let writes = 0;
     const persistence = fakePersistence({
       async onWrite() {
         if (++writes === 1) await firstMetadataWrite;
-      }
+      },
     });
 
     const [first, second] = await Promise.all([
       saveChatterboxVoice(audioFile('first.wav'), 'First', {}, { persistence }),
-      saveChatterboxVoice(audioFile('second.wav'), 'Second', {}, { persistence })
+      saveChatterboxVoice(audioFile('second.wav'), 'Second', {}, { persistence }),
     ]);
 
     assert.notEqual(first.id, second.id);
-    assert.deepEqual(persistence.metadata().map(item => item.name), ['First', 'Second']);
+    assert.deepEqual(
+      persistence.metadata().map((item) => item.name),
+      ['First', 'Second'],
+    );
     assert.equal(persistence.samples.size, 2);
   } finally {
     removeDom(dom);
@@ -249,8 +291,12 @@ test('reconciliation does not delete samples when stale-metadata repair fails', 
   const persistence = fakePersistence({
     metadata: [{ id: 'stale', name: 'Missing sample' }],
     samples: new Map([['orphan', { id: 'orphan', audio: new Float32Array([1]) }]]),
-    onWrite() { throw new Error('metadata unavailable'); },
-    onDelete() { deletes++; }
+    onWrite() {
+      throw new Error('metadata unavailable');
+    },
+    onDelete() {
+      deletes++;
+    },
   });
 
   await assert.rejects(reconcileChatterboxVoiceStorage({ persistence }), /metadata unavailable/);
@@ -262,9 +308,13 @@ test('reconciliation does not delete samples when metadata cannot be read', asyn
   let deletes = 0;
   const persistence = fakePersistence({
     samples: new Map([['valid', { id: 'valid', audio: new Float32Array([1]) }]]),
-    onDelete() { deletes++; }
+    onDelete() {
+      deletes++;
+    },
   });
-  persistence.readMetadata = () => { throw new Error('metadata unreadable'); };
+  persistence.readMetadata = () => {
+    throw new Error('metadata unreadable');
+  };
 
   await assert.rejects(reconcileChatterboxVoiceStorage({ persistence }), /metadata unreadable/);
   assert.equal(deletes, 0);
@@ -276,20 +326,25 @@ test('reconciliation starts independent orphan deletions without serial round tr
   const persistence = fakePersistence({
     samples: new Map([
       ['orphan-1', { id: 'orphan-1', audio: new Float32Array([1]) }],
-      ['orphan-2', { id: 'orphan-2', audio: new Float32Array([1]) }]
+      ['orphan-2', { id: 'orphan-2', audio: new Float32Array([1]) }],
     ]),
     onDelete(id) {
-      return new Promise(resolve => pending.push({ id, resolve }));
-    }
+      return new Promise((resolve) => pending.push({ id, resolve }));
+    },
   });
 
   const reconciliation = reconcileChatterboxVoiceStorage({ persistence });
-  await new Promise(resolve => setTimeout(resolve, 0));
-  assert.deepEqual(pending.map(item => item.id), ['orphan-1', 'orphan-2']);
-  pending.forEach(item => item.resolve());
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  assert.deepEqual(
+    pending.map((item) => item.id),
+    ['orphan-1', 'orphan-2'],
+  );
+  pending.forEach((item) => {
+    item.resolve();
+  });
   assert.deepEqual(await reconciliation, {
     removedMetadata: 0,
     removedOrphans: 2,
-    failedOrphanIds: []
+    failedOrphanIds: [],
   });
 });

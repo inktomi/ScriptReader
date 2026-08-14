@@ -1,12 +1,8 @@
-import { getIconSvg } from '../utils/icons.js';
+import { downloadVoiceSample, searchVoiceSamples, VOICE_SAMPLE_CATALOG } from '../audio/voice-sample-catalog.js';
 import { escapeHtml } from '../utils/escape-html.js';
 import { createFocusPreservingRenderer } from '../utils/focus-preserving-render.js';
+import { getIconSvg } from '../utils/icons.js';
 import { LatestOperation, throwIfAborted } from '../utils/latest-operation.js';
-import {
-  downloadVoiceSample,
-  searchVoiceSamples,
-  VOICE_SAMPLE_CATALOG
-} from '../audio/voice-sample-catalog.js';
 
 // The filters offer exactly the two axes the catalog can answer from
 // measurement. Age, accent and language selectors used to sit here because the
@@ -14,11 +10,18 @@ import {
 // any of the three, and a filter that silently matches nothing is worse than no
 // filter at all.
 const REGISTER_OPTIONS = [
-  ['', 'Any register'], ['deep', 'Deep'], ['low', 'Low'],
-  ['mid', 'Mid'], ['bright', 'Bright'], ['high', 'High']
+  ['', 'Any register'],
+  ['deep', 'Deep'],
+  ['low', 'Low'],
+  ['mid', 'Mid'],
+  ['bright', 'Bright'],
+  ['high', 'High'],
 ];
 const PACE_OPTIONS = [
-  ['', 'Any pace'], ['measured', 'Measured'], ['steady', 'Steady'], ['brisk', 'Brisk']
+  ['', 'Any pace'],
+  ['measured', 'Measured'],
+  ['steady', 'Steady'],
+  ['brisk', 'Brisk'],
 ];
 const MAX_VISIBLE_RESULTS = 240;
 const MAX_CACHED_PREVIEWS = 5;
@@ -27,7 +30,7 @@ const FOCUSABLE = [
   'input:not([disabled])',
   'select:not([disabled])',
   '[href]',
-  '[tabindex]:not([tabindex="-1"])'
+  '[tabindex]:not([tabindex="-1"])',
 ].join(',');
 
 function selected(value, expected) {
@@ -44,7 +47,7 @@ export function createVoiceSampleCatalogModal({
   onClose,
   importedVoiceIds = [],
   getAudioSettings = () => ({ volume: 1, isMuted: false }),
-  catalogClient = { search: searchVoiceSamples, download: downloadVoiceSample }
+  catalogClient = { search: searchVoiceSamples, download: downloadVoiceSample },
 } = {}) {
   const modal = document.createElement('div');
   modal.className = 'modal-overlay voice-sample-catalog-overlay';
@@ -65,7 +68,7 @@ export function createVoiceSampleCatalogModal({
     error: '',
     notice: '',
     retry: null,
-    addedIds: new Set(importedVoiceIds)
+    addedIds: new Set(importedVoiceIds),
   };
   const sampleCache = new Map();
   const searchOperation = new LatestOperation();
@@ -94,7 +97,7 @@ export function createVoiceSampleCatalogModal({
         }
       }
       return findByIdentity('id:voice-catalog-query');
-    }
+    },
   });
 
   function resultSummary() {
@@ -134,8 +137,9 @@ export function createVoiceSampleCatalogModal({
   }
 
   function render({ preserveUi = false } = {}) {
-    focusRenderer.render(() => {
-      modal.innerHTML = `
+    focusRenderer.render(
+      () => {
+        modal.innerHTML = `
       <div class="modal-card voice-sample-catalog-card">
         <header class="voice-catalog-header">
           <div><span class="eyebrow">Quality-first voice catalog</span><h2 id="voice-catalog-title">Find the right performance</h2>
@@ -161,19 +165,29 @@ export function createVoiceSampleCatalogModal({
           ${state.notice ? `<div class="voice-catalog-notice">${getIconSvg('check', 14)} ${escapeHtml(state.notice)}</div>` : ''}
         </div>
         <div class="voice-sample-grid" aria-busy="${state.loading}">
-          ${state.loading && state.voices.length === 0
-            ? Array.from({ length: 6 }, () => '<div class="voice-sample-card voice-sample-skeleton" aria-hidden="true"><i></i><i></i><i></i></div>').join('')
-            : state.voices.map(voiceCard).join('')}
+          ${
+            state.loading && state.voices.length === 0
+              ? Array.from(
+                  { length: 6 },
+                  () =>
+                    '<div class="voice-sample-card voice-sample-skeleton" aria-hidden="true"><i></i><i></i><i></i></div>',
+                ).join('')
+              : state.voices.map(voiceCard).join('')
+          }
           ${!state.loading && !state.error && state.voices.length === 0 ? '<div class="voice-catalog-empty"><strong>No exact matches yet.</strong><span>Try fewer words or broaden one of the filters.</span></div>' : ''}
         </div>
-        <footer class="voice-catalog-footer"><span>${state.capped
-          ? `Showing the ${MAX_VISIBLE_RESULTS} clearest matches. Refine your search to reach the rest.`
-          : `Voices from the ${escapeHtml(VOICE_SAMPLE_CATALOG.provider)} corpus, used under ${escapeHtml(VOICE_SAMPLE_CATALOG.license)}. Works offline.`}</span>
+        <footer class="voice-catalog-footer"><span>${
+          state.capped
+            ? `Showing the ${MAX_VISIBLE_RESULTS} clearest matches. Refine your search to reach the rest.`
+            : `Voices from the ${escapeHtml(VOICE_SAMPLE_CATALOG.provider)} corpus, used under ${escapeHtml(VOICE_SAMPLE_CATALOG.license)}. Works offline.`
+        }</span>
           ${state.hasMore && !state.capped ? `<button class="btn btn-secondary btn-catalog-more" type="button" data-focus-key="more" ${state.loadingMore ? 'aria-disabled="true"' : ''}>${state.loadingMore ? 'Loading…' : 'Show more voices'}</button>` : ''}
         </footer>
       </div>`;
-      attachListeners();
-    }, { preserve: preserveUi });
+        attachListeners();
+      },
+      { preserve: preserveUi },
+    );
   }
 
   function readFilters() {
@@ -181,7 +195,7 @@ export function createVoiceSampleCatalogModal({
       query: modal.querySelector('#voice-catalog-query')?.value.trim() || '',
       gender: modal.querySelector('#voice-catalog-gender')?.value || '',
       register: modal.querySelector('#voice-catalog-register')?.value || '',
-      pace: modal.querySelector('#voice-catalog-pace')?.value || ''
+      pace: modal.querySelector('#voice-catalog-pace')?.value || '',
     };
   }
 
@@ -206,35 +220,38 @@ export function createVoiceSampleCatalogModal({
     render({ preserveUi: true });
 
     const nextPage = append ? state.page + 1 : 0;
-    await searchOperation.run(async ({ signal }) => {
-      const result = await catalogClient.search(
-        { ...state.filters, page: nextPage, pageSize: VOICE_SAMPLE_CATALOG.pageSize },
-        { signal }
-      );
-      return { result, append, nextPage };
-    }, {
-      onCommit: ({ result, append: shouldAppend, nextPage: committedPage }) => {
-      const known = new Set(state.voices.map(voice => voice.id));
-      const newVoices = result.voices.filter(voice => !known.has(voice.id));
-      const combined = shouldAppend ? [...state.voices, ...newVoices] : newVoices;
-      combined.sort((a, b) => b.qualityScore - a.qualityScore || a.name.localeCompare(b.name));
-      state.capped = combined.length > MAX_VISIBLE_RESULTS
-        || (result.hasMore && combined.length >= MAX_VISIBLE_RESULTS);
-      state.voices = combined.slice(0, MAX_VISIBLE_RESULTS);
-      state.page = committedPage;
-      state.hasMore = result.hasMore && !state.capped;
-      state.totalCount = result.totalCount;
+    await searchOperation.run(
+      async ({ signal }) => {
+        const result = await catalogClient.search(
+          { ...state.filters, page: nextPage, pageSize: VOICE_SAMPLE_CATALOG.pageSize },
+          { signal },
+        );
+        return { result, append, nextPage };
       },
-      onError: error => {
-        state.error = error.message || 'The voice catalog could not be loaded.';
-        state.retry = { kind: 'search', append };
+      {
+        onCommit: ({ result, append: shouldAppend, nextPage: committedPage }) => {
+          const known = new Set(state.voices.map((voice) => voice.id));
+          const newVoices = result.voices.filter((voice) => !known.has(voice.id));
+          const combined = shouldAppend ? [...state.voices, ...newVoices] : newVoices;
+          combined.sort((a, b) => b.qualityScore - a.qualityScore || a.name.localeCompare(b.name));
+          state.capped =
+            combined.length > MAX_VISIBLE_RESULTS || (result.hasMore && combined.length >= MAX_VISIBLE_RESULTS);
+          state.voices = combined.slice(0, MAX_VISIBLE_RESULTS);
+          state.page = committedPage;
+          state.hasMore = result.hasMore && !state.capped;
+          state.totalCount = result.totalCount;
+        },
+        onError: (error) => {
+          state.error = error.message || 'The voice catalog could not be loaded.';
+          state.retry = { kind: 'search', append };
+        },
+        onFinally: () => {
+          state.loading = false;
+          state.loadingMore = false;
+          render({ preserveUi: true });
+        },
       },
-      onFinally: () => {
-        state.loading = false;
-        state.loadingMore = false;
-        render({ preserveUi: true });
-      }
-    });
+    );
   }
 
   function cacheSample(id, file) {
@@ -270,7 +287,7 @@ export function createVoiceSampleCatalogModal({
     previewObjectUrl = '';
     previewingId = '';
     previewLoading = false;
-    modal.querySelectorAll('.btn-catalog-preview').forEach(button => {
+    modal.querySelectorAll('.btn-catalog-preview').forEach((button) => {
       button.classList.remove('btn-active');
       button.querySelector('span').textContent = 'Preview';
     });
@@ -288,44 +305,47 @@ export function createVoiceSampleCatalogModal({
     state.error = '';
     state.retry = null;
     render({ preserveUi: true });
-    await previewOperation.run(async ({ signal, commit }) => {
-      const file = await getSampleFile(voice, signal);
-      let audio;
-      commit(() => {
-        previewObjectUrl = URL.createObjectURL(file);
-        audio = document.createElement('audio');
-        const settings = getAudioSettings() || {};
-        audio.volume = Math.min(1, Math.max(0, Number(settings.volume ?? 1)));
-        audio.muted = settings.isMuted === true;
-        audio.preload = 'auto';
-        audio.src = previewObjectUrl;
-        previewAudio = audio;
-        previewLoading = false;
-        audio.onended = () => {
-          if (previewAudio === audio) {
+    await previewOperation.run(
+      async ({ signal, commit }) => {
+        const file = await getSampleFile(voice, signal);
+        let audio;
+        commit(() => {
+          previewObjectUrl = URL.createObjectURL(file);
+          audio = document.createElement('audio');
+          const settings = getAudioSettings() || {};
+          audio.volume = Math.min(1, Math.max(0, Number(settings.volume ?? 1)));
+          audio.muted = settings.isMuted === true;
+          audio.preload = 'auto';
+          audio.src = previewObjectUrl;
+          previewAudio = audio;
+          previewLoading = false;
+          audio.onended = () => {
+            if (previewAudio === audio) {
+              stopPreview();
+              if (!closed) render({ preserveUi: true });
+            }
+          };
+          audio.onerror = () => {
+            if (previewAudio !== audio) return;
             stopPreview();
+            state.error = 'That preview could not be played.';
+            state.retry = { kind: 'preview', voiceId: voice.id };
             if (!closed) render({ preserveUi: true });
-          }
-        };
-        audio.onerror = () => {
-          if (previewAudio !== audio) return;
+          };
+          render({ preserveUi: true });
+        });
+        throwIfAborted(signal);
+        await audio.play();
+      },
+      {
+        onError: (error) => {
           stopPreview();
-          state.error = 'That preview could not be played.';
+          state.error = error.message || 'That preview could not be played.';
           state.retry = { kind: 'preview', voiceId: voice.id };
-          if (!closed) render({ preserveUi: true });
-        };
-        render({ preserveUi: true });
-      });
-      throwIfAborted(signal);
-      await audio.play();
-    }, {
-      onError: error => {
-        stopPreview();
-        state.error = error.message || 'That preview could not be played.';
-        state.retry = { kind: 'preview', voiceId: voice.id };
-        render({ preserveUi: true });
-      }
-    });
+          render({ preserveUi: true });
+        },
+      },
+    );
   }
 
   async function addVoice(voice) {
@@ -336,31 +356,34 @@ export function createVoiceSampleCatalogModal({
     state.notice = '';
     state.retry = null;
     render({ preserveUi: true });
-    await importOperation.run(async ({ signal }) => {
-      const file = await getSampleFile(voice, signal);
-      throwIfAborted(signal);
-      await onAdd?.(file, voice, { signal });
-      return voice;
-    }, {
-      onCommit: addedVoice => {
-        state.addedIds.add(addedVoice.id);
-        state.notice = `${addedVoice.name} is ready in your private voice library.`;
+    await importOperation.run(
+      async ({ signal }) => {
+        const file = await getSampleFile(voice, signal);
+        throwIfAborted(signal);
+        await onAdd?.(file, voice, { signal });
+        return voice;
       },
-      onError: error => {
-        state.error = error.message || 'That voice could not be added.';
-        state.retry = { kind: 'add', voiceId: voice.id };
+      {
+        onCommit: (addedVoice) => {
+          state.addedIds.add(addedVoice.id);
+          state.notice = `${addedVoice.name} is ready in your private voice library.`;
+        },
+        onError: (error) => {
+          state.error = error.message || 'That voice could not be added.';
+          state.retry = { kind: 'add', voiceId: voice.id };
+        },
+        onFinally: () => {
+          state.importingId = '';
+          render({ preserveUi: true });
+        },
       },
-      onFinally: () => {
-        state.importingId = '';
-        render({ preserveUi: true });
-      }
-    });
+    );
   }
 
   function retryLastOperation() {
     const retry = state.retry;
     if (!retry) return;
-    const voice = retry.voiceId ? state.voices.find(item => item.id === retry.voiceId) : null;
+    const voice = retry.voiceId ? state.voices.find((item) => item.id === retry.voiceId) : null;
     if (retry.kind === 'search') void runSearch({ append: retry.append });
     else if (retry.kind === 'preview' && voice) void togglePreview(voice);
     else if (retry.kind === 'add' && voice) void addVoice(voice);
@@ -368,25 +391,31 @@ export function createVoiceSampleCatalogModal({
 
   function attachListeners() {
     modal.querySelector('.btn-close-catalog')?.addEventListener('click', close);
-    modal.querySelector('.voice-catalog-search')?.addEventListener('submit', event => {
+    modal.querySelector('.voice-catalog-search')?.addEventListener('submit', (event) => {
       event.preventDefault();
       readFilters();
       void runSearch();
     });
-    modal.querySelectorAll('.voice-catalog-filters select').forEach(select => select.addEventListener('change', () => {
-      readFilters();
-      void runSearch();
-    }));
+    modal.querySelectorAll('.voice-catalog-filters select').forEach((select) => {
+      select.addEventListener('change', () => {
+        readFilters();
+        void runSearch();
+      });
+    });
     modal.querySelector('.btn-catalog-retry')?.addEventListener('click', retryLastOperation);
     modal.querySelector('.btn-catalog-more')?.addEventListener('click', () => void runSearch({ append: true }));
-    modal.querySelectorAll('.btn-catalog-preview').forEach(button => button.addEventListener('click', () => {
-      const voice = state.voices.find(item => item.id === button.dataset.voiceId);
-      if (voice) void togglePreview(voice);
-    }));
-    modal.querySelectorAll('.btn-catalog-add').forEach(button => button.addEventListener('click', () => {
-      const voice = state.voices.find(item => item.id === button.dataset.voiceId);
-      if (voice) void addVoice(voice);
-    }));
+    modal.querySelectorAll('.btn-catalog-preview').forEach((button) => {
+      button.addEventListener('click', () => {
+        const voice = state.voices.find((item) => item.id === button.dataset.voiceId);
+        if (voice) void togglePreview(voice);
+      });
+    });
+    modal.querySelectorAll('.btn-catalog-add').forEach((button) => {
+      button.addEventListener('click', () => {
+        const voice = state.voices.find((item) => item.id === button.dataset.voiceId);
+        if (voice) void addVoice(voice);
+      });
+    });
   }
 
   function close() {
@@ -401,10 +430,10 @@ export function createVoiceSampleCatalogModal({
   }
 
   modal.close = close;
-  modal.addEventListener('click', event => {
+  modal.addEventListener('click', (event) => {
     if (event.target === modal) close();
   });
-  modal.addEventListener('keydown', event => {
+  modal.addEventListener('keydown', (event) => {
     if (event.key === 'Escape') {
       event.preventDefault();
       event.stopPropagation();
@@ -412,7 +441,9 @@ export function createVoiceSampleCatalogModal({
       return;
     }
     if (event.key !== 'Tab') return;
-    const focusable = [...modal.querySelectorAll(FOCUSABLE)].filter(element => element.offsetParent !== null || element === document.activeElement);
+    const focusable = [...modal.querySelectorAll(FOCUSABLE)].filter(
+      (element) => element.offsetParent !== null || element === document.activeElement,
+    );
     if (focusable.length === 0) return;
     const first = focusable[0];
     const last = focusable.at(-1);

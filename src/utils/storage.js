@@ -7,11 +7,8 @@
  * - Saved custom and sample script state
  */
 
-import {
-  DEFAULT_NARRATOR_VOICE_ID,
-  OPENAI_VOICE_CATALOG
-} from '../audio/voice-catalog.js';
 import { ENGINE_IDS } from '../audio/engine-contract.js';
+import { DEFAULT_NARRATOR_VOICE_ID, OPENAI_VOICE_CATALOG } from '../audio/voice-catalog.js';
 
 const STORAGE_PREFIX = 'scriptreader_';
 const APP_STATE_KEY = `${STORAGE_PREFIX}app_state_v2`;
@@ -37,7 +34,8 @@ export function generateLegacyScriptKey(script) {
   }
   const cleanTitle = (script.title || 'untitled').toLowerCase().replace(/[^a-z0-9]/g, '_');
   const signature = (script.elements && script.elements[0] ? script.elements[0].text.substring(0, 30) : '')
-    .toLowerCase().replace(/[^a-z0-9]/g, '');
+    .toLowerCase()
+    .replace(/[^a-z0-9]/g, '');
   return `custom_${cleanTitle}_${signature}`;
 }
 
@@ -66,14 +64,17 @@ export function generateScriptKey(script) {
 /**
  * Save character voice configuration and line position for a specific script
  */
-export function saveScriptCastConfig(scriptKey, {
-  narratorVoiceId,
-  narratorVoiceIds = null,
-  castAssignments,
-  activeLineIndex = 0,
-  scriptTitle = '',
-  castVersion = CAST_VERSION
-}) {
+export function saveScriptCastConfig(
+  scriptKey,
+  {
+    narratorVoiceId,
+    narratorVoiceIds = null,
+    castAssignments,
+    activeLineIndex = 0,
+    scriptTitle = '',
+    castVersion = CAST_VERSION,
+  },
+) {
   try {
     const assignmentsObj = {};
     if (castAssignments instanceof Map) {
@@ -92,7 +93,7 @@ export function saveScriptCastConfig(scriptKey, {
       scriptTitle,
       configured: true,
       castVersion,
-      updatedAt: Date.now()
+      updatedAt: Date.now(),
     };
 
     localStorage.setItem(`${CAST_PREFIX}${scriptKey}`, JSON.stringify(payload));
@@ -124,19 +125,21 @@ export function loadScriptCastConfig(scriptKey) {
       // Reading a saved config with no narrator recorded must not reinstate the
       // old default, or every load quietly undoes the narrator upgrade.
       narratorVoiceId: parsed.narratorVoiceId || DEFAULT_NARRATOR_VOICE_ID,
-      narratorVoiceIds: parsed.narratorVoiceIds || (() => {
-        const legacyId = parsed.narratorVoiceId || DEFAULT_NARRATOR_VOICE_ID;
-        const engineId = OPENAI_VOICE_CATALOG.some(voice => voice.id === legacyId)
-          ? ENGINE_IDS.OPENAI
-          : ENGINE_IDS.KOKORO;
-        return { [engineId]: legacyId };
-      })(),
+      narratorVoiceIds:
+        parsed.narratorVoiceIds ||
+        (() => {
+          const legacyId = parsed.narratorVoiceId || DEFAULT_NARRATOR_VOICE_ID;
+          const engineId = OPENAI_VOICE_CATALOG.some((voice) => voice.id === legacyId)
+            ? ENGINE_IDS.OPENAI
+            : ENGINE_IDS.KOKORO;
+          return { [engineId]: legacyId };
+        })(),
       castAssignments: castMap,
       activeLineIndex: typeof parsed.activeLineIndex === 'number' ? parsed.activeLineIndex : 0,
       configured: Boolean(parsed.configured),
       // Anything written before versioning existed is v1 by definition.
       castVersion: parsed.castVersion || 1,
-      updatedAt: parsed.updatedAt || 0
+      updatedAt: parsed.updatedAt || 0,
     };
   } catch (err) {
     console.warn('Could not load script cast config from LocalStorage:', err);
@@ -203,7 +206,7 @@ export function saveAppState({ activeScriptKey, scriptType, sampleId, customScri
       sampleId: sampleId || null,
       customScriptData: customScriptData || null, // { title, fountainText, characters, scenes, elements }
       activeLineIndex,
-      savedAt: Date.now()
+      savedAt: Date.now(),
     };
     localStorage.setItem(APP_STATE_KEY, JSON.stringify(payload));
     return true;
@@ -239,7 +242,6 @@ export function savePlaybackPosition(scriptKey, lineIndex) {
       config.updatedAt = Date.now();
       saveScriptCastConfig(scriptKey, config);
     }
-
   } catch (err) {
     console.warn('Could not save playback position:', err);
   }

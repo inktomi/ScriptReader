@@ -1,10 +1,9 @@
-import test from 'node:test';
 import assert from 'node:assert/strict';
-
-import { createWelcomeScreen } from '../src/ui/welcome-screen.js';
-import { createVoiceConfigModal } from '../src/ui/voice-config-modal.js';
-import { SAMPLE_SCRIPTS } from '../src/screenplay/sample-scripts.js';
+import test from 'node:test';
 import { ENGINE_IDS } from '../src/audio/engine-contract.js';
+import { SAMPLE_SCRIPTS } from '../src/screenplay/sample-scripts.js';
+import { createVoiceConfigModal } from '../src/ui/voice-config-modal.js';
+import { createWelcomeScreen } from '../src/ui/welcome-screen.js';
 import { installDom, removeDom } from './dom-helpers.js';
 
 test('fresh welcome screen leads with import and sample choices', () => {
@@ -14,9 +13,9 @@ test('fresh welcome screen leads with import and sample choices', () => {
     const screen = createWelcomeScreen({
       onFileSelected: () => {},
       onPasteSubmitted: () => {},
-      onSelectSample: id => selected.push(id),
+      onSelectSample: (id) => selected.push(id),
       onContinueRecent: () => {},
-      onOpenHelp: () => {}
+      onOpenHelp: () => {},
     });
     document.body.appendChild(screen);
 
@@ -39,11 +38,13 @@ test('initial casting requires a quick or detailed path before opening the playe
       currentScript: {
         title: 'Quiet Draft',
         characters: [{ name: 'MARA', lineCount: 3, sampleLine: 'We should listen.' }],
-        elements: [{ type: 'DIALOGUE', character: 'MARA', text: 'We should listen.' }]
+        elements: [{ type: 'DIALOGUE', character: 'MARA', text: 'We should listen.' }],
       },
       castAssignments: new Map(),
       getNarratorVoice: () => 'bf_emma',
-      updateCast() { saved = true; }
+      updateCast() {
+        saved = true;
+      },
     };
     const audioManager = {
       engineId: ENGINE_IDS.KOKORO,
@@ -51,12 +52,12 @@ test('initial casting requires a quick or detailed path before opening the playe
       getVoiceProfileForCharacter: () => ({ id: 'bf_emma' }),
       stop() {},
       setNarratorVoice() {},
-      setVoiceAssignment() {}
+      setVoiceAssignment() {},
     };
     const casting = createVoiceConfigModal({
       scriptStore,
       audioManager,
-      isInitialSetup: true
+      isInitialSetup: true,
     });
     document.body.appendChild(casting);
 
@@ -80,17 +81,17 @@ test('a character introduction expands in place, keeping focus and the audition 
       age: '50s',
       sourceText: 'MRS. HIGGINS (50s, nervous housekeeper, trembling hands) sets down a silver tea tray.',
       elementId: 'line-6',
-      form: 'parenthetical'
+      form: 'parenthetical',
     };
     const scriptStore = {
       currentScript: {
         title: 'Manor',
         characters: [{ name: 'MRS. HIGGINS', lineCount: 3, sampleLine: 'Tea, sir?', introduction }],
-        elements: [{ type: 'DIALOGUE', character: 'MRS. HIGGINS', text: 'Tea, sir?' }]
+        elements: [{ type: 'DIALOGUE', character: 'MRS. HIGGINS', text: 'Tea, sir?' }],
       },
       castAssignments: new Map(),
       getNarratorVoice: () => 'bf_emma',
-      updateCast() {}
+      updateCast() {},
     };
     const audioManager = {
       engineId: ENGINE_IDS.KOKORO,
@@ -98,7 +99,7 @@ test('a character introduction expands in place, keeping focus and the audition 
       getVoiceProfileForCharacter: () => ({ id: 'bf_emma' }),
       stop() {},
       setNarratorVoice() {},
-      setVoiceAssignment() {}
+      setVoiceAssignment() {},
     };
 
     const casting = createVoiceConfigModal({ scriptStore, audioManager });
@@ -141,10 +142,14 @@ test('welcome screen exposes recent progress and the paste workflow', () => {
     const screen = createWelcomeScreen({
       recentScript: { title: 'Quiet Draft', detail: 'Imported screenplay · saved at line 42' },
       onFileSelected: () => {},
-      onPasteSubmitted: (text, title) => { pasted = { text, title }; },
+      onPasteSubmitted: (text, title) => {
+        pasted = { text, title };
+      },
       onSelectSample: () => {},
-      onContinueRecent: () => { continued = true; },
-      onOpenHelp: () => {}
+      onContinueRecent: () => {
+        continued = true;
+      },
+      onOpenHelp: () => {},
     });
     document.body.appendChild(screen);
 
@@ -155,10 +160,12 @@ test('welcome screen exposes recent progress and the paste workflow', () => {
     screen.querySelector('#welcome-paste-toggle').click();
     screen.querySelector('#welcome-paste-title').value = 'My Draft';
     screen.querySelector('#welcome-paste-text').value = 'INT. ROOM - DAY';
-    screen.querySelector('#welcome-paste-panel').dispatchEvent(new dom.window.Event('submit', {
-      bubbles: true,
-      cancelable: true
-    }));
+    screen.querySelector('#welcome-paste-panel').dispatchEvent(
+      new dom.window.Event('submit', {
+        bubbles: true,
+        cancelable: true,
+      }),
+    );
     assert.deepEqual(pasted, { text: 'INT. ROOM - DAY', title: 'My Draft' });
   } finally {
     removeDom(dom);

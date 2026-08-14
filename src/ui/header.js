@@ -1,5 +1,5 @@
-import { getIconSvg } from '../utils/icons.js';
 import { ENGINE_TYPES } from '../audio/audio-manager.js';
+import { getIconSvg } from '../utils/icons.js';
 
 export function createHeader({
   onChangeScript,
@@ -8,7 +8,7 @@ export function createHeader({
   onToggleLibrary,
   onToggleHelp,
   onOpenEngineSettings,
-  currentEngine = ENGINE_TYPES.KOKORO_NEURAL
+  currentEngine = ENGINE_TYPES.KOKORO_NEURAL,
 }) {
   const header = document.createElement('header');
   header.className = 'app-header';
@@ -80,15 +80,19 @@ export function createHeader({
     const isRunPod = engineId === ENGINE_TYPES.RUNPOD;
     badgeText.textContent = isCloud
       ? 'Cloud voices'
-      : (isRunPod ? 'RunPod GPU' : (isStudio ? 'Studio Local' : 'Local voices'));
+      : isRunPod
+        ? 'RunPod GPU'
+        : isStudio
+          ? 'Studio Local'
+          : 'Local voices';
     badge.classList.toggle('is-cloud', isCloud || isRunPod);
     badge.title = isCloud
       ? 'OpenAI voices — dialogue is sent to OpenAI. Click to change.'
-      : (isRunPod
+      : isRunPod
         ? 'RunPod Serverless GPU (L40S) — fast cloud neural rendering. Click to change.'
-        : (isStudio
+        : isStudio
           ? 'Chatterbox Studio voices — generated privately on this device. Click to change.'
-          : 'Kokoro voices — screenplay audio is generated on this device. Click to change.'));
+          : 'Kokoro voices — screenplay audio is generated on this device. Click to change.';
   }
 
   /**
@@ -116,9 +120,7 @@ export function createHeader({
     if (!btn) return;
     btn.classList.toggle('btn-active', isOpen);
     btn.setAttribute('aria-expanded', String(isOpen));
-    btn.title = isOpen
-      ? 'Close library (C for cast, S for scenes)'
-      : 'Open library (C for cast, S for scenes)';
+    btn.title = isOpen ? 'Close library (C for cast, S for scenes)' : 'Open library (C for cast, S for scenes)';
   }
 
   setEngineBadge(currentEngine);
@@ -129,6 +131,6 @@ export function createHeader({
     setLibraryActive,
     updateEngineCacheBadge,
     setEngineBadge,
-    setSelectedSample: () => {}
+    setSelectedSample: () => {},
   };
 }

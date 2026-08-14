@@ -29,7 +29,7 @@ export const EMOTIONS = {
     leadPauseMs: 200,
     filter: NO_FILTER,
     badgeColor: '#D97706',
-    description: 'Raspy, gruff delivery with vocal weight'
+    description: 'Raspy, gruff delivery with vocal weight',
   },
   GASPING: {
     key: 'gasping',
@@ -41,19 +41,19 @@ export const EMOTIONS = {
     leadPauseMs: 90,
     filter: NO_FILTER,
     badgeColor: '#A855F7',
-    description: 'Sharp intake of breath with urgent delivery'
+    description: 'Sharp intake of breath with urgent delivery',
   },
   SIGHING: {
     key: 'sighing',
     label: 'Sighing / Heavy Heart',
     icon: '😮‍💨',
-    speedMod: 0.90,
+    speedMod: 0.9,
     pitchMod: 0.96,
     gainMod: 0.85,
     leadPauseMs: 280,
     filter: NO_FILTER,
     badgeColor: '#64748B',
-    description: 'Weary vocal sigh leading into dialogue'
+    description: 'Weary vocal sigh leading into dialogue',
   },
   CHUCKLING: {
     key: 'chuckling',
@@ -65,7 +65,7 @@ export const EMOTIONS = {
     leadPauseMs: 150,
     filter: NO_FILTER,
     badgeColor: '#10B981',
-    description: 'Lighthearted chuckle followed by dialogue'
+    description: 'Lighthearted chuckle followed by dialogue',
   },
   COMMS: {
     key: 'comms',
@@ -77,7 +77,7 @@ export const EMOTIONS = {
     leadPauseMs: 130,
     filter: 'radio',
     badgeColor: '#06B6D4',
-    description: 'Tactical comms delivery through a speaker'
+    description: 'Tactical comms delivery through a speaker',
   },
   SYNTHETIC: {
     key: 'synthetic',
@@ -89,31 +89,31 @@ export const EMOTIONS = {
     leadPauseMs: 150,
     filter: 'radio',
     badgeColor: '#22D3EE',
-    description: 'Flat, evenly-metered artificial voice'
+    description: 'Flat, evenly-metered artificial voice',
   },
   WHISPER: {
     key: 'whisper',
     label: 'Whispering',
     icon: '🤫',
-    speedMod: 0.90,
+    speedMod: 0.9,
     pitchMod: 0.97,
     gainMod: 0.55,
     leadPauseMs: 180,
     filter: NO_FILTER,
     badgeColor: '#06B6D4',
-    description: 'Soft, intimate breathy delivery'
+    description: 'Soft, intimate breathy delivery',
   },
   SHOUT: {
     key: 'shout',
     label: 'Shouting / Urgent',
     icon: '📢',
-    speedMod: 1.10,
+    speedMod: 1.1,
     pitchMod: 1.07,
-    gainMod: 1.30,
+    gainMod: 1.3,
     leadPauseMs: 60,
     filter: NO_FILTER,
     badgeColor: '#EF4444',
-    description: 'High energy, intense volume and crisp projection'
+    description: 'High energy, intense volume and crisp projection',
   },
   ANGRY: {
     key: 'angry',
@@ -121,11 +121,11 @@ export const EMOTIONS = {
     icon: '⚡',
     speedMod: 1.06,
     pitchMod: 1.03,
-    gainMod: 1.20,
+    gainMod: 1.2,
     leadPauseMs: 90,
     filter: NO_FILTER,
     badgeColor: '#F43F5E',
-    description: 'Sharp, focused consonants and resolute tempo'
+    description: 'Sharp, focused consonants and resolute tempo',
   },
   SAD: {
     key: 'sad',
@@ -137,7 +137,7 @@ export const EMOTIONS = {
     leadPauseMs: 260,
     filter: NO_FILTER,
     badgeColor: '#60A5FA',
-    description: 'Gentle cadence with emotional warmth'
+    description: 'Gentle cadence with emotional warmth',
   },
   FEAR: {
     key: 'fear',
@@ -149,19 +149,19 @@ export const EMOTIONS = {
     leadPauseMs: 80,
     filter: NO_FILTER,
     badgeColor: '#A855F7',
-    description: 'Rapid, breathy, urgent pacing'
+    description: 'Rapid, breathy, urgent pacing',
   },
   EXCITED: {
     key: 'excited',
     label: 'Excited / Euphoric',
     icon: '✨',
-    speedMod: 1.10,
+    speedMod: 1.1,
     pitchMod: 1.05,
-    gainMod: 1.10,
+    gainMod: 1.1,
     leadPauseMs: 70,
     filter: NO_FILTER,
     badgeColor: '#F59E0B',
-    description: 'Bright, bouncy, upbeat enthusiasm'
+    description: 'Bright, bouncy, upbeat enthusiasm',
   },
   SARCASTIC: {
     key: 'sarcastic',
@@ -173,19 +173,19 @@ export const EMOTIONS = {
     leadPauseMs: 220,
     filter: NO_FILTER,
     badgeColor: '#10B981',
-    description: 'Deadpan delivery with deliberate pauses'
+    description: 'Deadpan delivery with deliberate pauses',
   },
   TENDER: {
     key: 'tender',
     label: 'Tender / Loving',
     icon: '❤️',
-    speedMod: 0.90,
+    speedMod: 0.9,
     pitchMod: 0.99,
     gainMod: 0.85,
     leadPauseMs: 200,
     filter: NO_FILTER,
     badgeColor: '#FB7185',
-    description: 'Warm, soft, gentle emotional connection'
+    description: 'Warm, soft, gentle emotional connection',
   },
   COMMANDING: {
     key: 'commanding',
@@ -197,19 +197,19 @@ export const EMOTIONS = {
     leadPauseMs: 120,
     filter: NO_FILTER,
     badgeColor: '#8B5CF6',
-    description: 'Deep, steady, resonant authority'
+    description: 'Deep, steady, resonant authority',
   },
   HESITANT: {
     key: 'hesitant',
     label: 'Hesitant / Reflective',
     icon: '💭',
     speedMod: 0.88,
-    pitchMod: 1.00,
+    pitchMod: 1.0,
     gainMod: 0.88,
     leadPauseMs: 280,
     filter: NO_FILTER,
     badgeColor: '#94A3B8',
-    description: 'Uncertain pauses and measured cadence'
+    description: 'Uncertain pauses and measured cadence',
   },
   BEAT: {
     key: 'beat',
@@ -221,7 +221,7 @@ export const EMOTIONS = {
     leadPauseMs: 750,
     filter: NO_FILTER,
     badgeColor: '#64748B',
-    description: 'Deliberate dramatic silence for tension'
+    description: 'Deliberate dramatic silence for tension',
   },
   NARRATION: {
     key: 'narration',
@@ -229,11 +229,11 @@ export const EMOTIONS = {
     icon: '🎬',
     speedMod: 0.99,
     pitchMod: 1.0,
-    gainMod: 0.90,
+    gainMod: 0.9,
     leadPauseMs: 0,
     filter: NO_FILTER,
     badgeColor: '#F59E0B',
-    description: 'Even, unhurried reading of action and description'
+    description: 'Even, unhurried reading of action and description',
   },
   NEUTRAL: {
     key: 'neutral',
@@ -245,18 +245,53 @@ export const EMOTIONS = {
     leadPauseMs: 0,
     filter: NO_FILTER,
     badgeColor: '#94A3B8',
-    description: 'Balanced natural conversational cadence'
-  }
+    description: 'Balanced natural conversational cadence',
+  },
 };
 
 /**
  * Common acronyms and abbreviations that should remain capitalized / pronounced as acronyms
  */
 const ACRONYMS = new Set([
-  'FBI', 'CIA', 'EMP', 'AI', 'DNA', 'SWAT', 'NASA', 'CCTV', 'VIP', 'POV',
-  'HQ', 'PIN', 'USB', 'GPS', 'UAV', 'O.S.', 'V.O.', 'I/E', 'ID', 'OK',
-  'TV', 'PC', 'VR', 'AR', 'CPU', 'GPU', 'UN', 'US', 'UK', 'EU', 'NYPD',
-  'LAPD', 'EMS', 'ATF', 'NSA', 'MIA', 'KIA', 'ETA', 'SOS'
+  'FBI',
+  'CIA',
+  'EMP',
+  'AI',
+  'DNA',
+  'SWAT',
+  'NASA',
+  'CCTV',
+  'VIP',
+  'POV',
+  'HQ',
+  'PIN',
+  'USB',
+  'GPS',
+  'UAV',
+  'O.S.',
+  'V.O.',
+  'I/E',
+  'ID',
+  'OK',
+  'TV',
+  'PC',
+  'VR',
+  'AR',
+  'CPU',
+  'GPU',
+  'UN',
+  'US',
+  'UK',
+  'EU',
+  'NYPD',
+  'LAPD',
+  'EMS',
+  'ATF',
+  'NSA',
+  'MIA',
+  'KIA',
+  'ETA',
+  'SOS',
 ]);
 
 /**
@@ -281,7 +316,7 @@ const ORDINALS = {
   '70TH': 'seventieth',
   '80TH': 'eightieth',
   '90TH': 'ninetieth',
-  '100TH': 'hundredth'
+  '100TH': 'hundredth',
 };
 
 /**
@@ -292,22 +327,75 @@ const ORDINALS = {
  * "(beat, whispering)" is a pause *and* a whisper, not a choice between them.
  */
 const EMOTION_PATTERNS = [
-  { emotion: EMOTIONS.WHISPER, regex: /\b(whisper|whispering|whispered|hushed|softly|under (his|her|their) breath|quietly|muffled|secretive|sotto)\b/i },
-  { emotion: EMOTIONS.SHOUT, regex: /\b(shout|shouting|shouted|scream|screaming|screamed|yell|yelling|bellow|bellows|bellowing|roar|roars|roaring|booming|exploding|howling|hysterical)\b/i },
-  { emotion: EMOTIONS.COMMS, regex: /\b(over comms|into collar mic|into (the )?phone|on (the )?radio|through (the )?speaker|over (the )?radio|over (the )?intercom|comms|walkie|headset|filtered)\b/i },
-  { emotion: EMOTIONS.SYNTHETIC, regex: /\b(synth|synthetic|synthesized|robotic|computerized|mechanical|artificial|automated|monotone)\b/i },
-  { emotion: EMOTIONS.COUGHING, regex: /\b(cough|coughing|coughs|gruff|clears throat|clearing throat|raspy|wheezing|hoarse)\b/i },
+  {
+    emotion: EMOTIONS.WHISPER,
+    regex:
+      /\b(whisper|whispering|whispered|hushed|softly|under (his|her|their) breath|quietly|muffled|secretive|sotto)\b/i,
+  },
+  {
+    emotion: EMOTIONS.SHOUT,
+    regex:
+      /\b(shout|shouting|shouted|scream|screaming|screamed|yell|yelling|bellow|bellows|bellowing|roar|roars|roaring|booming|exploding|howling|hysterical)\b/i,
+  },
+  {
+    emotion: EMOTIONS.COMMS,
+    regex:
+      /\b(over comms|into collar mic|into (the )?phone|on (the )?radio|through (the )?speaker|over (the )?radio|over (the )?intercom|comms|walkie|headset|filtered)\b/i,
+  },
+  {
+    emotion: EMOTIONS.SYNTHETIC,
+    regex: /\b(synth|synthetic|synthesized|robotic|computerized|mechanical|artificial|automated|monotone)\b/i,
+  },
+  {
+    emotion: EMOTIONS.COUGHING,
+    regex: /\b(cough|coughing|coughs|gruff|clears throat|clearing throat|raspy|wheezing|hoarse)\b/i,
+  },
   { emotion: EMOTIONS.GASPING, regex: /\b(gasp|gasping|gasps|breathless|out of breath|panting|winded)\b/i },
   { emotion: EMOTIONS.SIGHING, regex: /\b(sigh|sighs|sighing|heavy sigh|wearily|weary|exhausted|resigned)\b/i },
-  { emotion: EMOTIONS.CHUCKLING, regex: /\b(chuckle|chuckles|chuckling|grin|grins|grinning|smiles|smirk|smirks|smirking|amused|wry)\b/i },
-  { emotion: EMOTIONS.FEAR, regex: /\b(terrified|terror|panicked|panic|panicking|fearful|trembling|quivering|horrified|dread|frantic|frantically)\b/i },
-  { emotion: EMOTIONS.ANGRY, regex: /\b(angry|angrily|furious|furiously|through (his|her|their|clenched) teeth|growls|growling|snarls|livid|hostile|irritated|fuming|snaps|snapping|glaring|sternly|seething|bitter)\b/i },
-  { emotion: EMOTIONS.SAD, regex: /\b(sad|sadly|crying|cries|sobbing|sobs|tearful|tears|weeping|mournful|heartbroken|choked up|breaking down|grief|grieving)\b/i },
-  { emotion: EMOTIONS.EXCITED, regex: /\b(excited|excitedly|thrilled|laughing|laughs|giggles|cheerful|joyful|beaming|jubilant|elated|eager|eagerly)\b/i },
-  { emotion: EMOTIONS.SARCASTIC, regex: /\b(sarcastic|sarcastically|dryly|dry|deadpan|mocking|mockingly|ironic|rolling eyes|scoffs|coldly amused|sardonic)\b/i },
-  { emotion: EMOTIONS.TENDER, regex: /\b(tender|tenderly|lovingly|affectionate|gentle|gently|warmly|gentler|softening|soothing|gently smiles|softly smiles)\b/i },
-  { emotion: EMOTIONS.COMMANDING, regex: /\b(commanding|command|orders|ordering|authoritative|authority|firmly|firm|strictly|demanding|decisive|regal|composure|composed|resolute|steady|measured|dignified|unwavering|coldly)\b/i },
-  { emotion: EMOTIONS.HESITANT, regex: /\b(hesitant|hesitates|hesitantly|stuttering|stammers|stammer|unsure|uncertain|nervous|nervously|fumbling|timid|apologetic|reluctant|realization|reflective|thoughtful)\b/i }
+  {
+    emotion: EMOTIONS.CHUCKLING,
+    regex: /\b(chuckle|chuckles|chuckling|grin|grins|grinning|smiles|smirk|smirks|smirking|amused|wry)\b/i,
+  },
+  {
+    emotion: EMOTIONS.FEAR,
+    regex:
+      /\b(terrified|terror|panicked|panic|panicking|fearful|trembling|quivering|horrified|dread|frantic|frantically)\b/i,
+  },
+  {
+    emotion: EMOTIONS.ANGRY,
+    regex:
+      /\b(angry|angrily|furious|furiously|through (his|her|their|clenched) teeth|growls|growling|snarls|livid|hostile|irritated|fuming|snaps|snapping|glaring|sternly|seething|bitter)\b/i,
+  },
+  {
+    emotion: EMOTIONS.SAD,
+    regex:
+      /\b(sad|sadly|crying|cries|sobbing|sobs|tearful|tears|weeping|mournful|heartbroken|choked up|breaking down|grief|grieving)\b/i,
+  },
+  {
+    emotion: EMOTIONS.EXCITED,
+    regex:
+      /\b(excited|excitedly|thrilled|laughing|laughs|giggles|cheerful|joyful|beaming|jubilant|elated|eager|eagerly)\b/i,
+  },
+  {
+    emotion: EMOTIONS.SARCASTIC,
+    regex:
+      /\b(sarcastic|sarcastically|dryly|dry|deadpan|mocking|mockingly|ironic|rolling eyes|scoffs|coldly amused|sardonic)\b/i,
+  },
+  {
+    emotion: EMOTIONS.TENDER,
+    regex:
+      /\b(tender|tenderly|lovingly|affectionate|gentle|gently|warmly|gentler|softening|soothing|gently smiles|softly smiles)\b/i,
+  },
+  {
+    emotion: EMOTIONS.COMMANDING,
+    regex:
+      /\b(commanding|command|orders|ordering|authoritative|authority|firmly|firm|strictly|demanding|decisive|regal|composure|composed|resolute|steady|measured|dignified|unwavering|coldly)\b/i,
+  },
+  {
+    emotion: EMOTIONS.HESITANT,
+    regex:
+      /\b(hesitant|hesitates|hesitantly|stuttering|stammers|stammer|unsure|uncertain|nervous|nervously|fumbling|timid|apologetic|reluctant|realization|reflective|thoughtful)\b/i,
+  },
 ];
 
 const BEAT_REGEX = /\b(beat|pause|silence|long pause|a moment|after a beat|taking a breath)\b/i;
@@ -376,7 +464,9 @@ function formatSceneHeading(headingText) {
   const formattedParts = parts.map((part, idx) => {
     let p = normalizeWordCasing(part.trim());
     if (idx > 0) {
-      p = p.replace(/\b(Night|Day|Dawn|Dusk|Evening|Continuous|Same Time|Moments Later|Later|Floor|Ledge)\b/g, m => m.toLowerCase());
+      p = p.replace(/\b(Night|Day|Dawn|Dusk|Evening|Continuous|Same Time|Moments Later|Later|Floor|Ledge)\b/g, (m) =>
+        m.toLowerCase(),
+      );
     }
     return p;
   });
@@ -405,8 +495,8 @@ export function cleanSpeechForSynthesis(text, speakerType = 'CHARACTER', { cutOf
   // 1c. A line that opens by cutting in starts with a dash. Removing it here
   //     keeps it from becoming a leading comma further down, which made the
   //     speaker begin on an odd little hitch.
-  if (pickUp || /^\s*["'‘“(\[]*\s*(--+|—|–)/.test(spoken)) {
-    spoken = spoken.replace(/^(\s*["'‘“(\[]*)\s*(--+|—|–)\s*/, '$1');
+  if (pickUp || /^\s*["'‘“([]*\s*(--+|—|–)/.test(spoken)) {
+    spoken = spoken.replace(/^(\s*["'‘“([]*)\s*(--+|—|–)\s*/, '$1');
   }
 
   // 2. Special Scene Heading formatting
@@ -427,7 +517,7 @@ export function cleanSpeechForSynthesis(text, speakerType = 'CHARACTER', { cutOf
     spoken = normalizeWordCasing(spoken);
   } else {
     const words = spoken.split(/\s+/);
-    const isAllUpper = words.length > 2 && words.every(w => w === w.toUpperCase() && !/^\d+$/.test(w));
+    const isAllUpper = words.length > 2 && words.every((w) => w === w.toUpperCase() && !/^\d+$/.test(w));
     if (isAllUpper) {
       spoken = normalizeWordCasing(spoken);
     }
@@ -504,11 +594,8 @@ function measureIntensity(rawText) {
   else if (bangs === 1) intensity += 0.18;
 
   const words = rawText.split(/\s+/);
-  const emphasisCaps = words.filter(w =>
-    w.length > 2 &&
-    w === w.toUpperCase() &&
-    /^[A-Z!?,.']+$/.test(w) &&
-    !ACRONYMS.has(w.replace(/[!?,.']/g, ''))
+  const emphasisCaps = words.filter(
+    (w) => w.length > 2 && w === w.toUpperCase() && /^[A-Z!?,.']+$/.test(w) && !ACRONYMS.has(w.replace(/[!?,.']/g, '')),
   );
   if (emphasisCaps.length >= 2) intensity += 0.25;
   else if (emphasisCaps.length === 1) intensity += 0.12;
@@ -551,26 +638,28 @@ export function analyzeLineNuance({
   speakerType = 'CHARACTER',
   extension = '',
   cutOff = false,
-  pickUp = false
+  pickUp = false,
 }) {
   const rawText = (text || '').trim();
   const isNarration = speakerType === 'ACTION' || speakerType === 'SCENE_HEADING' || speakerType === 'TRANSITION';
 
   // 1. Explicit direction wins. Collect every cue in it, not just the first.
   let matched = collectEmotions(parenthetical);
-  let isBeat = BEAT_REGEX.test(parenthetical || '');
+  const isBeat = BEAT_REGEX.test(parenthetical || '');
   let directionSource = parenthetical;
 
   // 2. Fall back to reading the line itself only when there is no direction.
   if (matched.length === 0 && !isBeat && rawText) {
     if (!isNarration) {
       const words = rawText.split(/\s+/);
-      const capsWords = words.filter(w =>
-        w.length > 2 && w === w.toUpperCase() && /^[A-Z!?,.']+$/.test(w) &&
-        !ACRONYMS.has(w.replace(/[!?,.']/g, ''))
+      const capsWords = words.filter(
+        (w) =>
+          w.length > 2 && w === w.toUpperCase() && /^[A-Z!?,.']+$/.test(w) && !ACRONYMS.has(w.replace(/[!?,.']/g, '')),
       );
-      if ((capsWords.length >= 2 && rawText.includes('!')) ||
-          (words.length <= 4 && capsWords.length >= 1 && rawText.includes('!'))) {
+      if (
+        (capsWords.length >= 2 && rawText.includes('!')) ||
+        (words.length <= 4 && capsWords.length >= 1 && rawText.includes('!'))
+      ) {
         matched = [EMOTIONS.SHOUT];
       } else if (rawText.includes('!!')) {
         matched = [EMOTIONS.ANGRY];
@@ -651,6 +740,6 @@ export function analyzeLineNuance({
     isVoiceOver,
     isOffScreen,
     isCutOff: cutOff,
-    isPickUp: pickUp
+    isPickUp: pickUp,
   };
 }

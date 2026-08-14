@@ -19,13 +19,16 @@ async function cancelBody(body, reason) {
  * Reads a response incrementally and refuses to retain more than maxBytes.
  * Content-Length is an early rejection only; every received chunk is counted.
  */
-export async function readBoundedResponseBlob(response, {
-  maxBytes,
-  signal,
-  contentType = response?.headers?.get?.('content-type') || '',
-  tooLargeError = () => new Error('The response is too large.'),
-  unsafeFallbackError = () => new Error('This browser cannot safely read the response.')
-} = {}) {
+export async function readBoundedResponseBlob(
+  response,
+  {
+    maxBytes,
+    signal,
+    contentType = response?.headers?.get?.('content-type') || '',
+    tooLargeError = () => new Error('The response is too large.'),
+    unsafeFallbackError = () => new Error('This browser cannot safely read the response.'),
+  } = {},
+) {
   if (!Number.isSafeInteger(maxBytes) || maxBytes < 0) {
     throw new TypeError('maxBytes must be a non-negative safe integer.');
   }
@@ -38,9 +41,12 @@ export async function readBoundedResponseBlob(response, {
   const declared = declaredContentLength(response);
 
   if (!body?.getReader) {
-    await cancelBody(body, declared !== null && declared > maxBytes
-      ? 'Response exceeded the configured byte limit.'
-      : 'Response could not be read safely.');
+    await cancelBody(
+      body,
+      declared !== null && declared > maxBytes
+        ? 'Response exceeded the configured byte limit.'
+        : 'Response could not be read safely.',
+    );
     if (declared !== null && declared > maxBytes) throw tooLargeError();
     // Without a reader there is no way to enforce the bound before blob()
     // buffers the response. A declared size is useful for early rejection, but
@@ -52,14 +58,16 @@ export async function readBoundedResponseBlob(response, {
   let finished = false;
   let cancelPromise = null;
   let abortListener = null;
-  const cancelReader = async reason => {
+  const cancelReader = async (reason) => {
     if (finished) return;
     if (!cancelPromise) cancelPromise = cancelBody(reader, reason);
     await cancelPromise;
   };
 
   if (signal) {
-    abortListener = () => { void cancelReader(signal.reason || createAbortError()); };
+    abortListener = () => {
+      void cancelReader(signal.reason || createAbortError());
+    };
     signal.addEventListener('abort', abortListener, { once: true });
   }
 
@@ -106,7 +114,7 @@ export async function readBoundedResponseBlob(response, {
 export async function readBoundedResponseJson(response, options = {}) {
   const blob = await readBoundedResponseBlob(response, {
     ...options,
-    contentType: response?.headers?.get?.('content-type') || 'application/json'
+    contentType: response?.headers?.get?.('content-type') || 'application/json',
   });
   let text;
   try {

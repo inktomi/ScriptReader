@@ -4,7 +4,7 @@ const DEFAULT_FOCUSABLE = [
   'select:not([disabled])',
   'textarea:not([disabled])',
   '[href]',
-  '[tabindex]:not([tabindex="-1"])'
+  '[tabindex]:not([tabindex="-1"])',
 ].join(',');
 
 function identityOf(element) {
@@ -22,31 +22,34 @@ function isUsable(element) {
  * Captures only the state a small innerHTML-based view promises to preserve.
  * Callers name their live fields and scroll containers explicitly.
  */
-export function createFocusPreservingRenderer(root, {
-  valueSelectors = [],
-  scrollSelectors = [],
-  focusableSelector = DEFAULT_FOCUSABLE,
-  fallback,
-  keepFocusInside = () => false
-} = {}) {
+export function createFocusPreservingRenderer(
+  root,
+  {
+    valueSelectors = [],
+    scrollSelectors = [],
+    focusableSelector = DEFAULT_FOCUSABLE,
+    fallback,
+    keepFocusInside = () => false,
+  } = {},
+) {
   const focusables = () => [...root.querySelectorAll(focusableSelector)];
-  const findByIdentity = identity => focusables().find(element => identityOf(element) === identity) || null;
+  const findByIdentity = (identity) => focusables().find((element) => identityOf(element) === identity) || null;
 
   function capture() {
     const active = root.ownerDocument?.activeElement;
     const ordered = focusables();
     return {
-      values: valueSelectors.map(selector => {
+      values: valueSelectors.map((selector) => {
         const element = root.querySelector(selector);
         return {
           selector,
           value: element?.value,
           selectionStart: element?.selectionStart,
           selectionEnd: element?.selectionEnd,
-          selectionDirection: element?.selectionDirection
+          selectionDirection: element?.selectionDirection,
         };
       }),
-      scroll: scrollSelectors.map(selector => {
+      scroll: scrollSelectors.map((selector) => {
         const element = root.querySelector(selector);
         return { selector, top: element?.scrollTop || 0, left: element?.scrollLeft || 0 };
       }),
@@ -54,8 +57,8 @@ export function createFocusPreservingRenderer(root, {
         wasInside: !!active && root.contains(active),
         identity: identityOf(active),
         index: ordered.indexOf(active),
-        order: ordered.map(identityOf)
-      }
+        order: ordered.map(identityOf),
+      },
     };
   }
 
@@ -68,7 +71,7 @@ export function createFocusPreservingRenderer(root, {
         element.setSelectionRange?.(
           field.selectionStart,
           field.selectionEnd ?? field.selectionStart,
-          field.selectionDirection || 'none'
+          field.selectionDirection || 'none',
         );
       }
     }
@@ -80,8 +83,9 @@ export function createFocusPreservingRenderer(root, {
     }
 
     const document = root.ownerDocument;
-    const mustRestore = snapshot.focus.wasInside
-      || (keepFocusInside() && (!document.activeElement || document.activeElement === document.body));
+    const mustRestore =
+      snapshot.focus.wasInside ||
+      (keepFocusInside() && (!document.activeElement || document.activeElement === document.body));
     if (!mustRestore) return;
 
     let target = findByIdentity(snapshot.focus.identity);
@@ -94,7 +98,7 @@ export function createFocusPreservingRenderer(root, {
       for (let distance = 1; distance < snapshot.focus.order.length; distance++) {
         const before = findByIdentity(snapshot.focus.order[snapshot.focus.index - distance]);
         const after = findByIdentity(snapshot.focus.order[snapshot.focus.index + distance]);
-        target = isUsable(before) ? before : (isUsable(after) ? after : null);
+        target = isUsable(before) ? before : isUsable(after) ? after : null;
         if (target) break;
       }
     }
@@ -114,6 +118,6 @@ export function createFocusPreservingRenderer(root, {
       const snapshot = preserve ? capture() : null;
       renderView();
       if (snapshot) restore(snapshot);
-    }
+    },
   };
 }

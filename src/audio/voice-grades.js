@@ -44,15 +44,24 @@ export const KOKORO_GRADES = Object.freeze({
   bf_lily: 'D',
   bm_daniel: 'D',
   am_santa: 'D-',
-  am_adam: 'F+'
+  am_adam: 'F+',
 });
 
 const SCORE = Object.freeze({
-  'A+': 12, 'A': 11, 'A-': 10,
-  'B+': 9, 'B': 8, 'B-': 7,
-  'C+': 6, 'C': 5, 'C-': 4,
-  'D+': 3, 'D': 2, 'D-': 1,
-  'F+': 0, 'F': -1
+  'A+': 12,
+  A: 11,
+  'A-': 10,
+  'B+': 9,
+  B: 8,
+  'B-': 7,
+  'C+': 6,
+  C: 5,
+  'C-': 4,
+  'D+': 3,
+  D: 2,
+  'D-': 1,
+  'F+': 0,
+  F: -1,
 });
 
 /** Numeric rank for sorting and thresholds. Unknown ids sort last. */
@@ -69,7 +78,7 @@ export function gradeScore(voiceId) {
  * `am_onyx` (D) is the only deep menacing bass in the set and a user may
  * reasonably trade fidelity for character. The rule is inform, don't decide.
  */
-export const CASTABLE_SCORE = SCORE['C'];
+export const CASTABLE_SCORE = SCORE.C;
 
 export function isCastable(voiceId) {
   return gradeScore(voiceId) >= CASTABLE_SCORE;

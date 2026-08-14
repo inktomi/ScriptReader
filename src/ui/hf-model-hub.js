@@ -1,5 +1,5 @@
+import { DEFAULT_MODEL_ID, ModelCacheManager } from '../audio/model-cache-manager.js';
 import { getIconSvg } from '../utils/icons.js';
-import { ModelCacheManager, DEFAULT_MODEL_ID, ALL_KOKORO_VOICE_IDS } from '../audio/model-cache-manager.js';
 
 export const HF_TTS_MODELS = [
   {
@@ -11,9 +11,10 @@ export const HF_TTS_MODELS = [
     license: 'Apache 2.0',
     status: 'Ready / Supported in-Browser (WASM/WebGPU)',
     badgeColor: '#10B981',
-    description: 'State-of-the-art lightweight neural TTS model with outstanding prosody, human-like cadence, and 20+ built-in character voices.',
+    description:
+      'State-of-the-art lightweight neural TTS model with outstanding prosody, human-like cadence, and 20+ built-in character voices.',
     features: ['28 Male/Female/Elder Voices', 'Emotion Prosody Control', 'Sub-second Inference', 'Zero Cloud Required'],
-    isRecommended: true
+    isRecommended: true,
   },
   {
     id: 'Xenova/speecht5_tts',
@@ -24,9 +25,10 @@ export const HF_TTS_MODELS = [
     license: 'MIT',
     status: 'Supported in Transformers.js',
     badgeColor: '#06B6D4',
-    description: 'Unified modal speech-to-speech / text-to-speech encoder-decoder architecture with X-vector speaker embeddings.',
+    description:
+      'Unified modal speech-to-speech / text-to-speech encoder-decoder architecture with X-vector speaker embeddings.',
     features: ['Speaker Embedding Conditioning', 'Multi-speaker support', 'Transformers.js pipeline'],
-    isRecommended: false
+    isRecommended: false,
   },
   {
     id: 'suno/bark-small',
@@ -37,9 +39,10 @@ export const HF_TTS_MODELS = [
     license: 'MIT',
     status: 'Non-Verbal / Emotion Specialized',
     badgeColor: '#F59E0B',
-    description: 'Transformer-based audio generation model famous for expressive vocalizations: laughs [laughs], sighs [sighs], whispers, and crying.',
+    description:
+      'Transformer-based audio generation model famous for expressive vocalizations: laughs [laughs], sighs [sighs], whispers, and crying.',
     features: ['Non-verbal vocalizations', 'Laughter & Gasps', 'Music & Ambient sounds'],
-    isRecommended: false
+    isRecommended: false,
   },
   {
     id: 'parler-tts/parler-tts-mini-v1',
@@ -50,9 +53,10 @@ export const HF_TTS_MODELS = [
     license: 'Apache 2.0',
     status: 'Natural Language Prompted TTS',
     badgeColor: '#8B5CF6',
-    description: 'Controllable text-to-speech where voice style, room acoustics, and emotional tone are guided by natural language prompts.',
+    description:
+      'Controllable text-to-speech where voice style, room acoustics, and emotional tone are guided by natural language prompts.',
     features: ['Prompt-controlled tone & pacing', 'High fidelity audio', 'Gender/Age conditioning'],
-    isRecommended: false
+    isRecommended: false,
   },
   {
     id: 'facebook/mms-tts-eng',
@@ -63,18 +67,14 @@ export const HF_TTS_MODELS = [
     license: 'CC-BY-NC 4.0',
     status: 'Ultra Lightweight VITS',
     badgeColor: '#F43F5E',
-    description: 'Massively Multilingual Speech (MMS) project model based on VITS end-to-end architecture for fast speech synthesis.',
+    description:
+      'Massively Multilingual Speech (MMS) project model based on VITS end-to-end architecture for fast speech synthesis.',
     features: ['End-to-end VITS', 'Ultra low memory footprint', 'High speed'],
-    isRecommended: false
-  }
+    isRecommended: false,
+  },
 ];
 
-export function createHfModelHubModal({
-  currentModelId,
-  onSelectModel,
-  onClose,
-  isModelBusy = () => false
-}) {
+export function createHfModelHubModal({ currentModelId, onSelectModel, onClose, isModelBusy = () => false }) {
   const modal = document.createElement('div');
   modal.className = 'modal-overlay';
 
@@ -155,7 +155,7 @@ export function createHfModelHubModal({
         </div>
 
         <div style="display: flex; flex-direction: column; gap: 12px;">
-          ${HF_TTS_MODELS.map(model => {
+          ${HF_TTS_MODELS.map((model) => {
             const isSelected = model.id === currentModelId;
             return `
               <div class="character-card" style="border-color: ${isSelected ? '#F59E0B' : 'var(--border-glass)'}; background: ${isSelected ? 'rgba(245, 158, 11, 0.06)' : 'var(--bg-panel-glass)'};">
@@ -173,11 +173,15 @@ export function createHfModelHubModal({
                     </p>
 
                     <div style="display: flex; align-items: center; gap: 6px; flex-wrap: wrap;">
-                      ${model.features.map(f => `
+                      ${model.features
+                        .map(
+                          (f) => `
                         <span style="font-size: 0.7rem; background: rgba(255,255,255,0.05); border: 1px solid var(--border-glass); padding: 2px 6px; border-radius: 4px; color: var(--text-script);">
                           ✓ ${f}
                         </span>
-                      `).join('')}
+                      `,
+                        )
+                        .join('')}
                     </div>
                   </div>
 
@@ -185,13 +189,17 @@ export function createHfModelHubModal({
                     <a href="${model.hfUrl}" target="_blank" class="btn btn-secondary" style="padding: 6px 12px; font-size: 0.75rem; text-decoration: none;" title="Open Model Card on Hugging Face">
                       🤗 View on HF
                     </a>
-                    ${model.id === 'onnx-community/Kokoro-82M-v1.0-ONNX' ? `
+                    ${
+                      model.id === 'onnx-community/Kokoro-82M-v1.0-ONNX'
+                        ? `
                       <button class="btn btn-primary btn-select-hf" data-model="${model.id}" style="padding: 6px 12px; font-size: 0.75rem;">
                         ${isSelected ? '✓ Active Model' : 'Use This Model'}
                       </button>
-                    ` : `
+                    `
+                        : `
                       <span style="font-size: 0.7rem; color: var(--text-muted);">Available in SDK</span>
-                    `}
+                    `
+                    }
                   </div>
                 </div>
               </div>
@@ -325,7 +333,7 @@ export function createHfModelHubModal({
     }
   });
 
-  modal.querySelectorAll('.btn-select-hf').forEach(btn => {
+  modal.querySelectorAll('.btn-select-hf').forEach((btn) => {
     btn.addEventListener('click', () => {
       onSelectModel(btn.dataset.model);
       modal.remove();

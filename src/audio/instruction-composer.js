@@ -33,18 +33,18 @@ const PACE_BANDS = [
   { max: 0.95, text: 'Speak a little slower than conversational.' },
   { max: 1.06, text: 'Speak at a natural conversational pace.' },
   { max: 1.16, text: 'Speak briskly, with urgency.' },
-  { max: Infinity, text: 'Speak fast and clipped, close to rapid-fire.' }
+  { max: Infinity, text: 'Speak fast and clipped, close to rapid-fire.' },
 ];
 
 const REGISTER_BANDS = [
-  { max: 0.90, text: 'Pitch your voice noticeably lower than usual.' },
+  { max: 0.9, text: 'Pitch your voice noticeably lower than usual.' },
   { max: 0.97, text: 'Sit slightly lower in your register.' },
   // Natural. Saying "speak at your normal pitch" spends instruction budget
   // telling the model to do what it was going to do anyway, and reads as a
   // constraint rather than an absence of one.
   { max: 1.04, text: null },
   { max: 1.12, text: 'Sit slightly higher in your register.' },
-  { max: Infinity, text: 'Pitch your voice noticeably higher than usual.' }
+  { max: Infinity, text: 'Pitch your voice noticeably higher than usual.' },
 ];
 
 /**
@@ -71,7 +71,7 @@ const EMOTION_INSTRUCTIONS = {
   synthetic: 'Flat, evenly metered, machine-like.',
   narration: 'Read as film narration: even, unhurried, uncoloured.',
   beat: 'Take a beat before speaking. Let the pause land.',
-  neutral: null
+  neutral: null,
 };
 
 function band(bands, value) {
@@ -112,7 +112,7 @@ export function composeInstructions({
   pitch = 1.0,
   persona = '',
   isNarration = false,
-  includeTempo = true
+  includeTempo = true,
 } = {}) {
   const stableParts = [];
   const lineParts = [];

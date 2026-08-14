@@ -73,13 +73,13 @@ function isBodyMarker(text) {
 export function splitPdfFrontMatter(lines) {
   if (!Array.isArray(lines) || lines.length === 0) return { frontMatter: [], body: lines || [] };
 
-  const markerIndex = lines.findIndex(line => isBodyMarker((line?.text || '').trim()));
+  const markerIndex = lines.findIndex((line) => isBodyMarker((line?.text || '').trim()));
   if (markerIndex <= 0) return { frontMatter: [], body: lines };
 
   const bodyPage = lines[markerIndex].page;
   if (!(bodyPage > 1) || bodyPage - 1 > MAX_FRONT_MATTER_PAGES) return { frontMatter: [], body: lines };
 
-  const boundary = lines.findIndex(line => line?.page >= bodyPage);
+  const boundary = lines.findIndex((line) => line?.page >= bodyPage);
   if (boundary <= 0) return { frontMatter: [], body: lines };
 
   return { frontMatter: lines.slice(0, boundary), body: lines.slice(boundary) };
@@ -99,7 +99,10 @@ export function readTitlePageTitle(frontMatter) {
   if (!Array.isArray(frontMatter)) return null;
 
   for (const line of frontMatter) {
-    const text = (line?.text || '').trim().replace(/^["“]+|["”]+$/g, '').trim();
+    const text = (line?.text || '')
+      .trim()
+      .replace(/^["“]+|["”]+$/g, '')
+      .trim();
     if (text.length < 2 || text.length > 60) continue;
     if (!/\p{L}/u.test(text)) continue;
     if (text !== text.toUpperCase()) continue;
@@ -108,7 +111,7 @@ export function readTitlePageTitle(frontMatter) {
     // The contact block sits at the action margin; the title is centred. Without
     // this a script whose cover leads with `WGA #2227534` would be titled after
     // its registration number.
-    if (line.minX / (line.pageWidth || 612) < 0.20) continue;
+    if (line.minX / (line.pageWidth || 612) < 0.2) continue;
 
     return text;
   }

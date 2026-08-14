@@ -1,22 +1,16 @@
-import { WebSpeechEngine } from './web-speech-engine.js';
-import { KokoroNeuralEngine } from './kokoro-engine.js';
-import { ModelCacheManager, DEFAULT_MODEL_ID } from './model-cache-manager.js';
-import {
-  getVoiceById,
-  getVoicesForEngine,
-  mapVoiceAcrossEngines,
-  DEFAULT_VOICE_ID,
-  DEFAULT_NARRATOR_VOICE_ID
-} from './voice-catalog.js';
-import { PlaybackScheduler } from './playback-scheduler.js';
-import { buildLineUnits, buildPreviewUnits, computeCueGapMs } from './performance-director.js';
+import { hasRunPodKey, loadEngineSettings, saveEngineSettings } from '../utils/credentials.js';
 import { getAudioContext, resumeAudioContext, suspendAudioContext } from './audio-context.js';
-import { ENGINE_IDS } from './engine-contract.js';
-import { OpenAiTtsEngine } from './openai-engine.js';
 import { ChatterboxStudioEngine, getChatterboxCacheStatus } from './chatterbox-engine.js';
-import { RunPodServerlessEngine } from './runpod-engine.js';
 import { MAX_RENDER_CACHE_SECONDS } from './chatterbox-render-store.js';
-import { loadEngineSettings, saveEngineSettings, hasRunPodKey } from '../utils/credentials.js';
+import { ENGINE_IDS } from './engine-contract.js';
+import { KokoroNeuralEngine } from './kokoro-engine.js';
+import { DEFAULT_MODEL_ID, ModelCacheManager } from './model-cache-manager.js';
+import { OpenAiTtsEngine } from './openai-engine.js';
+import { buildLineUnits, buildPreviewUnits, computeCueGapMs } from './performance-director.js';
+import { PlaybackScheduler } from './playback-scheduler.js';
+import { RunPodServerlessEngine } from './runpod-engine.js';
+import { DEFAULT_NARRATOR_VOICE_ID, getVoiceById, getVoicesForEngine, mapVoiceAcrossEngines } from './voice-catalog.js';
+import { WebSpeechEngine } from './web-speech-engine.js';
 
 /**
  * Retained so existing imports keep resolving; `ENGINE_IDS` in engine-contract.js
@@ -27,20 +21,20 @@ export const ENGINE_TYPES = {
   CHATTERBOX: ENGINE_IDS.CHATTERBOX,
   RUNPOD: ENGINE_IDS.RUNPOD,
   OPENAI: ENGINE_IDS.OPENAI,
-  WEB_SPEECH: ENGINE_IDS.WEB_SPEECH
+  WEB_SPEECH: ENGINE_IDS.WEB_SPEECH,
 };
 
 export const PLAYBACK_STATES = {
   IDLE: 'idle',
   PLAYING: 'playing',
   PAUSED: 'paused',
-  BUFFERING: 'buffering'
+  BUFFERING: 'buffering',
 };
 
 export const PACING_MODES = {
-  NATURAL: 'natural',   // Authentic human table read
+  NATURAL: 'natural', // Authentic human table read
   DRAMATIC: 'dramatic', // Rich theatrical breathing and tension
-  SNAPPY: 'snappy'      // Rapid rehearsal readthrough
+  SNAPPY: 'snappy', // Rapid rehearsal readthrough
 };
 
 // How often the orchestration loop runs. Scheduling happens far enough ahead
@@ -100,7 +94,7 @@ export class ScreenplayAudioManager {
       [ENGINE_IDS.KOKORO, new KokoroNeuralEngine()],
       [ENGINE_IDS.CHATTERBOX, new ChatterboxStudioEngine()],
       [ENGINE_IDS.RUNPOD, new RunPodServerlessEngine()],
-      [ENGINE_IDS.OPENAI, new OpenAiTtsEngine()]
+      [ENGINE_IDS.OPENAI, new OpenAiTtsEngine()],
     ]);
 
     const saved = loadEngineSettings();
@@ -129,21 +123,21 @@ export class ScreenplayAudioManager {
     this.listeners = new Set();
 
     // Render pipeline state
-    this.unitCache = new Map();   // lineIndex -> unit[]
-    this.cursorLine = 0;          // next line to schedule
-    this.cursorUnit = 0;          // next chunk within that line
-    this.stageOrder = [];         // speaking characters, most lines first — drives panning
+    this.unitCache = new Map(); // lineIndex -> unit[]
+    this.cursorLine = 0; // next line to schedule
+    this.cursorUnit = 0; // next chunk within that line
+    this.stageOrder = []; // speaking characters, most lines first — drives panning
 
     // Playhead bookkeeping. Overlapping speech means more than one line can be
     // sounding at once, so "the active line" is a set, and a line ends when its
     // own audio ends — not when some other line happens to start.
-    this.pendingStarts = [];        // [{ lineIndex, startAt, overlapMode }] not yet announced
-    this.lineEndAt = new Map();     // lineIndex -> latest effective end time
-    this.lineComplete = new Map();  // lineIndex -> its last chunk has been scheduled
+    this.pendingStarts = []; // [{ lineIndex, startAt, overlapMode }] not yet announced
+    this.lineEndAt = new Map(); // lineIndex -> latest effective end time
+    this.lineComplete = new Map(); // lineIndex -> its last chunk has been scheduled
     this.lineTruncated = new Map(); // lineIndex -> it was cut off by an interrupter
-    this.activeLines = new Map();   // lineIndex -> element, currently sounding
+    this.activeLines = new Map(); // lineIndex -> element, currently sounding
     this.hasStartedAnyLine = false;
-    this.clusterRemaining = 0;      // units left to place in the cluster being scheduled
+    this.clusterRemaining = 0; // units left to place in the cluster being scheduled
 
     this.reachedEnd = false;
     this.primed = false;
@@ -174,7 +168,7 @@ export class ScreenplayAudioManager {
       total: 0,
       percent: 0,
       etaSeconds: null,
-      message: ''
+      message: '',
     };
 
     this.previewToken = 0;
@@ -261,7 +255,7 @@ export class ScreenplayAudioManager {
     // Pulling a few hundred megabytes in the background for a listener who has
     // chosen cloud voices is a wait they never benefit from.
     if (this.engineId === ENGINE_IDS.KOKORO) {
-      this.engine.init().catch(err => {
+      this.engine.init().catch((err) => {
         console.warn('Kokoro background preload notice:', err);
       });
       return;
@@ -271,14 +265,19 @@ export class ScreenplayAudioManager {
       if (hasRunPodKey() || this.engine.getApiKey?.()?.trim()) {
         const engine = this.engine;
         const generation = this.playGeneration;
-        engine.init()
+        engine
+          .init()
           .then(() => {
-            if (generation === this.playGeneration &&
-                this.engineId === ENGINE_IDS.RUNPOD && this.engine === engine && engine.isReady) {
+            if (
+              generation === this.playGeneration &&
+              this.engineId === ENGINE_IDS.RUNPOD &&
+              this.engine === engine &&
+              engine.isReady
+            ) {
               this.prewarm();
             }
           })
-          .catch(err => {
+          .catch((err) => {
             console.warn('RunPod background preload notice:', err);
           });
       }
@@ -296,7 +295,7 @@ export class ScreenplayAudioManager {
       // half of what is about to play. Warming only Chatterbox here is what let
       // a script reach "100% pre-rendered" with every action line unrenderable.
       if (this.hybridCasting) {
-        this.kokoroEngine.init().catch(err => {
+        this.kokoroEngine.init().catch((err) => {
           console.warn('Kokoro narration preload notice:', err);
         });
       }
@@ -304,20 +303,28 @@ export class ScreenplayAudioManager {
       const engine = this.engine;
       const generation = this.playGeneration;
       getChatterboxCacheStatus()
-        .then(status => {
-          if (!status.installed || generation !== this.playGeneration ||
-              this.engineId !== ENGINE_IDS.CHATTERBOX || this.engine !== engine) {
+        .then((status) => {
+          if (
+            !status.installed ||
+            generation !== this.playGeneration ||
+            this.engineId !== ENGINE_IDS.CHATTERBOX ||
+            this.engine !== engine
+          ) {
             return null;
           }
           return engine.init();
         })
         .then(() => {
-          if (generation === this.playGeneration &&
-              this.engineId === ENGINE_IDS.CHATTERBOX && this.engine === engine && engine.isReady) {
+          if (
+            generation === this.playGeneration &&
+            this.engineId === ENGINE_IDS.CHATTERBOX &&
+            this.engine === engine &&
+            engine.isReady
+          ) {
             this.prewarm();
           }
         })
-        .catch(err => {
+        .catch((err) => {
           console.warn('Studio Local background preload notice:', err);
         });
     }
@@ -404,11 +411,12 @@ export class ScreenplayAudioManager {
 
     if (this.engineId === ENGINE_IDS.RUNPOD) {
       if (!this.engine.isReady && (hasRunPodKey() || this.engine.getApiKey?.()?.trim())) {
-        this.engine.init()
+        this.engine
+          .init()
           .then(() => {
             if (this.engineId === ENGINE_IDS.RUNPOD) this.prewarm();
           })
-          .catch(err => {
+          .catch((err) => {
             console.warn('RunPod setEngine init notice:', err);
           });
       }
@@ -443,7 +451,7 @@ export class ScreenplayAudioManager {
     this._invalidateUnits();
     this.emit('scriptLoaded', {
       totalLines: this.scriptElements.length,
-      currentIndex: this.currentIndex
+      currentIndex: this.currentIndex,
     });
     this.prewarm();
   }
@@ -489,7 +497,7 @@ export class ScreenplayAudioManager {
   _narratorVoiceForEngine(targetEngineId = this.engineId) {
     const engineId = targetEngineId || this.engineId;
     const saved = this.narratorVoiceId || DEFAULT_NARRATOR_VOICE_ID;
-    if (getVoicesForEngine(engineId).some(v => v.id === saved)) return saved;
+    if (getVoicesForEngine(engineId).some((v) => v.id === saved)) return saved;
 
     if (!this._narratorByEngine) this._narratorByEngine = {};
     if (!this._narratorByEngine[engineId]) {
@@ -510,13 +518,13 @@ export class ScreenplayAudioManager {
       const existing = assignment.voiceIds && assignment.voiceIds[this.engineId];
       if (existing) used.add(existing);
     }
-    if (getVoicesForEngine(this.engineId).some(v => v.id === narrator)) used.add(narrator);
+    if (getVoicesForEngine(this.engineId).some((v) => v.id === narrator)) used.add(narrator);
 
     // Stage order is biggest-part-first, so leads are mapped before bit parts and
     // get first refusal on their preferred counterpart voice.
     const order = [
-      ...this.stageOrder.filter(name => this.characterAssignments.has(name)),
-      ...[...this.characterAssignments.keys()].filter(name => !this.stageOrder.includes(name))
+      ...this.stageOrder.filter((name) => this.characterAssignments.has(name)),
+      ...[...this.characterAssignments.keys()].filter((name) => !this.stageOrder.includes(name)),
     ];
 
     for (const name of order) {
@@ -577,8 +585,7 @@ export class ScreenplayAudioManager {
     // up in the registry would resolve to a different instance whenever the two
     // are not the same object, and readiness lives on the instance — so the
     // pumps would then be waiting on an engine nothing is loading.
-    if (unit?.engineId && unit.engineId !== this.engine.capabilities.id &&
-        this._engines.has(unit.engineId)) {
+    if (unit?.engineId && unit.engineId !== this.engine.capabilities.id && this._engines.has(unit.engineId)) {
       return this._engines.get(unit.engineId);
     }
     return this.engine;
@@ -634,11 +641,10 @@ export class ScreenplayAudioManager {
       const element = this.scriptElements[line];
       if (!element) continue;
       const units = this._unitsForLine(line) || [];
-      if (!units.some(unit => this._engineForUnit(unit) === engine)) continue;
+      if (!units.some((unit) => this._engineForUnit(unit) === engine)) continue;
 
-      const name = element.type !== 'DIALOGUE'
-        ? 'the narration'
-        : (element.characterOriginal || element.character || '').trim();
+      const name =
+        element.type !== 'DIALOGUE' ? 'the narration' : (element.characterOriginal || element.character || '').trim();
       if (name && !names.includes(name)) names.push(name);
     }
     return names;
@@ -646,7 +652,7 @@ export class ScreenplayAudioManager {
 
   /** Required engines that are not loaded yet. Empty means nothing to await. */
   _coldEngines() {
-    return this._requiredEngines().filter(engine => !engine.isReady);
+    return this._requiredEngines().filter((engine) => !engine.isReady);
   }
 
   /**
@@ -663,20 +669,22 @@ export class ScreenplayAudioManager {
     let primaryError = null;
     const failed = [];
 
-    await Promise.all(this._requiredEngines().map(async (engine) => {
-      if (engine.isReady) return;
-      try {
-        await engine.init();
-      } catch (err) {
-        if (engine === this.engine) {
-          primaryError = err;
-          console.warn(`Engine ${this.engineId} unavailable:`, err);
-        } else {
-          console.warn(`Supporting engine ${engine.capabilities.id} unavailable:`, err);
+    await Promise.all(
+      this._requiredEngines().map(async (engine) => {
+        if (engine.isReady) return;
+        try {
+          await engine.init();
+        } catch (err) {
+          if (engine === this.engine) {
+            primaryError = err;
+            console.warn(`Engine ${this.engineId} unavailable:`, err);
+          } else {
+            console.warn(`Supporting engine ${engine.capabilities.id} unavailable:`, err);
+          }
         }
-      }
-      if (!engine.isReady && engine !== this.engine) failed.push(engine);
-    }));
+        if (!engine.isReady && engine !== this.engine) failed.push(engine);
+      }),
+    );
 
     return { primaryError, failed };
   }
@@ -689,9 +697,12 @@ export class ScreenplayAudioManager {
    */
   _emitSupportingEngineError(engine) {
     const cast = this._charactersOnEngine(engine);
-    const who = cast.length === 0 ? 'part of the cast'
-      : cast.length <= 2 ? cast.join(' and ')
-      : `${cast.slice(0, 2).join(', ')} and ${cast.length - 2} more`;
+    const who =
+      cast.length === 0
+        ? 'part of the cast'
+        : cast.length <= 2
+          ? cast.join(' and ')
+          : `${cast.slice(0, 2).join(', ')} and ${cast.length - 2} more`;
     const label = engine.capabilities.label || engine.capabilities.id;
     const error = engine.lastError;
 
@@ -699,8 +710,7 @@ export class ScreenplayAudioManager {
       engineId: engine.capabilities.id,
       code: (error && error.code) || 'supporting_unavailable',
       action: this.hybridCasting ? 'disableHybridCasting' : null,
-      message: `${label} could not load for ${who}.` +
-        (error && error.message ? ` ${error.message}` : '')
+      message: `${label} could not load for ${who}.${error && error.message ? ` ${error.message}` : ''}`,
     });
   }
 
@@ -751,13 +761,13 @@ export class ScreenplayAudioManager {
     const cleanName = (characterName || '').toUpperCase().trim();
     const assignment = this.characterAssignments.get(cleanName);
     return {
-      pitchOffset: assignment ? (assignment.pitchOffset || 0) : 0,
-      speedMultiplier: assignment ? (assignment.speedMultiplier || 1.0) : 1.0,
+      pitchOffset: assignment ? assignment.pitchOffset || 0 : 0,
+      speedMultiplier: assignment ? assignment.speedMultiplier || 1.0 : 1.0,
       // Free-text direction for this character. Only instruction-following
       // engines read it; Kokoro ignores it, and because it feeds the cache key
       // only through the composed instructions, writing one changes nothing at
       // all on the local engine.
-      direction: assignment ? (assignment.direction || '') : ''
+      direction: assignment ? assignment.direction || '' : '',
     };
   }
 
@@ -804,7 +814,7 @@ export class ScreenplayAudioManager {
     // Alternate sides and fill inward, so the leads take the outer chairs.
     const sign = slot % 2 === 0 ? -1 : 1;
     const tier = Math.floor(slot / 2);
-    return sign * PAN_SPREAD * (1 - (tier % 3) * 0.30);
+    return sign * PAN_SPREAD * (1 - (tier % 3) * 0.3);
   }
 
   // ----------------------------------------------------------- render pipeline
@@ -825,7 +835,7 @@ export class ScreenplayAudioManager {
         percent: 0,
         etaSeconds: null,
         error: null,
-        message: this.scriptElements.length > 0 ? `Preparing ${label} audio` : ''
+        message: this.scriptElements.length > 0 ? `Preparing ${label} audio` : '',
       });
     } else if (this.renderStatus?.visible) {
       this._setRenderStatus({ visible: false, active: false, canPlay: true, error: null, message: '' });
@@ -864,7 +874,7 @@ export class ScreenplayAudioManager {
       pan: this.getPanForCharacter(element.character),
       masterSpeed: this.masterSpeed,
       pacing: this.pacingMode,
-      engine
+      engine,
     });
 
     this.unitCache.set(lineIndex, units);
@@ -896,7 +906,7 @@ export class ScreenplayAudioManager {
   }
 
   _clusterReady(units) {
-    return units.every(unit => !!this._engineForUnit(unit).getCached(unit.key));
+    return units.every((unit) => !!this._engineForUnit(unit).getCached(unit.key));
   }
 
   /** Unit at the scheduling cursor, skipping over lines with nothing to say. */
@@ -964,10 +974,11 @@ export class ScreenplayAudioManager {
         // own single-flight latch, and this pump runs every 60 ms, so retrying
         // unconditionally would spawn a worker and a model download sixteen
         // times a second. One attempt, then the watchdog has the last word.
-        if (engine.request(u, count) === null && !engine.isReady &&
-            !this._autoInitAttempted.has(engine)) {
+        if (engine.request(u, count) === null && !engine.isReady && !this._autoInitAttempted.has(engine)) {
           this._autoInitAttempted.add(engine);
-          engine.init().catch(() => { /* the watchdog reports a stall that persists */ });
+          engine.init().catch(() => {
+            /* the watchdog reports a stall that persists */
+          });
         }
         seconds += u.estimatedDuration;
       }
@@ -1089,7 +1100,7 @@ export class ScreenplayAudioManager {
       this.pendingStarts.push({
         lineIndex: line,
         startAt,
-        overlapMode: unit.overlapMode || 'sequential'
+        overlapMode: unit.overlapMode || 'sequential',
       });
     }
   }
@@ -1127,7 +1138,7 @@ export class ScreenplayAudioManager {
         nuance: element.nuance || {},
         overlapMode: entry.overlapMode,
         isClusterHead,
-        concurrent: this.getActiveLineIndices().filter(i => i !== entry.lineIndex)
+        concurrent: this.getActiveLineIndices().filter((i) => i !== entry.lineIndex),
       });
 
       if (this.visualizer && isClusterHead) {
@@ -1148,7 +1159,7 @@ export class ScreenplayAudioManager {
       this.emit('lineEnd', {
         index: line,
         element,
-        truncated: !!this.lineTruncated.get(line)
+        truncated: !!this.lineTruncated.get(line),
       });
     }
 
@@ -1232,11 +1243,11 @@ export class ScreenplayAudioManager {
       return;
     }
 
-    const label = blocked ? (blocked.capabilities.label || blocked.capabilities.id) : 'The voice engine';
+    const label = blocked ? blocked.capabilities.label || blocked.capabilities.id : 'The voice engine';
     this.emit('engineError', {
       engineId: blocked ? blocked.capabilities.id : this.engineId,
       code: 'render_stalled',
-      message: `${label} stopped producing audio, so playback could not continue.`
+      message: `${label} stopped producing audio, so playback could not continue.`,
     });
   }
 
@@ -1247,8 +1258,7 @@ export class ScreenplayAudioManager {
   }
 
   _tick() {
-    if (this.playbackState !== PLAYBACK_STATES.PLAYING &&
-        this.playbackState !== PLAYBACK_STATES.BUFFERING) {
+    if (this.playbackState !== PLAYBACK_STATES.PLAYING && this.playbackState !== PLAYBACK_STATES.BUFFERING) {
       return;
     }
     if (!this.scheduler || !this.scheduler.ctx) return;
@@ -1277,7 +1287,7 @@ export class ScreenplayAudioManager {
       this.emit('lineEnd', {
         index: line,
         element,
-        truncated: !!this.lineTruncated.get(line)
+        truncated: !!this.lineTruncated.get(line),
       });
     }
     this._stopTick();
@@ -1342,11 +1352,7 @@ export class ScreenplayAudioManager {
     // correctly publishes canPlay: false before the first await, preventing
     // Play from starting on unrendered audio. But after a seek or once audio is
     // prepared, preserving a valid canPlay: true allows synchronous playback resumption.
-    const initialRunway = this._studioRunwayStatus(
-      this._studioRenderUnits().units,
-      STUDIO_UNKNOWN_RENDER_RATE,
-      false
-    );
+    const initialRunway = this._studioRunwayStatus(this._studioRenderUnits().units, STUDIO_UNKNOWN_RENDER_RATE, false);
     const label = engine.capabilities?.label || 'Studio';
     if (this._ownsStudioPrewarm(engine, unitGeneration)) {
       this._setRenderStatus({
@@ -1354,7 +1360,7 @@ export class ScreenplayAudioManager {
         active: true,
         canPlay: initialRunway.canPlay,
         engineLabel: label,
-        error: null
+        error: null,
       });
     }
 
@@ -1402,7 +1408,7 @@ export class ScreenplayAudioManager {
           canPlay: false,
           engineLabel: label,
           error: err?.message || `${label} audio could not be rendered.`,
-          message: err?.message || `${label} audio could not be rendered.`
+          message: err?.message || `${label} audio could not be rendered.`,
         });
       }
       return false;
@@ -1414,9 +1420,11 @@ export class ScreenplayAudioManager {
   }
 
   _ownsStudioPrewarm(engine, unitGeneration) {
-    return unitGeneration === this.prewarmGeneration &&
+    return (
+      unitGeneration === this.prewarmGeneration &&
       (this.engineId === ENGINE_IDS.CHATTERBOX || this.engineId === ENGINE_IDS.RUNPOD) &&
-      this.engine === engine;
+      this.engine === engine
+    );
   }
 
   _setRenderStatus(status) {
@@ -1472,7 +1480,7 @@ export class ScreenplayAudioManager {
     appendRange(0, this.currentIndex);
     return {
       units: units.slice(0, STUDIO_PREWARM_UNITS),
-      truncated: units.length > STUDIO_PREWARM_UNITS
+      truncated: units.length > STUDIO_PREWARM_UNITS,
     };
   }
 
@@ -1486,22 +1494,21 @@ export class ScreenplayAudioManager {
       if (!this._preparedStudioKeys.has(unit.key)) break;
       contiguousSeconds += unit.estimatedDuration || 0;
     }
-    const effectiveRate = Math.max(0, renderRate || STUDIO_UNKNOWN_RENDER_RATE) /
-      Math.max(0.5, this.masterSpeed);
+    const effectiveRate = Math.max(0, renderRate || STUDIO_UNKNOWN_RENDER_RATE) / Math.max(0.5, this.masterSpeed);
     const deficit = Math.max(0, 1 - effectiveRate * STUDIO_RENDER_SAFETY_FACTOR);
     const minCushion = Math.min(10, totalSeconds);
     const requiredSeconds = Math.min(
       totalSeconds,
-      Math.max(minCushion, Math.min(STUDIO_MIN_RUNWAY_SECONDS, totalSeconds * deficit))
+      Math.max(minCushion, Math.min(STUDIO_MIN_RUNWAY_SECONDS, totalSeconds * deficit)),
     );
-    const isSafeRunway = contiguousSeconds >= requiredSeconds ||
-      (contiguousSeconds >= minCushion && effectiveRate >= 1.0);
+    const isSafeRunway =
+      contiguousSeconds >= requiredSeconds || (contiguousSeconds >= minCushion && effectiveRate >= 1.0);
 
     return {
       totalSeconds,
       contiguousSeconds,
       requiredSeconds,
-      canPlay: previousCanPlay || isSafeRunway
+      canPlay: previousCanPlay || isSafeRunway,
     };
   }
 
@@ -1511,13 +1518,13 @@ export class ScreenplayAudioManager {
     const totalSeconds = units.reduce((sum, unit) => sum + (unit.estimatedDuration || 0), 0);
     if (renderPlan.truncated || totalSeconds > STUDIO_CACHE_DURATION_BUDGET) {
       throw new Error(
-        'This script is too long for the bounded Studio render cache. Split it into smaller parts for uninterrupted playback.'
+        'This script is too long for the bounded Studio render cache. Split it into smaller parts for uninterrupted playback.',
       );
     }
-    let completed = units.filter(unit => this._preparedStudioKeys.has(unit.key)).length;
+    let completed = units.filter((unit) => this._preparedStudioKeys.has(unit.key)).length;
     let completedSeconds = units.reduce(
-      (sum, unit) => sum + (this._preparedStudioKeys.has(unit.key) ? (unit.estimatedDuration || 0) : 0),
-      0
+      (sum, unit) => sum + (this._preparedStudioKeys.has(unit.key) ? unit.estimatedDuration || 0 : 0),
+      0,
     );
     let measuredAudioSeconds = 0;
     let measuredWallSeconds = 0;
@@ -1526,9 +1533,8 @@ export class ScreenplayAudioManager {
 
     const label = engine.capabilities?.label || 'Studio';
     const publish = (active, error = null) => {
-      const renderRate = measuredWallSeconds > 0
-        ? measuredAudioSeconds / measuredWallSeconds
-        : STUDIO_UNKNOWN_RENDER_RATE;
+      const renderRate =
+        measuredWallSeconds > 0 ? measuredAudioSeconds / measuredWallSeconds : STUDIO_UNKNOWN_RENDER_RATE;
       const runway = this._studioRunwayStatus(units, renderRate, canPlay);
       canPlay = runway.canPlay;
       const remainingAudio = Math.max(0, totalSeconds - completedSeconds);
@@ -1546,15 +1552,19 @@ export class ScreenplayAudioManager {
         runwaySeconds: runway.contiguousSeconds,
         requiredSeconds: runway.requiredSeconds,
         error,
-        message: error || (active ? `Pre-rendering ${label} audio` : `${label} audio ready`)
+        message: error || (active ? `Pre-rendering ${label} audio` : `${label} audio ready`),
       });
     };
 
     publish(completed < units.length);
-    for (let offset = 0; offset < units.length && this._ownsStudioPrewarm(engine, unitGeneration);
-         offset += STUDIO_PREWARM_BATCH_UNITS) {
-      const batchUnits = units.slice(offset, offset + STUDIO_PREWARM_BATCH_UNITS)
-        .filter(unit => !this._preparedStudioKeys.has(unit.key));
+    for (
+      let offset = 0;
+      offset < units.length && this._ownsStudioPrewarm(engine, unitGeneration);
+      offset += STUDIO_PREWARM_BATCH_UNITS
+    ) {
+      const batchUnits = units
+        .slice(offset, offset + STUDIO_PREWARM_BATCH_UNITS)
+        .filter((unit) => !this._preparedStudioKeys.has(unit.key));
       if (batchUnits.length === 0) continue;
 
       const batchStartedAt = Date.now();
@@ -1564,12 +1574,13 @@ export class ScreenplayAudioManager {
           // bound for Kokoro alongside dialogue bound for Chatterbox.
           const unitEngine = this._engineForUnit(unit);
           const request = unitEngine.request(unit, offset + index);
-          return request || Promise.reject(
-            new Error(`${unitEngine.capabilities.label} stopped accepting render requests.`));
-        })
+          return (
+            request || Promise.reject(new Error(`${unitEngine.capabilities.label} stopped accepting render requests.`))
+          );
+        }),
       );
       if (!this._ownsStudioPrewarm(engine, unitGeneration)) return;
-      const failure = results.find(result => {
+      const failure = results.find((result) => {
         if (result.status !== 'rejected') return false;
         const msg = String(result.reason?.message || result.reason || '');
         return !msg.includes('dropped') && !msg.includes('Abort');
@@ -1579,8 +1590,8 @@ export class ScreenplayAudioManager {
       const wallSeconds = (Date.now() - batchStartedAt) / 1000;
       const batchSeconds = batchUnits.reduce((sum, unit) => sum + (unit.estimatedDuration || 0), 0);
       const renderedAudioSeconds = results.reduce(
-        (sum, result) => sum + (result.status === 'fulfilled' ? (result.value?.duration || 0) : 0),
-        0
+        (sum, result) => sum + (result.status === 'fulfilled' ? result.value?.duration || 0 : 0),
+        0,
       );
       // Fast persistent-cache hits should not be mistaken for synthesis speed.
       if (wallSeconds >= 0.25 && renderedAudioSeconds > 0) {
@@ -1618,8 +1629,7 @@ export class ScreenplayAudioManager {
 
   async play() {
     if (this.scriptElements.length === 0) return;
-    if (this.playbackState === PLAYBACK_STATES.PLAYING ||
-        this.playbackState === PLAYBACK_STATES.BUFFERING) {
+    if (this.playbackState === PLAYBACK_STATES.PLAYING || this.playbackState === PLAYBACK_STATES.BUFFERING) {
       return;
     }
 
@@ -1629,8 +1639,8 @@ export class ScreenplayAudioManager {
     // the Play button reads as enabled while paused (transport-bar only force-
     // disables in IDLE) yet clicking it lands right back on this gate and
     // silently re-arms prewarm instead of resuming.
-    const isPausedResume = this.playbackState === PLAYBACK_STATES.PAUSED &&
-      !this.usingWebSpeechFallback && this.engine.isReady;
+    const isPausedResume =
+      this.playbackState === PLAYBACK_STATES.PAUSED && !this.usingWebSpeechFallback && this.engine.isReady;
     const isStudioEngine = this.engineId === ENGINE_IDS.CHATTERBOX || this.engineId === ENGINE_IDS.RUNPOD;
     if (!isPausedResume && isStudioEngine && !this.renderStatus.canPlay) {
       this.prewarm();
@@ -1651,8 +1661,7 @@ export class ScreenplayAudioManager {
 
     // Resuming from pause: the context clock was frozen, so everything already
     // scheduled is still valid and simply continues.
-    if (this.playbackState === PLAYBACK_STATES.PAUSED &&
-        !this.usingWebSpeechFallback && this.engine.isReady) {
+    if (this.playbackState === PLAYBACK_STATES.PAUSED && !this.usingWebSpeechFallback && this.engine.isReady) {
       this._setState(PLAYBACK_STATES.PLAYING);
       this._startTick();
       return;
@@ -1682,8 +1691,8 @@ export class ScreenplayAudioManager {
         this.emit('engineError', {
           engineId: this.engineId,
           code: (initError && initError.code) || 'unavailable',
-          message: (initError && initError.message)
-            || 'This voice engine is not available. Check Voice Engine settings.'
+          message:
+            (initError && initError.message) || 'This voice engine is not available. Check Voice Engine settings.',
         });
         return;
       }
@@ -1723,8 +1732,7 @@ export class ScreenplayAudioManager {
   }
 
   async pause() {
-    if (this.playbackState !== PLAYBACK_STATES.PLAYING &&
-        this.playbackState !== PLAYBACK_STATES.BUFFERING) {
+    if (this.playbackState !== PLAYBACK_STATES.PLAYING && this.playbackState !== PLAYBACK_STATES.BUFFERING) {
       return;
     }
 
@@ -1765,7 +1773,7 @@ export class ScreenplayAudioManager {
           completed: 0,
           percent: 0,
           error: null,
-          message: `${label} pre-render paused`
+          message: `${label} pre-render paused`,
         });
       }
     }
@@ -1806,8 +1814,8 @@ export class ScreenplayAudioManager {
 
   seek(index) {
     const target = Math.max(0, Math.min(this.scriptElements.length - 1, index));
-    const wasPlaying = this.playbackState === PLAYBACK_STATES.PLAYING ||
-                       this.playbackState === PLAYBACK_STATES.BUFFERING;
+    const wasPlaying =
+      this.playbackState === PLAYBACK_STATES.PLAYING || this.playbackState === PLAYBACK_STATES.BUFFERING;
 
     // Preserve the prewarm state across seeks: repositioning within the same
     // script does not invalidate already synthesized audio in the persistent
@@ -1823,7 +1831,7 @@ export class ScreenplayAudioManager {
 
     this.emit('lineChange', {
       index: this.currentIndex,
-      element: this.scriptElements[this.currentIndex]
+      element: this.scriptElements[this.currentIndex],
     });
 
     this.prewarm();
@@ -1866,8 +1874,7 @@ export class ScreenplayAudioManager {
   }
 
   _restartIfPlaying() {
-    if (this.playbackState === PLAYBACK_STATES.PLAYING ||
-        this.playbackState === PLAYBACK_STATES.BUFFERING) {
+    if (this.playbackState === PLAYBACK_STATES.PLAYING || this.playbackState === PLAYBACK_STATES.BUFFERING) {
       this.seek(this.currentIndex);
     } else {
       this.prewarm();
@@ -1883,9 +1890,10 @@ export class ScreenplayAudioManager {
   async prewarmAudition(voiceId, sampleText = null, tuning = {}, targetEngineId = null) {
     if (!voiceId) return null;
     const engineId = targetEngineId || this.engineId;
-    const engine = (!targetEngineId || targetEngineId === this.engineId)
-      ? this.engine
-      : (this._engines.get(targetEngineId) || this.engine);
+    const engine =
+      !targetEngineId || targetEngineId === this.engineId
+        ? this.engine
+        : this._engines.get(targetEngineId) || this.engine;
 
     if (!engine || !engine.isReady || !engine.request) return null;
     const profile = getVoiceById(voiceId, engineId);
@@ -1899,13 +1907,13 @@ export class ScreenplayAudioManager {
         tuning: {
           pitchOffset: tuning.pitchOffset || 0,
           speedMultiplier: tuning.speedMultiplier || 1.0,
-          direction: tuning.direction || ''
+          direction: tuning.direction || '',
         },
         masterSpeed: this.masterSpeed,
-        engine
+        engine,
       });
 
-      return Promise.all(units.map((unit, i) => engine.request(unit, 900 + i))).catch(err => {
+      return Promise.all(units.map((unit, i) => engine.request(unit, 900 + i))).catch((err) => {
         console.warn('Audition prewarm notice:', err);
       });
     } catch (err) {
@@ -1918,13 +1926,22 @@ export class ScreenplayAudioManager {
    * Audition a voice in the Cast Studio. Resolves when playback actually ends,
    * so the calling UI can flip its button back at the right moment.
    */
-  async previewVoice(voiceId, sampleText = null, pitchOffset = 0, speedMultiplier = 1.0, direction = '', targetEngineId = null, onStateChange = null) {
+  async previewVoice(
+    voiceId,
+    sampleText = null,
+    pitchOffset = 0,
+    speedMultiplier = 1.0,
+    direction = '',
+    targetEngineId = null,
+    onStateChange = null,
+  ) {
     this.stop({ preservePrewarm: true });
 
     const engineId = targetEngineId || this.engineId;
-    const engine = (!targetEngineId || targetEngineId === this.engineId)
-      ? this.engine
-      : (this._engines.get(targetEngineId) || this.engine);
+    const engine =
+      !targetEngineId || targetEngineId === this.engineId
+        ? this.engine
+        : this._engines.get(targetEngineId) || this.engine;
     const token = ++this.previewToken;
     // Auditions have to resolve against the pool the chosen engine can speak with
     const profile = getVoiceById(voiceId, engineId);
@@ -1950,8 +1967,7 @@ export class ScreenplayAudioManager {
       this.emit('engineError', {
         engineId,
         code: (initError && initError.code) || 'preview_unavailable',
-        message: (initError && initError.message)
-          || 'The selected voice could not be prepared for audition.'
+        message: (initError && initError.message) || 'The selected voice could not be prepared for audition.',
       });
       return;
     }
@@ -1964,7 +1980,7 @@ export class ScreenplayAudioManager {
           voiceProfile: profile,
           tuning: { pitchOffset, speedMultiplier, direction },
           masterSpeed: this.masterSpeed,
-          engine
+          engine,
         });
 
         // Requested together rather than one after the next: on a cloud engine a
@@ -2001,7 +2017,7 @@ export class ScreenplayAudioManager {
           this.emit('engineError', {
             engineId,
             code: err.code || 'preview_failed',
-            message: err.message || 'The selected voice could not be auditioned.'
+            message: err.message || 'The selected voice could not be auditioned.',
           });
           return;
         }
@@ -2033,7 +2049,7 @@ export class ScreenplayAudioManager {
             onStateChange?.('idle');
             resolve();
           }
-        }
+        },
       });
     });
   }
@@ -2093,7 +2109,7 @@ export class ScreenplayAudioManager {
         nuance,
         overlapMode: 'sequential',
         isClusterHead: true,
-        concurrent: []
+        concurrent: [],
       });
       if (this.visualizer) this.visualizer.setSpeaking(true, nuance);
 
@@ -2121,7 +2137,7 @@ export class ScreenplayAudioManager {
         nuance,
         speedMultiplier: (tuning.speedMultiplier || 1) * this.masterSpeed * (nuance.speedMod || 1),
         onEnd: advance,
-        onError: advance
+        onError: advance,
       });
     };
 

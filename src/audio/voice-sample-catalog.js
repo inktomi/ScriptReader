@@ -17,13 +17,13 @@ const REGISTER_LABELS = {
   mid: 'Mid',
   bright: 'Bright',
   high: 'High',
-  unmeasured: 'Unmeasured'
+  unmeasured: 'Unmeasured',
 };
 
 const PACE_LABELS = {
   measured: 'Measured pace',
   steady: 'Steady pace',
-  brisk: 'Brisk pace'
+  brisk: 'Brisk pace',
 };
 
 // Words a director actually types, mapped onto the two axes the catalog can
@@ -34,13 +34,13 @@ const REGISTER_SYNONYMS = {
   low: ['low', 'warm', 'rich', 'baritone', 'husky'],
   mid: ['mid', 'middle', 'neutral', 'even', 'natural'],
   bright: ['bright', 'light', 'clear', 'lifted'],
-  high: ['high', 'bright', 'airy', 'young', 'light']
+  high: ['high', 'bright', 'airy', 'young', 'light'],
 };
 
 const PACE_SYNONYMS = {
   measured: ['measured', 'slow', 'deliberate', 'calm', 'unhurried', 'steady'],
   steady: ['steady', 'even', 'natural', 'conversational'],
-  brisk: ['brisk', 'fast', 'quick', 'urgent', 'energetic', 'lively']
+  brisk: ['brisk', 'fast', 'quick', 'urgent', 'energetic', 'lively'],
 };
 
 function clean(value, fallback = '') {
@@ -112,7 +112,7 @@ export function normalizeCatalogVoice(entry, catalog = {}) {
     description: `Audiobook narration read by ${name}.${pitchHz ? ` Median pitch ${pitchHz} Hz` : ''}${wpm ? `, ${wpm} words per minute` : ''}.`,
     source: clean(catalog.source, 'LibriTTS-R'),
     license: clean(catalog.license, 'CC BY 4.0'),
-    previewUrl: voiceSampleAssetUrl(clean(entry?.clip))
+    previewUrl: voiceSampleAssetUrl(clean(entry?.clip)),
   };
   voice.qualityLabel = voiceSampleQualityLabel(voice);
   voice.qualityScore = voiceSampleQualityScore(voice);
@@ -146,13 +146,15 @@ export async function loadVoiceSampleCatalog({ fetchImpl = globalThis.fetch } = 
       payload = await response.json();
     } catch (error) {
       if (error?.name === 'AbortError') throw error;
-      throw new Error(error instanceof SyntaxError
-        ? 'The voice catalog file is unreadable. Reinstall or rebuild the app.'
-        : 'The voice catalog could not be loaded.');
+      throw new Error(
+        error instanceof SyntaxError
+          ? 'The voice catalog file is unreadable. Reinstall or rebuild the app.'
+          : 'The voice catalog could not be loaded.',
+      );
     }
     const voices = (Array.isArray(payload?.voices) ? payload.voices : [])
-      .map(entry => normalizeCatalogVoice(entry, payload))
-      .filter(voice => voice.id && voice.previewUrl);
+      .map((entry) => normalizeCatalogVoice(entry, payload))
+      .filter((voice) => voice.id && voice.previewUrl);
     return { ...payload, voices };
   })();
 
@@ -166,7 +168,10 @@ export async function loadVoiceSampleCatalog({ fetchImpl = globalThis.fetch } = 
 }
 
 function tokensOf(query) {
-  return clean(query).toLowerCase().split(/[^a-z0-9]+/).filter(Boolean);
+  return clean(query)
+    .toLowerCase()
+    .split(/[^a-z0-9]+/)
+    .filter(Boolean);
 }
 
 /**
@@ -196,7 +201,7 @@ export function matchesVoiceFilters(voice, filters = {}) {
   if (pace && voice.pace !== pace) return false;
 
   const tokens = tokensOf(filters.query);
-  return tokens.every(token => matchesToken(voice, token));
+  return tokens.every((token) => matchesToken(voice, token));
 }
 
 export async function searchVoiceSamples(filters = {}, { signal, fetchImpl = globalThis.fetch } = {}) {
@@ -206,7 +211,7 @@ export async function searchVoiceSamples(filters = {}, { signal, fetchImpl = glo
   const page = Math.max(0, Number(filters.page) || 0);
 
   const matched = catalog.voices
-    .filter(voice => matchesVoiceFilters(voice, filters))
+    .filter((voice) => matchesVoiceFilters(voice, filters))
     .sort((a, b) => b.qualityScore - a.qualityScore || a.name.localeCompare(b.name));
 
   const start = page * pageSize;
@@ -214,7 +219,7 @@ export async function searchVoiceSamples(filters = {}, { signal, fetchImpl = glo
     voices: matched.slice(start, start + pageSize),
     hasMore: matched.length > start + pageSize,
     totalCount: matched.length,
-    page
+    page,
   };
 }
 
@@ -248,13 +253,13 @@ export async function downloadVoiceSample(voice, { signal, fetchImpl = globalThi
     signal,
     contentType,
     tooLargeError: () => new Error('That voice sample is too large to import.'),
-    unsafeFallbackError: () => new Error('This browser cannot safely load that voice sample.')
+    unsafeFallbackError: () => new Error('This browser cannot safely load that voice sample.'),
   });
   if (!blob.size) throw new Error('The voice sample was empty.');
 
   return new File([blob], safeFileName(voice.name), {
     type: blob.type || contentType,
-    lastModified: Date.now()
+    lastModified: Date.now(),
   });
 }
 
@@ -264,6 +269,6 @@ export const VOICE_SAMPLE_CATALOG = Object.freeze({
   license: 'CC BY 4.0',
   licenseUrl: 'https://creativecommons.org/licenses/by/4.0/',
   pageSize: DEFAULT_PAGE_SIZE,
-  registers: Object.keys(REGISTER_LABELS).filter(key => key !== 'unmeasured'),
-  paces: Object.keys(PACE_LABELS)
+  registers: Object.keys(REGISTER_LABELS).filter((key) => key !== 'unmeasured'),
+  paces: Object.keys(PACE_LABELS),
 });

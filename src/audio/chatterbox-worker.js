@@ -1,13 +1,13 @@
-import { ChatterboxModel, AutoProcessor, Tensor, env } from 'transformers-v4';
-import { createOpfsModelCache } from './opfs-model-cache.js';
+import { AutoProcessor, ChatterboxModel, env, Tensor } from 'transformers-v4';
 import {
-  CHATTERBOX_MODEL_ID as MODEL_ID,
   DTYPE_CONFIGS,
-  OPFS_NAMESPACE,
   expectedFilesFor,
   isCompleteSize,
-  pickChatterboxDevice
+  CHATTERBOX_MODEL_ID as MODEL_ID,
+  OPFS_NAMESPACE,
+  pickChatterboxDevice,
 } from './chatterbox-model-files.js';
+import { createOpfsModelCache } from './opfs-model-cache.js';
 
 env.allowLocalModels = false;
 
@@ -25,21 +25,19 @@ const HF_HOSTS = [
   'cdn-lfs-us-1.huggingface.co',
   'cdn-lfs-eu-1.huggingface.co',
   'xethub.hf.co',
-  'xet.huggingface.co'
+  'xet.huggingface.co',
 ];
 
 const nativeFetch = self.fetch.bind(self);
 self.fetch = (input, init) => {
-  const url = typeof input === 'string' ? input : (input instanceof URL ? input.href : input?.url);
+  const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input?.url;
   let isHuggingFace = false;
   try {
-    isHuggingFace = !!url && HF_HOSTS.some(host => new URL(url, self.location.href).hostname.endsWith(host));
+    isHuggingFace = !!url && HF_HOSTS.some((host) => new URL(url, self.location.href).hostname.endsWith(host));
   } catch (_) {
     isHuggingFace = false;
   }
-  return isHuggingFace
-    ? nativeFetch(input, { ...init, referrerPolicy: 'no-referrer' })
-    : nativeFetch(input, init);
+  return isHuggingFace ? nativeFetch(input, { ...init, referrerPolicy: 'no-referrer' }) : nativeFetch(input, init);
 };
 
 // How many weight files stream at once. Two rather than one so a high-latency
@@ -83,8 +81,8 @@ function flushProgress() {
     type: 'progress',
     payload: {
       stage: progressStage,
-      files: [...progressState.entries()].map(([file, entry]) => ({ file, ...entry }))
-    }
+      files: [...progressState.entries()].map(([file, entry]) => ({ file, ...entry })),
+    },
   });
 }
 
@@ -154,7 +152,7 @@ async function localiseOrtRuntime(cache) {
         const file = `runtime/${source.split('/').pop()}`;
         noteProgress(file, { loaded: 0, total: 0, status: 'initiate' }, true);
         await cache.download(source, {
-          onProgress: ({ loaded, total }) => noteProgress(file, { loaded, total, status: 'progress' })
+          onProgress: ({ loaded, total }) => noteProgress(file, { loaded, total, status: 'progress' }),
         });
         noteProgress(file, { status: 'done' }, true);
         response = await cache.match(source);
@@ -212,26 +210,28 @@ async function prefetchWeights(cache, targetDevice) {
       if (!file) return;
       await cache.download(file.url, {
         expectedBytes: file.bytes,
-        onProgress: ({ loaded, total }) => noteProgress(file.path, { loaded, total, status: 'progress' })
+        onProgress: ({ loaded, total }) => noteProgress(file.path, { loaded, total, status: 'progress' }),
       });
       noteProgress(file.path, { status: 'done' }, true);
     }
   };
 
-  await Promise.all(
-    Array.from({ length: Math.min(PREFETCH_CONCURRENCY, pending.length) }, run)
-  );
+  await Promise.all(Array.from({ length: Math.min(PREFETCH_CONCURRENCY, pending.length) }, run));
 }
 
 async function loadModel(targetDevice) {
   const dtype = DTYPE_CONFIGS[targetDevice];
   const progress_callback = (progress) => {
     if (!progress || typeof progress.file !== 'string') return;
-    noteProgress(progress.file, {
-      loaded: Number(progress.loaded) || 0,
-      total: Number(progress.total) || 0,
-      status: progress.status || 'progress'
-    }, progress.status === 'initiate' || progress.status === 'done');
+    noteProgress(
+      progress.file,
+      {
+        loaded: Number(progress.loaded) || 0,
+        total: Number(progress.total) || 0,
+        status: progress.status || 'progress',
+      },
+      progress.status === 'initiate' || progress.status === 'done',
+    );
   };
 
   processor = await AutoProcessor.from_pretrained(MODEL_ID, { progress_callback });
@@ -275,7 +275,7 @@ async function initialize(id, payload = {}) {
         self.postMessage({
           type: 'init_complete',
           id,
-          payload: { device, dtype, retained: !!cache }
+          payload: { device, dtype, retained: !!cache },
         });
         return;
       } catch (error) {
@@ -314,25 +314,28 @@ async function generate(task) {
     ...inputs,
     ...speakers.get(task.payload.voiceId),
     exaggeration: task.payload.exaggeration ?? 0.5,
-    max_new_tokens: task.payload.maxNewTokens || 512
+    max_new_tokens: task.payload.maxNewTokens || 512,
   });
-  const samples = waveform.data instanceof Float32Array
-    ? waveform.data
-    : new Float32Array(waveform.data);
+  const samples = waveform.data instanceof Float32Array ? waveform.data : new Float32Array(waveform.data);
   const output = samples.slice();
-  self.postMessage({
-    type: 'generate_complete',
-    id: task.id,
-    payload: { audio: output, sampling_rate: 24000 }
-  }, [output.buffer]);
+  self.postMessage(
+    {
+      type: 'generate_complete',
+      id: task.id,
+      payload: { audio: output, sampling_rate: 24000 },
+    },
+    [output.buffer],
+  );
 }
 
 function takeNext() {
   if (queue.length === 0) return null;
   let best = 0;
   for (let i = 1; i < queue.length; i++) {
-    if (queue[i].priority < queue[best].priority ||
-        (queue[i].priority === queue[best].priority && queue[i].sequence < queue[best].sequence)) {
+    if (
+      queue[i].priority < queue[best].priority ||
+      (queue[i].priority === queue[best].priority && queue[i].sequence < queue[best].sequence)
+    ) {
       best = i;
     }
   }
@@ -343,13 +346,14 @@ async function pump() {
   if (processing) return;
   processing = true;
   try {
-    let task;
-    while ((task = takeNext())) {
+    let task = takeNext();
+    while (task) {
       try {
         await generate(task);
       } catch (error) {
         postError(task.id, error);
       }
+      task = takeNext();
     }
   } finally {
     processing = false;
@@ -357,7 +361,7 @@ async function pump() {
   if (queue.length) pump();
 }
 
-self.onmessage = event => {
+self.onmessage = (event) => {
   const { type, id, payload = {} } = event.data || {};
   if (type === 'init') {
     initialize(id, payload);

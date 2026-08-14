@@ -25,12 +25,12 @@ import { getAudioContext } from './audio-context.js';
  * sounding.
  */
 
-const MIN_LEAD = 0.03;       // never schedule closer than this to "now"
-const RELEASE_TIME = 0.012;  // fade used when cutting playback short
+const MIN_LEAD = 0.03; // never schedule closer than this to "now"
+const RELEASE_TIME = 0.012; // fade used when cutting playback short
 const INTERRUPT_FADE = 0.08; // fade applied when a line is cut off mid-thought
-const MIN_AUDIBLE = 0.06;    // a trimmed unit never collapses below this
-const MIX_HEADROOM = 0.76;    // leave room for two actors and filter makeup gain
-const MAX_UNIT_GAIN = 1.10;   // one actor cannot overload the mix bus alone
+const MIN_AUDIBLE = 0.06; // a trimmed unit never collapses below this
+const MIX_HEADROOM = 0.76; // leave room for two actors and filter makeup gain
+const MAX_UNIT_GAIN = 1.1; // one actor cannot overload the mix bus alone
 
 export class PlaybackScheduler {
   constructor() {
@@ -200,10 +200,13 @@ export class PlaybackScheduler {
 
     // Read the anchor BEFORE any edge is updated.
     const base =
-        unit.anchor === 'prevHead' ? this.curLineHead
-      : unit.anchor === 'prevTail' ? this.curLineTail
-      : unit.anchor === 'chunk'    ? this.lastUnitEnd
-      :                              this.timelineEnd;
+      unit.anchor === 'prevHead'
+        ? this.curLineHead
+        : unit.anchor === 'prevTail'
+          ? this.curLineTail
+          : unit.anchor === 'chunk'
+            ? this.lastUnitEnd
+            : this.timelineEnd;
 
     const startAt = Math.max(base + (unit.leadPause || 0), ctx.currentTime + MIN_LEAD);
 
@@ -235,7 +238,7 @@ export class PlaybackScheduler {
       try {
         gainNode.disconnect();
         if (tailNode !== gainNode) tailNode.disconnect();
-      } catch (err) {
+      } catch (_err) {
         // already torn down
       }
     };
@@ -244,9 +247,10 @@ export class PlaybackScheduler {
 
     // A sequential first chunk opens a new cluster, so the tail restarts there.
     // Anything else is a member of the cluster already in flight and extends it.
-    this.curLineTail = (unit.isFirstChunk && (!unit.anchor || unit.anchor === 'sequential'))
-      ? naturalEnd
-      : Math.max(this.curLineTail, naturalEnd);
+    this.curLineTail =
+      unit.isFirstChunk && (!unit.anchor || unit.anchor === 'sequential')
+        ? naturalEnd
+        : Math.max(this.curLineTail, naturalEnd);
 
     this.lastUnitEnd = naturalEnd;
     this.timelineEnd = Math.max(this.timelineEnd, endAt);
@@ -285,7 +289,7 @@ export class PlaybackScheduler {
         } else {
           entry.source.stop(now);
         }
-      } catch (err) {
+      } catch (_err) {
         // Source may have finished between the check and the call.
       }
     }

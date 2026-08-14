@@ -35,23 +35,34 @@ import { analyzeLineNuance } from './emotion-analyzer.js';
  * moves belong to the authored-only profiles.
  */
 export const PACE_PROFILES = {
-  rapid:    { key: 'rapid',    label: 'Rapid',    icon: '⚡', gapFactor: 0.45, tempoFactor: 1.10 },
-  snappy:   { key: 'snappy',   label: 'Snappy',   icon: '⚡', gapFactor: 0.55, tempoFactor: 1.06 },
-  natural:  { key: 'natural',  label: 'Natural',  icon: '🎭', gapFactor: 1.00, tempoFactor: 1.00 },
-  measured: { key: 'measured', label: 'Measured', icon: '🎼', gapFactor: 1.20, tempoFactor: 0.96 },
+  rapid: { key: 'rapid', label: 'Rapid', icon: '⚡', gapFactor: 0.45, tempoFactor: 1.1 },
+  snappy: { key: 'snappy', label: 'Snappy', icon: '⚡', gapFactor: 0.55, tempoFactor: 1.06 },
+  natural: { key: 'natural', label: 'Natural', icon: '🎭', gapFactor: 1.0, tempoFactor: 1.0 },
+  measured: { key: 'measured', label: 'Measured', icon: '🎼', gapFactor: 1.2, tempoFactor: 0.96 },
   dramatic: { key: 'dramatic', label: 'Dramatic', icon: '🎬', gapFactor: 1.45, tempoFactor: 0.95 },
-  droning:  { key: 'droning',  label: 'Droning',  icon: '💤', gapFactor: 1.70, tempoFactor: 0.88 }
+  droning: { key: 'droning', label: 'Droning', icon: '💤', gapFactor: 1.7, tempoFactor: 0.88 },
 };
 
 export const DEFAULT_PACE = 'natural';
 
 const PACE_ALIASES = {
-  fast: 'rapid', quick: 'rapid', quickly: 'rapid', 'rapid-fire': 'rapid',
-  rapidfire: 'rapid', hurried: 'rapid', urgent: 'rapid',
-  slow: 'droning', slowly: 'droning', drone: 'droning', ponderous: 'droning',
-  laborious: 'droning', dragging: 'droning',
-  deliberate: 'measured', even: 'measured', steady: 'measured',
-  theatrical: 'dramatic'
+  fast: 'rapid',
+  quick: 'rapid',
+  quickly: 'rapid',
+  'rapid-fire': 'rapid',
+  rapidfire: 'rapid',
+  hurried: 'rapid',
+  urgent: 'rapid',
+  slow: 'droning',
+  slowly: 'droning',
+  drone: 'droning',
+  ponderous: 'droning',
+  laborious: 'droning',
+  dragging: 'droning',
+  deliberate: 'measured',
+  even: 'measured',
+  steady: 'measured',
+  theatrical: 'dramatic',
 };
 
 /** Resolve any authored spelling to a profile key, or null if unrecognised. */
@@ -90,8 +101,8 @@ export function resolvePacing({ global = DEFAULT_PACE, passage = DEFAULT_PACE, l
 
   return {
     key: line || (passage !== DEFAULT_PACE ? passage : global),
-    gapFactor: clamp(g.gapFactor * p.gapFactor * l.gapFactor, 0.25, 2.20),
-    tempoFactor: clamp(g.tempoFactor * p.tempoFactor * l.tempoFactor, 0.80, 1.25)
+    gapFactor: clamp(g.gapFactor * p.gapFactor * l.gapFactor, 0.25, 2.2),
+    tempoFactor: clamp(g.tempoFactor * p.tempoFactor * l.tempoFactor, 0.8, 1.25),
   };
 }
 
@@ -103,7 +114,7 @@ export function resolvePacing({ global = DEFAULT_PACE, passage = DEFAULT_PACE, l
  */
 export const OVERLAP_TIMING = {
   // The interrupter starts this far before the victim's line would have ended.
-  interruptOverlapSec: 0.30,
+  interruptOverlapSec: 0.3,
   // ...and the victim keeps talking this far into the collision before being cut.
   interruptCutDelaySec: 0.15,
   // Simultaneous speakers are offset by a hair so their attacks do not phase-lock
@@ -111,7 +122,7 @@ export const OVERLAP_TIMING = {
   simultaneousStaggerSec: 0.03,
   // The second voice in a simultaneous pair sits slightly back, which is what
   // makes the pair readable instead of a wall.
-  simultaneousDuck: 0.90
+  simultaneousDuck: 0.9,
 };
 
 /** How much of the cut-off line's tail is discarded. */
@@ -123,14 +134,13 @@ export function interruptTrimSec() {
 
 // A dash at the very end survives closing quotes and brackets: `that the--"`.
 const CUT_OFF_END_REGEX = /(--+|—|–)\s*["'’”)\]]*\s*$/;
-const PICK_UP_START_REGEX = /^\s*["'‘“(\[]*\s*(--+|—|–)\s*(?=\S)/;
+const PICK_UP_START_REGEX = /^\s*["'‘“([]*\s*(--+|—|–)\s*(?=\S)/;
 
 // Narrow on purpose. `over (him|her|them)` is excluded because it matches
 // "(leaning over her)", and `both`/`together` because they match "(both amused)".
 const INTERRUPT_PAREN_REGEX =
   /\b(interrupt(s|ing|ed)?|cutting (in|off)|cuts (in|off)|breaking in|butting in|talking over|speaking over|jumping in)\b/i;
-const SIMULTANEOUS_PAREN_REGEX =
-  /\b(simultaneous(ly)?|overlapping|at the same time|in unison|over each other)\b/i;
+const SIMULTANEOUS_PAREN_REGEX = /\b(simultaneous(ly)?|overlapping|at the same time|in unison|over each other)\b/i;
 
 /**
  * Per-line pace read off a direction.
@@ -150,13 +160,13 @@ const PACE_PAREN_PATTERNS = [
     adverb: /\b(rapidly|quickly|hurriedly|breakneck|rapid[- ]fire|rattling off)\b/i,
     // "breathless" is deliberately absent: it describes a state, not a tempo,
     // and it already reads as its own emotion.
-    bare: /^(rapid|quick|fast|hurried|clipped|racing)$/i
+    bare: /^(rapid|quick|fast|hurried|clipped|racing)$/i,
   },
   {
     key: 'droning',
     adverb: /\b(slowly|drawling|droning|ponderously|laboriously|drawn out)\b/i,
-    bare: /^(slow|drone|drones|ponderous|labou?red|dragging|glacial)$/i
-  }
+    bare: /^(slow|drone|drones|ponderous|labou?red|dragging|glacial)$/i,
+  },
 ];
 
 const PACE_NOTE_REGEX = /^pace\s*[:=]\s*([a-z-]+)\s*$/i;
@@ -175,11 +185,14 @@ function matchLinePace(parenthetical) {
   const direction = (parenthetical || '').trim();
   if (!direction) return null;
 
-  const fragments = direction.split(/[,;]/).map(f => f.trim()).filter(Boolean);
+  const fragments = direction
+    .split(/[,;]/)
+    .map((f) => f.trim())
+    .filter(Boolean);
 
   for (const { key, adverb, bare } of PACE_PAREN_PATTERNS) {
     if (adverb.test(direction)) return key;
-    if (fragments.some(f => bare.test(f))) return key;
+    if (fragments.some((f) => bare.test(f))) return key;
   }
   return null;
 }
@@ -237,8 +250,8 @@ export function annotateScriptFlow(parsed) {
 
     const paren = element.parenthetical || '';
 
-    const differentSpeaker = (prev.character || '').toUpperCase().trim()
-      !== (element.character || '').toUpperCase().trim();
+    const differentSpeaker =
+      (prev.character || '').toUpperCase().trim() !== (element.character || '').toUpperCase().trim();
 
     if (element.overlap && element.overlap.mode) {
       // Already set by the parser from `^`; leave it alone.
@@ -280,7 +293,7 @@ export function annotateScriptFlow(parsed) {
       speakerType: 'CHARACTER',
       extension: extensionMatch ? extensionMatch.join(' ') : '',
       cutOff: element.cutOff,
-      pickUp
+      pickUp,
     });
   }
 

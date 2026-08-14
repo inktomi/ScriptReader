@@ -26,12 +26,12 @@
  * without re-downloading 37 GB. --report prints the measured distributions.
  */
 import { execFile } from 'node:child_process';
-import { promisify } from 'node:util';
 import fs from 'node:fs/promises';
-import path from 'node:path';
 import os from 'node:os';
-import zlib from 'node:zlib';
+import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { promisify } from 'node:util';
+import zlib from 'node:zlib';
 
 const run = promisify(execFile);
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -55,7 +55,7 @@ const SUBSETS = {
   'dev-clean': 'dev_clean',
   'test-clean': 'test_clean',
   'train-clean-100': 'train_clean_100',
-  'train-clean-360': 'train_clean_360'
+  'train-clean-360': 'train_clean_360',
 };
 
 const CLIP_SECONDS = 10;
@@ -99,7 +99,9 @@ async function readLedger() {
       const record = JSON.parse(line);
       byReader.set(record.reader, record);
     }
-  } catch { /* first run */ }
+  } catch {
+    /* first run */
+  }
   return byReader;
 }
 
@@ -116,7 +118,7 @@ async function fetchWithRetry(url, { attempts = 5, init, timeoutMs = 60_000 } = 
       // a deadline.
       const res = await fetch(url, {
         ...init,
-        signal: timeoutMs ? AbortSignal.timeout(timeoutMs) : undefined
+        signal: timeoutMs ? AbortSignal.timeout(timeoutMs) : undefined,
       });
       // openslr.org sheds load under concurrent range requests; these statuses
       // clear on their own, so they are worth waiting out rather than failing.
@@ -128,7 +130,7 @@ async function fetchWithRetry(url, { attempts = 5, init, timeoutMs = 60_000 } = 
     } catch (error) {
       lastError = error;
       if (error.fatal) throw error;
-      await new Promise(resolve => setTimeout(resolve, 1500 * (attempt + 1) ** 2));
+      await new Promise((resolve) => setTimeout(resolve, 1500 * (attempt + 1) ** 2));
     }
   }
   throw lastError;
@@ -148,9 +150,11 @@ async function loadSpeakers() {
     await fs.mkdir(WORK_DIR, { recursive: true });
     await fs.writeFile(cached, tsv);
   }
-  return tsv.split('\n').slice(1)
-    .map(line => line.split('\t').map(cell => cell.trim()))
-    .filter(cells => cells.length >= 4)
+  return tsv
+    .split('\n')
+    .slice(1)
+    .map((line) => line.split('\t').map((cell) => cell.trim()))
+    .filter((cells) => cells.length >= 4)
     .map(([reader, gender, subset, name]) => ({ reader, gender, subset, name }));
 }
 
@@ -158,7 +162,13 @@ function extractFromTar(tar, suffix) {
   let offset = 0;
   while (offset + 512 <= tar.length) {
     const name = tar.toString('utf8', offset, offset + 100).replace(/\0.*$/, '');
-    const size = parseInt(tar.toString('utf8', offset + 124, offset + 136).replace(/\0.*$/, '').trim() || '0', 8);
+    const size = parseInt(
+      tar
+        .toString('utf8', offset + 124, offset + 136)
+        .replace(/\0.*$/, '')
+        .trim() || '0',
+      8,
+    );
     if (!name) break;
     const start = offset + 512;
     if (name.endsWith(suffix)) return tar.toString('utf8', start, start + size);
@@ -195,7 +205,10 @@ async function downloadSegment(url, part, attempts = 20) {
   let lastError;
 
   for (let attempt = 0; attempt < attempts; attempt++) {
-    let have = await fs.stat(part.file).then(stat => stat.size, () => 0);
+    let have = await fs.stat(part.file).then(
+      (stat) => stat.size,
+      () => 0,
+    );
     if (have > length) {
       await fs.truncate(part.file, length);
       have = length;
@@ -203,20 +216,32 @@ async function downloadSegment(url, part, attempts = 20) {
     if (have === length) return;
 
     try {
-      await run('sh', ['-c', [
-        'curl --fail --location --silent --show-error --no-buffer',
-        `--range ${part.start + have}-${part.end}`,
-        `'${url}' >> '${part.file}'`
-      ].join(' ')], { maxBuffer: 1 << 20 });
+      await run(
+        'sh',
+        [
+          '-c',
+          [
+            'curl --fail --location --silent --show-error --no-buffer',
+            `--range ${part.start + have}-${part.end}`,
+            `'${url}' >> '${part.file}'`,
+          ].join(' '),
+        ],
+        { maxBuffer: 1 << 20 },
+      );
     } catch (error) {
       lastError = error;
     }
-    await new Promise(resolve => setTimeout(resolve, Math.min(30_000, 2000 * (attempt + 1))));
+    await new Promise((resolve) => setTimeout(resolve, Math.min(30_000, 2000 * (attempt + 1))));
   }
 
-  const have = await fs.stat(part.file).then(stat => stat.size, () => 0);
+  const have = await fs.stat(part.file).then(
+    (stat) => stat.size,
+    () => 0,
+  );
   if (have === length) return;
-  throw new Error(`segment ${part.start}-${part.end} incomplete: ${have}/${length} (${lastError?.message || 'short read'})`);
+  throw new Error(
+    `segment ${part.start}-${part.end} incomplete: ${have}/${length} (${lastError?.message || 'short read'})`,
+  );
 }
 
 async function downloadInSegments(url, dest, segments = 4) {
@@ -228,13 +253,13 @@ async function downloadInSegments(url, dest, segments = 4) {
   const parts = Array.from({ length: segments }, (_, index) => ({
     file: `${dest}.part${index}`,
     start: index * size,
-    end: Math.min(total, (index + 1) * size) - 1
+    end: Math.min(total, (index + 1) * size) - 1,
   }));
 
-  await Promise.all(parts.map(part => downloadSegment(url, part)));
+  await Promise.all(parts.map((part) => downloadSegment(url, part)));
 
-  await run('sh', ['-c', `cat ${parts.map(part => `'${part.file}'`).join(' ')} > '${dest}'`]);
-  await Promise.all(parts.map(part => fs.unlink(part.file).catch(() => {})));
+  await run('sh', ['-c', `cat ${parts.map((part) => `'${part.file}'`).join(' ')} > '${dest}'`]);
+  await Promise.all(parts.map((part) => fs.unlink(part.file).catch(() => {})));
 
   const written = (await fs.stat(dest)).size;
   if (written !== total) throw new Error(`${dest}: got ${written} bytes, expected ${total}`);
@@ -260,7 +285,10 @@ async function* tarEntries(stream) {
       if (buffer.length < 512) break;
       const header = buffer.subarray(0, 512);
       const name = header.toString('utf8', 0, 100).replace(/\0.*$/, '');
-      if (!name) { buffer = buffer.subarray(512); continue; }
+      if (!name) {
+        buffer = buffer.subarray(512);
+        continue;
+      }
       const size = parseInt(header.toString('utf8', 124, 136).replace(/\0.*$/, '').trim() || '0', 8);
       const type = String.fromCharCode(header[156]);
       buffer = buffer.subarray(512);
@@ -307,7 +335,9 @@ async function extractSubset(subset, wantedReaders, { onSpeaker }) {
     await fs.access(marker);
     console.log(`  ${subset}: already extracted`);
     return;
-  } catch { /* not extracted yet */ }
+  } catch {
+    /* not extracted yet */
+  }
 
   const url = `${RESOURCE_BASE}/${SUBSETS[subset]}.tar.gz`;
   const archive = path.join(WORK_DIR, `${SUBSETS[subset]}.tar.gz`);
@@ -374,10 +404,7 @@ async function extractSubset(subset, wantedReaders, { onSpeaker }) {
   for (const [reader, speaker] of state) {
     if (!speaker.count) continue;
     const words = speaker.utterances.reduce((sum, id) => sum + (texts.get(id) || 0), 0);
-    await fs.writeFile(
-      path.join(WORK_DIR, 'clips', reader, 'meta.json'),
-      JSON.stringify({ words })
-    );
+    await fs.writeFile(path.join(WORK_DIR, 'clips', reader, 'meta.json'), JSON.stringify({ words }));
   }
 
   await fs.writeFile(marker, `${state.size}\n`);
@@ -387,20 +414,34 @@ async function extractSubset(subset, wantedReaders, { onSpeaker }) {
 
 async function ffprobeDuration(file) {
   const { stdout } = await run('ffprobe', [
-    '-v', 'error', '-show_entries', 'format=duration',
-    '-of', 'default=noprint_wrappers=1:nokey=1', file
+    '-v',
+    'error',
+    '-show_entries',
+    'format=duration',
+    '-of',
+    'default=noprint_wrappers=1:nokey=1',
+    file,
   ]);
   return Number(stdout.trim());
 }
 
 async function renderClip(wavFiles, dest) {
   const listFile = `${dest}.concat.txt`;
-  await fs.writeFile(listFile, wavFiles.map(file => `file '${file.replace(/'/g, "'\\''")}'`).join('\n'));
+  await fs.writeFile(listFile, wavFiles.map((file) => `file '${file.replace(/'/g, "'\\''")}'`).join('\n'));
   try {
     await run('ffmpeg', [
-      '-y', '-hide_banner', '-loglevel', 'error',
-      '-f', 'concat', '-safe', '0', '-i', listFile,
-      '-af', [
+      '-y',
+      '-hide_banner',
+      '-loglevel',
+      'error',
+      '-f',
+      'concat',
+      '-safe',
+      '0',
+      '-i',
+      listFile,
+      '-af',
+      [
         // Head and tail only. Internal pauses are the reader's phrasing and the
         // clone should hear them.
         'silenceremove=start_periods=1:start_silence=0.1:start_threshold=-45dB',
@@ -412,11 +453,19 @@ async function renderClip(wavFiles, dest) {
         // overshoot on top of that — measured peaks came back above 0 dBFS.
         // A clipped reference is the one artefact a voice clone reproduces
         // faithfully, so the ceiling is enforced rather than requested.
-        'alimiter=limit=0.891:attack=5:release=50:level=disabled'
+        'alimiter=limit=0.891:attack=5:release=50:level=disabled',
       ].join(','),
-      '-t', String(CLIP_SECONDS),
-      '-ac', '1', '-ar', '24000', '-q:a', '6', '-codec:a', 'libmp3lame',
-      dest
+      '-t',
+      String(CLIP_SECONDS),
+      '-ac',
+      '1',
+      '-ar',
+      '24000',
+      '-q:a',
+      '6',
+      '-codec:a',
+      'libmp3lame',
+      dest,
     ]);
   } finally {
     await fs.unlink(listFile).catch(() => {});
@@ -424,9 +473,10 @@ async function renderClip(wavFiles, dest) {
 }
 
 async function decodePcm(file) {
-  const { stdout } = await run('ffmpeg', [
-    '-v', 'error', '-i', file, '-ac', '1', '-ar', '16000', '-f', 's16le', '-'
-  ], { encoding: 'buffer', maxBuffer: 1 << 28 });
+  const { stdout } = await run('ffmpeg', ['-v', 'error', '-i', file, '-ac', '1', '-ar', '16000', '-f', 's16le', '-'], {
+    encoding: 'buffer',
+    maxBuffer: 1 << 28,
+  });
   const samples = new Float32Array(stdout.length / 2);
   for (let i = 0; i < samples.length; i++) samples[i] = stdout.readInt16LE(i * 2) / 32768;
   return samples;
@@ -467,7 +517,10 @@ function analyze(samples, sampleRate = 16000) {
         norm += samples[start + i + lag] ** 2;
       }
       const score = corr / (Math.sqrt(energy * frame * norm) + 1e-9);
-      if (score > bestScore) { bestScore = score; bestLag = lag; }
+      if (score > bestScore) {
+        bestScore = score;
+        bestLag = lag;
+      }
     }
     if (bestScore > 0.45 && bestLag > 0) pitches.push(sampleRate / bestLag);
   }
@@ -481,7 +534,7 @@ function analyze(samples, sampleRate = 16000) {
     medianPitch: pitches.length ? pitches[Math.floor(pitches.length / 2)] : null,
     voicedRatio: frames ? pitches.length / frames : 0,
     clipRatio: samples.length ? clipped / samples.length : 0,
-    snrDb: 10 * Math.log10(speech / floor)
+    snrDb: 10 * Math.log10(speech / floor),
   };
 }
 
@@ -519,9 +572,9 @@ async function buildSpeaker(speaker) {
   const scratch = path.join(WORK_DIR, 'clips', speaker.reader);
 
   const files = (await fs.readdir(scratch).catch(() => []))
-    .filter(file => file.endsWith('.wav'))
+    .filter((file) => file.endsWith('.wav'))
     .sort((a, b) => Number.parseInt(a, 10) - Number.parseInt(b, 10))
-    .map(file => path.join(scratch, file));
+    .map((file) => path.join(scratch, file));
   if (!files.length) throw new Error('no extracted audio');
 
   let sourceSeconds = 0;
@@ -545,7 +598,7 @@ async function buildSpeaker(speaker) {
     bytes,
     snrDb: Number(metrics.snrDb.toFixed(1)),
     voicedRatio: Number(metrics.voicedRatio.toFixed(3)),
-    clipRatio: Number(metrics.clipRatio.toFixed(5))
+    clipRatio: Number(metrics.clipRatio.toFixed(5)),
   };
 }
 
@@ -575,19 +628,21 @@ function entryFor(record) {
     bytes: record.bytes,
     snrDb: record.snrDb,
     subset: record.subset,
-    clip: `${record.reader}.mp3`
+    clip: `${record.reader}.mp3`,
   };
 }
 
 async function mapWithConcurrency(items, limit, worker) {
   const results = new Array(items.length);
   let cursor = 0;
-  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, async () => {
-    while (cursor < items.length) {
-      const index = cursor++;
-      results[index] = await worker(items[index], index);
-    }
-  }));
+  await Promise.all(
+    Array.from({ length: Math.min(limit, items.length) }, async () => {
+      while (cursor < items.length) {
+        const index = cursor++;
+        results[index] = await worker(items[index], index);
+      }
+    }),
+  );
   return results;
 }
 
@@ -597,7 +652,7 @@ async function main() {
   await fs.mkdir(WORK_DIR, { recursive: true });
 
   const all = await loadSpeakers();
-  const wanted = all.filter(speaker => args.subsets.includes(speaker.subset)).slice(0, args.limit);
+  const wanted = all.filter((speaker) => args.subsets.includes(speaker.subset)).slice(0, args.limit);
   const ledger = await readLedger();
   console.log(`${wanted.length} speakers in ${args.subsets.join(', ')} · ${ledger.size} already measured`);
 
@@ -614,11 +669,13 @@ async function main() {
   }
 
   let done = 0;
-  const pending = args.relabel ? [] : wanted.filter(speaker => {
-    return args.force || !ledger.has(speaker.reader);
-  });
+  const pending = args.relabel
+    ? []
+    : wanted.filter((speaker) => {
+        return args.force || !ledger.has(speaker.reader);
+      });
 
-  await mapWithConcurrency(pending, CONCURRENCY, async speaker => {
+  await mapWithConcurrency(pending, CONCURRENCY, async (speaker) => {
     let record;
     try {
       record = await buildSpeaker(speaker);
@@ -628,7 +685,7 @@ async function main() {
         name: speaker.name,
         gender: speaker.gender,
         subset: speaker.subset,
-        error: error.message
+        error: error.message,
       };
       await fs.unlink(path.join(OUT_DIR, `${speaker.reader}.mp3`)).catch(() => {});
     }
@@ -658,41 +715,53 @@ async function main() {
   // A clip left behind by an earlier run — a speaker since rejected, or one
   // built while narrowing --subsets — would ship as an asset nothing in the
   // catalog references. Only files the catalog names survive.
-  const shipped = new Set(kept.map(entry => entry.clip));
-  const orphans = (await fs.readdir(OUT_DIR))
-    .filter(file => file.endsWith('.mp3') && !shipped.has(file));
+  const shipped = new Set(kept.map((entry) => entry.clip));
+  const orphans = (await fs.readdir(OUT_DIR)).filter((file) => file.endsWith('.mp3') && !shipped.has(file));
   for (const file of orphans) await fs.unlink(path.join(OUT_DIR, file));
   if (orphans.length) console.log(`removed ${orphans.length} orphaned clips`);
-  const failed = rejected.filter(item => !/^(short clip|voiced|clipping|snr)/.test(item.reason));
+  const failed = rejected.filter((item) => !/^(short clip|voiced|clipping|snr)/.test(item.reason));
 
   if (args.report) {
-    const bands = key => kept.reduce((counts, entry) => {
-      counts[entry[key]] = (counts[entry[key]] || 0) + 1;
-      return counts;
-    }, {});
+    const bands = (key) =>
+      kept.reduce((counts, entry) => {
+        counts[entry[key]] = (counts[entry[key]] || 0) + 1;
+        return counts;
+      }, {});
     console.log('\nregister:', bands('register'));
     console.log('pace:', bands('pace'));
     console.log('gender:', bands('gender'));
-    const wpms = kept.map(entry => entry.wordsPerMinute).sort((a, b) => a - b);
-    const pitches = kept.map(entry => entry.pitchHz).filter(Boolean).sort((a, b) => a - b);
+    const wpms = kept.map((entry) => entry.wordsPerMinute).sort((a, b) => a - b);
+    const pitches = kept
+      .map((entry) => entry.pitchHz)
+      .filter(Boolean)
+      .sort((a, b) => a - b);
     const at = (arr, q) => arr[Math.floor(arr.length * q)];
     console.log(`wpm p10/p50/p90: ${at(wpms, 0.1)}/${at(wpms, 0.5)}/${at(wpms, 0.9)}`);
     console.log(`pitch p10/p50/p90: ${at(pitches, 0.1)}/${at(pitches, 0.5)}/${at(pitches, 0.9)}`);
     console.log('rejected sample:', JSON.stringify(rejected.slice(0, 25)));
   }
 
-  await fs.writeFile(CATALOG_PATH, `${JSON.stringify({
-    source: 'LibriTTS-R',
-    sourceUrl: 'https://www.openslr.org/141/',
-    license: 'CC BY 4.0',
-    licenseUrl: 'https://creativecommons.org/licenses/by/4.0/',
-    attribution: 'LibriTTS-R corpus, Google LLC, derived from LibriVox public-domain audiobooks.',
-    clipSeconds: CLIP_SECONDS,
-    voices: kept
-  }, null, 0)}\n`);
+  await fs.writeFile(
+    CATALOG_PATH,
+    `${JSON.stringify(
+      {
+        source: 'LibriTTS-R',
+        sourceUrl: 'https://www.openslr.org/141/',
+        license: 'CC BY 4.0',
+        licenseUrl: 'https://creativecommons.org/licenses/by/4.0/',
+        attribution: 'LibriTTS-R corpus, Google LLC, derived from LibriVox public-domain audiobooks.',
+        clipSeconds: CLIP_SECONDS,
+        voices: kept,
+      },
+      null,
+      0,
+    )}\n`,
+  );
 
   console.log(`\nkept ${kept.length} · rejected ${rejected.length} · failed ${failed.length}`);
-  console.log(`clips ${(totalBytes / 1e6).toFixed(1)} MB · catalog ${((await fs.stat(CATALOG_PATH)).size / 1e3).toFixed(0)} KB`);
+  console.log(
+    `clips ${(totalBytes / 1e6).toFixed(1)} MB · catalog ${((await fs.stat(CATALOG_PATH)).size / 1e3).toFixed(0)} KB`,
+  );
 }
 
 await main();

@@ -30,11 +30,13 @@
 // object whose first write was `undefined is not a function`, with no path back
 // to the honest "this browser cannot store the model" copy the UI already has.
 function opfsAvailable() {
-  return typeof navigator !== 'undefined'
-    && !!navigator.storage
-    && typeof navigator.storage.getDirectory === 'function'
-    && typeof FileSystemFileHandle !== 'undefined'
-    && typeof FileSystemFileHandle.prototype.createWritable === 'function';
+  return (
+    typeof navigator !== 'undefined' &&
+    !!navigator.storage &&
+    typeof navigator.storage.getDirectory === 'function' &&
+    typeof FileSystemFileHandle !== 'undefined' &&
+    typeof FileSystemFileHandle.prototype.createWritable === 'function'
+  );
 }
 
 // A cheap negative before the probe below bothers writing anything.
@@ -48,8 +50,7 @@ function opfsAvailable() {
 // any of its implementation runs. That killed the first file of every Safari
 // install.
 function mayRename() {
-  return typeof FileSystemFileHandle !== 'undefined'
-    && typeof FileSystemFileHandle.prototype.move === 'function';
+  return typeof FileSystemFileHandle !== 'undefined' && typeof FileSystemFileHandle.prototype.move === 'function';
 }
 
 /**
@@ -76,9 +77,10 @@ function describeStorageFailure(name, error) {
   }
 
   const detail = error?.name ? `${error.name}: ${error.message}` : String(error?.message || error);
-  const message = error?.name === 'QuotaExceededError'
-    ? `This browser ran out of storage while saving ${label}. Free up space and try again.`
-    : `This browser could not save ${label} to local storage (${detail}).`;
+  const message =
+    error?.name === 'QuotaExceededError'
+      ? `This browser ran out of storage while saving ${label}. Free up space and try again.`
+      : `This browser could not save ${label} to local storage (${detail}).`;
 
   const wrapped = new Error(message, { cause: error });
   wrapped.name = 'ModelStorageError';
@@ -207,8 +209,8 @@ export async function createOpfsModelCache(namespace) {
         status: 200,
         headers: {
           'content-length': String(file.size),
-          'content-type': 'application/octet-stream'
-        }
+          'content-type': 'application/octet-stream',
+        },
       });
     },
 
@@ -263,7 +265,7 @@ export async function createOpfsModelCache(namespace) {
           // expected size cannot produce a bar over 100%.
           if (onProgress) onProgress({ loaded, total: Math.max(total, loaded) });
           controller.enqueue(chunk);
-        }
+        },
       });
 
       await commit(fileNameFor(url), async (handle) => {
@@ -295,6 +297,6 @@ export async function createOpfsModelCache(namespace) {
         console.warn('Could not clear OPFS model cache:', error);
         return false;
       }
-    }
+    },
   };
 }

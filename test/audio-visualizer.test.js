@@ -1,10 +1,10 @@
-import test from 'node:test';
 import assert from 'node:assert/strict';
+import test from 'node:test';
 
 import { AudioVisualizer } from '../src/audio/audio-visualizer.js';
 import { installDom, removeDom } from './dom-helpers.js';
 
-function createMockCanvas(width = 118, height = 24, dpr = 2) {
+function createMockCanvas(width = 118, height = 24, _dpr = 2) {
   const drawnRects = [];
   const drawnRoundRects = [];
   const fillStyles = [];
@@ -12,7 +12,7 @@ function createMockCanvas(width = 118, height = 24, dpr = 2) {
 
   const ctx = {
     fillStyle: '#000000',
-    clearRect(x, y, w, h) {},
+    clearRect(_x, _y, _w, _h) {},
     beginPath() {},
     fill() {},
     fillRect(x, y, w, h) {
@@ -26,7 +26,7 @@ function createMockCanvas(width = 118, height = 24, dpr = 2) {
     setTransform(a, b, c, d, e, f) {
       currentTransform = [a, b, c, d, e, f];
     },
-    scale(sx, sy) {}
+    scale(_sx, _sy) {},
   };
 
   const canvas = {
@@ -40,7 +40,7 @@ function createMockCanvas(width = 118, height = 24, dpr = 2) {
     getContext(type) {
       if (type === '2d') return ctx;
       return null;
-    }
+    },
   };
 
   return {
@@ -49,7 +49,7 @@ function createMockCanvas(width = 118, height = 24, dpr = 2) {
     drawnRects,
     drawnRoundRects,
     fillStyles,
-    getTransform: () => currentTransform
+    getTransform: () => currentTransform,
   };
 }
 
@@ -75,7 +75,7 @@ test('AudioVisualizer handles initial hidden state and resizes with devicePixelR
       top: 0,
       left: 0,
       right: 118,
-      bottom: 24
+      bottom: 24,
     });
 
     const resized = viz.resizeCanvas();
@@ -107,8 +107,8 @@ test('barCountFor and renderMeter fill the full width and height of the canvas',
     // 2 rows * 22 segments = 44 segments drawn
     assert.equal(mock.drawnRoundRects.length, 44);
 
-    const row0 = mock.drawnRoundRects.filter(r => Math.abs(r.y - 2.5) < 0.1);
-    const row1 = mock.drawnRoundRects.filter(r => r.y > 10);
+    const row0 = mock.drawnRoundRects.filter((r) => Math.abs(r.y - 2.5) < 0.1);
+    const row1 = mock.drawnRoundRects.filter((r) => r.y > 10);
 
     assert.equal(row0.length, 22);
     assert.equal(row1.length, 22);
@@ -145,9 +145,7 @@ test('renderIdle renders all segments as inactive without any spurious lit bars'
 
     assert.equal(mock.drawnRoundRects.length, 44);
     // Every single segment must have inactive dim style, none green or gold
-    const allInactive = mock.drawnRoundRects.every(
-      r => r.fillStyle === 'rgba(167, 160, 149, 0.18)'
-    );
+    const allInactive = mock.drawnRoundRects.every((r) => r.fillStyle === 'rgba(167, 160, 149, 0.18)');
     assert.equal(allInactive, true);
 
     viz.destroy();
@@ -172,17 +170,17 @@ test('renderMeter lights active segments with secondary (green) and accent (gold
     const row1 = mock.drawnRoundRects.slice(22);
 
     // Row 0 (left channel at 0.9 = 20 active out of 22)
-    const activeRow0 = row0.filter(r => r.fillStyle !== 'rgba(167, 160, 149, 0.18)');
+    const activeRow0 = row0.filter((r) => r.fillStyle !== 'rgba(167, 160, 149, 0.18)');
     assert.equal(activeRow0.length, 20);
 
-    const greenSegments = activeRow0.filter(r => r.fillStyle === '#78977B');
-    const goldSegments = activeRow0.filter(r => r.fillStyle === '#C6A466');
+    const greenSegments = activeRow0.filter((r) => r.fillStyle === '#78977B');
+    const goldSegments = activeRow0.filter((r) => r.fillStyle === '#C6A466');
 
     assert.ok(greenSegments.length > 0, 'Should have green segments');
     assert.ok(goldSegments.length > 0, 'Should have gold peak segments');
 
     // Row 1 (right channel at 0) should be all inactive
-    const activeRow1 = row1.filter(r => r.fillStyle !== 'rgba(167, 160, 149, 0.18)');
+    const activeRow1 = row1.filter((r) => r.fillStyle !== 'rgba(167, 160, 149, 0.18)');
     assert.equal(activeRow1.length, 0);
 
     viz.destroy();
@@ -195,10 +193,10 @@ test('AudioVisualizer lifecycle cleans up animation frame and observers on stop/
   const dom = installDom();
 
   try {
-    let animCallback = null;
+    let _animCallback = null;
     let animIdSeq = 1;
     globalThis.window.requestAnimationFrame = (cb) => {
-      animCallback = cb;
+      _animCallback = cb;
       return animIdSeq++;
     };
     let cancelledId = null;

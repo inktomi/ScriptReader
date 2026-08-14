@@ -48,7 +48,7 @@ export function createHelpModal({ onClose }) {
     if (onClose) onClose();
   };
   modal.querySelector('.btn-close-modal').addEventListener('click', close);
-  modal.addEventListener('click', event => {
+  modal.addEventListener('click', (event) => {
     if (event.target === modal) close();
   });
 

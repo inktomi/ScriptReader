@@ -61,7 +61,7 @@ async function readRecord(key) {
         resolve({
           audio: record.audio instanceof Int16Array ? record.audio : new Int16Array(record.audio),
           sampleRate: record.sampleRate,
-          duration: record.duration
+          duration: record.duration,
         });
       };
       request.onerror = () => reject(request.error || new Error('Could not read rendered Studio audio.'));
@@ -79,7 +79,7 @@ async function writeRecord(key, samples, sampleRate) {
     sampleRate,
     duration: pcm.length / sampleRate,
     bytes: pcm.byteLength,
-    createdAt: Date.now()
+    createdAt: Date.now(),
   };
   const db = await openDatabase();
   try {
@@ -156,12 +156,21 @@ async function clearRecords() {
 // memory cache would bring the mid-script pauses back on longer reads.
 export const chatterboxRenderStore = {
   async get(key) {
-    try { return await readRecord(key); } catch (_) { return null; }
+    try {
+      return await readRecord(key);
+    } catch (_) {
+      return null;
+    }
   },
   async put(key, samples, sampleRate) {
     await writeRecord(key, samples, sampleRate);
   },
   async clear() {
-    try { await clearRecords(); return true; } catch (_) { return false; }
-  }
+    try {
+      await clearRecords();
+      return true;
+    } catch (_) {
+      return false;
+    }
+  },
 };

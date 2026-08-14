@@ -18,7 +18,7 @@ export const ENGINE_IDS = {
   CHATTERBOX: 'chatterbox:onnx-community/chatterbox-ONNX',
   RUNPOD: 'runpod:chatterbox',
   OPENAI: 'openai:gpt-4o-mini-tts',
-  WEB_SPEECH: 'web_speech'
+  WEB_SPEECH: 'web_speech',
 };
 
 /**

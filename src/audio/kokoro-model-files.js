@@ -43,7 +43,7 @@ const FILE_BYTES = {
   'onnx/model_q8f16.onnx': 86_033_585,
   'onnx/model_quantized.onnx': 92_361_116,
   'onnx/model_uint8.onnx': 177_464_632,
-  'onnx/model_uint8f16.onnx': 114_209_226
+  'onnx/model_uint8f16.onnx': 114_209_226,
 };
 
 /**

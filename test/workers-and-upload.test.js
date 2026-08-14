@@ -1,5 +1,5 @@
-import test from 'node:test';
 import assert from 'node:assert/strict';
+import test from 'node:test';
 
 import { KokoroNeuralEngine } from '../src/audio/kokoro-engine.js';
 import { ModelCacheManager } from '../src/audio/model-cache-manager.js';
@@ -10,9 +10,11 @@ test('a Kokoro worker crash makes the engine unavailable and rejects pending wor
   const engine = new KokoroNeuralEngine();
   let terminated = false;
   engine.worker = {
-    terminate() { terminated = true; },
+    terminate() {
+      terminated = true;
+    },
     onmessage: null,
-    onerror: null
+    onerror: null,
   };
   engine.isReady = true;
   const pending = new Promise((resolve, reject) => {
@@ -31,7 +33,13 @@ test('voice preload fails instead of claiming unsuccessful downloads completed',
   const originalCaches = globalThis.caches;
   const originalPreloadVoice = ModelCacheManager.preloadVoice;
   globalThis.caches = {
-    async open() { return { async keys() { return []; } }; }
+    async open() {
+      return {
+        async keys() {
+          return [];
+        },
+      };
+    },
   };
   ModelCacheManager.preloadVoice = async () => false;
   try {
@@ -50,13 +58,12 @@ test('model preload terminates its worker when the worker fails to boot', async 
     postMessage() {
       queueMicrotask(() => this.onerror({ message: 'boot failed' }));
     }
-    terminate() { terminated = true; }
+    terminate() {
+      terminated = true;
+    }
   };
   try {
-    await assert.rejects(
-      ModelCacheManager._preloadAllModelAssetsUnlocked(),
-      /boot failed/
-    );
+    await assert.rejects(ModelCacheManager._preloadAllModelAssetsUnlocked(), /boot failed/);
     assert.equal(terminated, true);
   } finally {
     if (OriginalWorker === undefined) delete globalThis.Worker;
@@ -72,9 +79,11 @@ test('upload modal ignores a second import while the first is still running', as
     const modal = createUploadModal({
       onPdfSelected: () => {
         calls++;
-        return new Promise(resolve => { resolveImport = resolve; });
+        return new Promise((resolve) => {
+          resolveImport = resolve;
+        });
       },
-      onFountainTextSubmitted() {}
+      onFountainTextSubmitted() {},
     });
     document.body.appendChild(modal);
     const input = modal.querySelector('#file-input-pdf');
@@ -87,7 +96,7 @@ test('upload modal ignores a second import while the first is still running', as
     input.dispatchEvent(new dom.window.Event('change', { bubbles: true }));
     assert.equal(calls, 1);
     resolveImport();
-    await new Promise(resolve => setImmediate(resolve));
+    await new Promise((resolve) => setImmediate(resolve));
   } finally {
     removeDom(dom);
   }

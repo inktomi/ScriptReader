@@ -1,12 +1,7 @@
 import { analyzeLineNuance } from '../screenplay/emotion-analyzer.js';
-import { composeInstructions } from './instruction-composer.js';
+import { DEFAULT_PACE, interruptTrimSec, OVERLAP_TIMING, resolvePacing } from '../screenplay/overlap-pacing.js';
 import { ENGINE_IDS, makeCacheKey } from './engine-contract.js';
-import {
-  resolvePacing,
-  interruptTrimSec,
-  OVERLAP_TIMING,
-  DEFAULT_PACE
-} from '../screenplay/overlap-pacing.js';
+import { composeInstructions } from './instruction-composer.js';
 
 /**
  * Performance Director
@@ -61,8 +56,8 @@ const PITCH_MAX = 1.12;
 // over-lengthens phones and smears transients — the "mushy" failure that the
 // old 0.55 floor allowed whenever a raised pitch made the director ask for
 // `tempo / pitch` well under 1.
-const SYNTH_SPEED_MIN = 0.80;
-const SYNTH_SPEED_MAX = 2.00;
+const SYNTH_SPEED_MIN = 0.8;
+const SYNTH_SPEED_MAX = 2.0;
 
 // Gap *between* lines, before the line's own emotional lead-in is added.
 const CUE_GAPS_MS = {
@@ -73,7 +68,7 @@ const CUE_GAPS_MS = {
   dialogueToAction: 260,
   sameSpeaker: 110,
   dialogueToDialogue: 240,
-  default: 200
+  default: 200,
 };
 
 // Gaps between chunks of one continuous line.
@@ -137,7 +132,7 @@ export function chunkSpeech(text, maxChars = MAX_CHUNK_CHARS) {
       let clauseBuffer = '';
       for (let i = 0; i < clauses.length; i++) {
         const clause = clauses[i] + (i < clauses.length - 1 ? ',' : '');
-        if (clauseBuffer && (clauseBuffer.length + clause.length + 1) > maxChars) {
+        if (clauseBuffer && clauseBuffer.length + clause.length + 1 > maxChars) {
           pushWithinLimit(clauseBuffer);
           clauseBuffer = clause;
         } else {
@@ -148,7 +143,7 @@ export function chunkSpeech(text, maxChars = MAX_CHUNK_CHARS) {
       continue;
     }
 
-    if (current && (current.length + piece.length + 1) > maxChars) {
+    if (current && current.length + piece.length + 1 > maxChars) {
       flush();
     }
     current = current ? `${current} ${piece}` : piece;
@@ -178,9 +173,7 @@ export function computeCueGapMs(prevElement, element, pacing = DEFAULT_PACE, mas
     return 0;
   }
   if (overlap && overlap.mode === 'interrupt') {
-    const sec = overlap.offsetMs != null
-      ? Math.abs(overlap.offsetMs) / 1000
-      : OVERLAP_TIMING.interruptOverlapSec;
+    const sec = overlap.offsetMs != null ? Math.abs(overlap.offsetMs) / 1000 : OVERLAP_TIMING.interruptOverlapSec;
     return -(sec * 1000) / Math.max(0.5, masterSpeed);
   }
 
@@ -192,9 +185,7 @@ export function computeCueGapMs(prevElement, element, pacing = DEFAULT_PACE, mas
   else if (prevElement.type === 'ACTION' && element.type === 'DIALOGUE') base = CUE_GAPS_MS.actionToDialogue;
   else if (prevElement.type === 'DIALOGUE' && element.type === 'ACTION') base = CUE_GAPS_MS.dialogueToAction;
   else if (prevElement.type === 'DIALOGUE' && element.type === 'DIALOGUE') {
-    base = prevElement.character === element.character
-      ? CUE_GAPS_MS.sameSpeaker
-      : CUE_GAPS_MS.dialogueToDialogue;
+    base = prevElement.character === element.character ? CUE_GAPS_MS.sameSpeaker : CUE_GAPS_MS.dialogueToDialogue;
   } else {
     base = CUE_GAPS_MS.default;
   }
@@ -204,7 +195,7 @@ export function computeCueGapMs(prevElement, element, pacing = DEFAULT_PACE, mas
   const { gapFactor } = resolvePacing({
     global: pacing,
     passage: element.pace,
-    line: element.linePace
+    line: element.linePace,
   });
   return (base * gapFactor) / Math.max(0.5, masterSpeed);
 }
@@ -235,7 +226,7 @@ function resolveDelivery({ nuance, voiceProfile, tuning, masterSpeed, paceTempo 
   const tempo = clamp(
     (voiceProfile.defaultSpeed || 1.0) * charSpeed * emotionSpeed * paceTempo * masterSpeed,
     0.6,
-    2.0
+    2.0,
   );
 
   // Perceived pitch relative to the voice's natural register.
@@ -246,9 +237,8 @@ function resolveDelivery({ nuance, voiceProfile, tuning, masterSpeed, paceTempo 
   // deviation rather than discarding it — the direction still shapes the mix, it
   // just is not applied twice.
   const rawGain = nuance.gainMod || 1;
-  const gain = caps && caps.supportsInstructions
-    ? clamp(1 + (rawGain - 1) * 0.5, 0.25, 1.6)
-    : clamp(rawGain, 0.25, 1.6);
+  const gain =
+    caps && caps.supportsInstructions ? clamp(1 + (rawGain - 1) * 0.5, 0.25, 1.6) : clamp(rawGain, 0.25, 1.6);
 
   // `gain`, `filter`, and `pan` are engine-agnostic on purpose: PlaybackScheduler
   // applies them to the Web Audio graph after synthesis. So "(over comms)" keeps
@@ -289,7 +279,7 @@ function resolveDelivery({ nuance, voiceProfile, tuning, masterSpeed, paceTempo 
  */
 function estimateDuration(text, tempo, honoursTempo = true) {
   const effective = honoursTempo ? tempo : 1 + (tempo - 1) * 0.4;
-  return Math.max(0.5, (text.length / 14.5) / Math.max(0.5, effective));
+  return Math.max(0.5, text.length / 14.5 / Math.max(0.5, effective));
 }
 
 /**
@@ -301,7 +291,7 @@ const DEFAULT_CAPS = {
   id: ENGINE_IDS.KOKORO,
   supportsSpeed: true,
   supportsInstructions: false,
-  maxChunkChars: MAX_CHUNK_CHARS
+  maxChunkChars: MAX_CHUNK_CHARS,
 };
 
 function capsFor(engine) {
@@ -329,16 +319,18 @@ export function buildLineUnits({
   pan = 0,
   masterSpeed = 1.0,
   pacing = DEFAULT_PACE,
-  engine = null
+  engine = null,
 }) {
   if (!element) return [];
 
   const caps = capsFor(engine);
-  const nuance = element.nuance || analyzeLineNuance({
-    text: element.text,
-    parenthetical: element.parenthetical || '',
-    speakerType: element.type === 'DIALOGUE' ? 'CHARACTER' : element.type
-  });
+  const nuance =
+    element.nuance ||
+    analyzeLineNuance({
+      text: element.text,
+      parenthetical: element.parenthetical || '',
+      speakerType: element.type === 'DIALOGUE' ? 'CHARACTER' : element.type,
+    });
 
   const spoken = nuance.cleanSpeech || element.text || '';
   const chunks = chunkSpeech(spoken, caps.maxChunkChars);
@@ -347,11 +339,16 @@ export function buildLineUnits({
   const pace = resolvePacing({
     global: pacing,
     passage: element.pace,
-    line: element.linePace
+    line: element.linePace,
   });
 
   const delivery = resolveDelivery({
-    nuance, voiceProfile, tuning, masterSpeed, paceTempo: pace.tempoFactor, caps
+    nuance,
+    voiceProfile,
+    tuning,
+    masterSpeed,
+    paceTempo: pace.tempoFactor,
+    caps,
   });
   const voiceId = voiceIdFor(engine, voiceProfile);
   const cacheVoiceId = engine?.resolveVoiceCacheId?.(voiceProfile) || voiceId;
@@ -367,7 +364,7 @@ export function buildLineUnits({
         pitch: delivery.pitch,
         persona: voiceProfile.tone || '',
         isNarration: element.type !== 'DIALOGUE',
-        includeTempo: !caps.supportsSpeed
+        includeTempo: !caps.supportsSpeed,
       })
     : null;
 
@@ -383,21 +380,25 @@ export function buildLineUnits({
 
   // Which edge this line measures its start from.
   const firstAnchor =
-      overlapMode === 'simultaneous' ? 'prevHead'
-    : overlapMode === 'interrupt'    ? 'prevTail'
-    : overlapMode === 'continuation' ? 'chunk'
-    :                                  'sequential';
+    overlapMode === 'simultaneous'
+      ? 'prevHead'
+      : overlapMode === 'interrupt'
+        ? 'prevTail'
+        : overlapMode === 'continuation'
+          ? 'chunk'
+          : 'sequential';
 
   const firstLead =
-      overlapMode === 'simultaneous' ? OVERLAP_TIMING.simultaneousStaggerSec
-    : overlapMode === 'continuation' ? chunkGap / 1000
-    : (cueGap + emotionalLead) / 1000;
+    overlapMode === 'simultaneous'
+      ? OVERLAP_TIMING.simultaneousStaggerSec
+      : overlapMode === 'continuation'
+        ? chunkGap / 1000
+        : (cueGap + emotionalLead) / 1000;
 
   // Standing slightly back is what keeps a simultaneous pair readable rather
   // than a wall of sound. An interrupter stays at full level — it is winning.
-  const gain = overlapMode === 'simultaneous'
-    ? clamp(delivery.gain * OVERLAP_TIMING.simultaneousDuck, 0.25, 1.6)
-    : delivery.gain;
+  const gain =
+    overlapMode === 'simultaneous' ? clamp(delivery.gain * OVERLAP_TIMING.simultaneousDuck, 0.25, 1.6) : delivery.gain;
 
   // Being cut off is trimmed off this line's own tail, which is what lets the
   // scheduler place it without yet knowing when the interrupter arrives.
@@ -435,11 +436,11 @@ export function buildLineUnits({
       voiceId: cacheVoiceId,
       synthSpeed: delivery.synthSpeed,
       instructions,
-      text
+      text,
     }),
 
     nuance,
-    character: element.character
+    character: element.character,
   }));
 }
 
@@ -452,7 +453,7 @@ export function buildPreviewUnits({
   tuning = null,
   nuance = null,
   masterSpeed = 1.0,
-  engine = null
+  engine = null,
 }) {
   const caps = capsFor(engine);
   const resolvedNuance = nuance || analyzeLineNuance({ text, speakerType: 'CHARACTER' });
@@ -471,7 +472,7 @@ export function buildPreviewUnits({
         tempo: delivery.tempo,
         pitch: delivery.pitch,
         persona: voiceProfile.tone || '',
-        includeTempo: !caps.supportsSpeed
+        includeTempo: !caps.supportsSpeed,
       })
     : null;
 
@@ -504,10 +505,10 @@ export function buildPreviewUnits({
       voiceId: cacheVoiceId,
       synthSpeed: delivery.synthSpeed,
       instructions,
-      text: chunkText
+      text: chunkText,
     }),
 
     nuance: resolvedNuance,
-    character: 'PREVIEW'
+    character: 'PREVIEW',
   }));
 }

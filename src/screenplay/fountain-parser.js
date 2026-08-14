@@ -1,6 +1,6 @@
-import { analyzeLineNuance } from './emotion-analyzer.js';
-import { annotateScriptFlow, parsePaceDirective, DEFAULT_PACE } from './overlap-pacing.js';
 import { attachCharacterIntroductions } from './character-introductions.js';
+import { analyzeLineNuance } from './emotion-analyzer.js';
+import { annotateScriptFlow, DEFAULT_PACE, parsePaceDirective } from './overlap-pacing.js';
 import { expandSharedDialogueCues } from './shared-cues.js';
 
 /**
@@ -51,8 +51,10 @@ export function parseFountainScript(text) {
   }
 
   // Regex patterns for screenplay elements (fixed word boundary on dots)
-  const SCENE_REGEX = /^(INT\.|EXT\.|INT\.\/EXT\.|EXT\.\/INT\.|I\/E\.|EST\.|INT\s|EXT\s|SCENE\s+\d+|PROLOGUE|EPILOGUE)(\s+|$)/i;
-  const TRANSITION_REGEX = /^(CUT TO:|FADE IN:|FADE OUT\.|FADE TO BLACK\.|DISSOLVE TO:|SMASH CUT TO:|MATCH CUT TO:|JUMP CUT TO:|>.*<)$/i;
+  const SCENE_REGEX =
+    /^(INT\.|EXT\.|INT\.\/EXT\.|EXT\.\/INT\.|I\/E\.|EST\.|INT\s|EXT\s|SCENE\s+\d+|PROLOGUE|EPILOGUE)(\s+|$)/i;
+  const TRANSITION_REGEX =
+    /^(CUT TO:|FADE IN:|FADE OUT\.|FADE TO BLACK\.|DISSOLVE TO:|SMASH CUT TO:|MATCH CUT TO:|JUMP CUT TO:|>.*<)$/i;
   const PARENTHETICAL_REGEX = /^\s*\((.+)\)\s*$/;
   // The trailing `^` is Fountain's dual dialogue marker. It has to be part of
   // the pattern or a cue carrying one is not recognised as a cue at all.
@@ -74,7 +76,7 @@ export function parseFountainScript(text) {
         text: fullDialogueText,
         parenthetical: currentParenthetical,
         speakerType: 'CHARACTER',
-        extension: extensionMatch ? extensionMatch.join(' ') : ''
+        extension: extensionMatch ? extensionMatch.join(' ') : '',
       });
 
       const element = {
@@ -88,13 +90,14 @@ export function parseFountainScript(text) {
         parenthetical: currentParenthetical,
         pace: activePace,
         linePace: null,
-        overlap: pendingDual === 'simultaneous'
-          ? { mode: 'simultaneous', withPrevious: true, offsetMs: null, source: 'caret' }
-          : pendingDual === 'continuation'
-            ? { mode: 'continuation', withPrevious: true, offsetMs: 0, source: 'parenthetical' }
-            : null,
+        overlap:
+          pendingDual === 'simultaneous'
+            ? { mode: 'simultaneous', withPrevious: true, offsetMs: null, source: 'caret' }
+            : pendingDual === 'continuation'
+              ? { mode: 'continuation', withPrevious: true, offsetMs: 0, source: 'parenthetical' }
+              : null,
         cutOff: false,
-        nuance
+        nuance,
       };
 
       elements.push(element);
@@ -156,7 +159,7 @@ export function parseFountainScript(text) {
 
       const nuance = analyzeLineNuance({
         text: currentSceneTitle,
-        speakerType: 'SCENE_HEADING'
+        speakerType: 'SCENE_HEADING',
       });
 
       elements.push({
@@ -172,7 +175,7 @@ export function parseFountainScript(text) {
         linePace: null,
         overlap: null,
         cutOff: false,
-        nuance
+        nuance,
       });
       continue;
     }
@@ -185,7 +188,7 @@ export function parseFountainScript(text) {
 
       const nuance = analyzeLineNuance({
         text: trimmed,
-        speakerType: 'TRANSITION'
+        speakerType: 'TRANSITION',
       });
 
       elements.push({
@@ -201,7 +204,7 @@ export function parseFountainScript(text) {
         linePace: null,
         overlap: null,
         cutOff: false,
-        nuance
+        nuance,
       });
       continue;
     }
@@ -223,11 +226,10 @@ export function parseFountainScript(text) {
     const cueText = forcedCharacter ? trimmed.slice(1).trim() : trimmed;
     const charMatch = cueText.match(CHARACTER_REGEX);
     const looksLikeInitials = /^(?:[A-Z]\.\s*){2,}(?:[A-Z][A-Z0-9_' -]*\.?)?$/.test(cueText);
-    const looksLikeAbbreviatedName = (
-      /^(?:DR|MR|MRS|MS|PROF|CAPT|LT|SGT|GEN|COL|REV)\.$/.test(cueText)
-      || /^(?:[A-Z][A-Z0-9_'-]*\s+){1,2}(?:JR|SR)\.$/.test(cueText)
-    );
-    const isLikelyCharacter = (
+    const looksLikeAbbreviatedName =
+      /^(?:DR|MR|MRS|MS|PROF|CAPT|LT|SGT|GEN|COL|REV)\.$/.test(cueText) ||
+      /^(?:[A-Z][A-Z0-9_'-]*\s+){1,2}(?:JR|SR)\.$/.test(cueText);
+    const isLikelyCharacter =
       charMatch &&
       !inDialogueBlock &&
       cueText.length < 38 &&
@@ -236,8 +238,7 @@ export function parseFountainScript(text) {
       !cueText.includes('?') &&
       (forcedCharacter || !/\.$/.test(cueText) || looksLikeInitials || looksLikeAbbreviatedName) &&
       !SCENE_REGEX.test(cueText) &&
-      !TRANSITION_REGEX.test(cueText)
-    );
+      !TRANSITION_REGEX.test(cueText);
 
     if (isLikelyCharacter) {
       flushDialogue();
@@ -262,7 +263,7 @@ export function parseFountainScript(text) {
 
       const nuance = analyzeLineNuance({
         text: trimmed,
-        speakerType: 'ACTION'
+        speakerType: 'ACTION',
       });
 
       elements.push({
@@ -278,7 +279,7 @@ export function parseFountainScript(text) {
         linePace: null,
         overlap: null,
         cutOff: false,
-        nuance
+        nuance,
       });
     }
   }
@@ -286,10 +287,10 @@ export function parseFountainScript(text) {
   flushDialogue();
 
   // Always ensure Narrator is in character list
-  const characters = Array.from(characterSet.values()).map(c => ({
+  const characters = Array.from(characterSet.values()).map((c) => ({
     name: c.name,
     lineCount: c.count,
-    sampleLine: c.sampleLine
+    sampleLine: c.sampleLine,
   }));
 
   // Sort characters by line count descending
@@ -302,11 +303,15 @@ export function parseFountainScript(text) {
   // two keeps "introductions never touch elements" visible at the call site.
   // Shared cues run innermost: splitting `CICI AND MAYA` creates the very
   // adjacency `annotateScriptFlow` exists to resolve, so it has to happen first.
-  return attachCharacterIntroductions(annotateScriptFlow(expandSharedDialogueCues({
-    title: scriptTitle,
-    elements,
-    characters,
-    scenes: sceneList,
-    totalLines: elements.length
-  })));
+  return attachCharacterIntroductions(
+    annotateScriptFlow(
+      expandSharedDialogueCues({
+        title: scriptTitle,
+        elements,
+        characters,
+        scenes: sceneList,
+        totalLines: elements.length,
+      }),
+    ),
+  );
 }

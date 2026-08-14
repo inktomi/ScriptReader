@@ -1,10 +1,7 @@
-import test from 'node:test';
 import assert from 'node:assert/strict';
+import test from 'node:test';
 
-import {
-  PLAYBACK_STATES,
-  ScreenplayAudioManager
-} from '../src/audio/audio-manager.js';
+import { PLAYBACK_STATES, ScreenplayAudioManager } from '../src/audio/audio-manager.js';
 import { ENGINE_IDS } from '../src/audio/engine-contract.js';
 
 const originalLocalStorage = Object.getOwnPropertyDescriptor(globalThis, 'localStorage');
@@ -13,10 +10,12 @@ test.before(() => {
   Object.defineProperty(globalThis, 'localStorage', {
     configurable: true,
     value: {
-      getItem() { return null; },
+      getItem() {
+        return null;
+      },
       setItem() {},
-      removeItem() {}
-    }
+      removeItem() {},
+    },
   });
 });
 
@@ -41,23 +40,31 @@ function fakeEngine(overrides = {}) {
       supportsInstructions: true,
       usesInstructionPitch: true,
       maxChunkChars: 4096,
-      ...overrides.capabilities
+      ...overrides.capabilities,
     },
     onProgress(callback) {
       this.progressCallback = callback;
-      return () => { this.progressCallback = null; };
+      return () => {
+        this.progressCallback = null;
+      };
     },
     dropPendingExcept() {},
     request() {},
-    getCached() { return null; },
-    ...overrides
+    getCached() {
+      return null;
+    },
+    ...overrides,
   };
 }
 
 test('metered engines do not synthesize before Play', () => {
   const manager = new ScreenplayAudioManager();
   let requests = 0;
-  manager.engine = fakeEngine({ request() { requests++; } });
+  manager.engine = fakeEngine({
+    request() {
+      requests++;
+    },
+  });
   manager.scriptElements = [{ type: 'ACTION', character: 'NARRATOR', text: 'Opening' }];
   manager.prewarm();
   assert.equal(requests, 0);
@@ -69,19 +76,19 @@ test('Studio Local loads an installed engine and pre-renders before Play', async
   const engine = fakeEngine({
     isReady: false,
     capabilities: { id: ENGINE_IDS.CHATTERBOX, metered: false },
-    async init() { this.isReady = true; },
+    async init() {
+      this.isReady = true;
+    },
     request(unit) {
       requested.push(unit.key);
       return Promise.resolve({ duration: 2 });
-    }
+    },
   });
   manager.engineId = ENGINE_IDS.CHATTERBOX;
   manager.engine = engine;
   manager.getChatterboxCacheStatus = async () => ({ installed: true });
   manager.scriptElements = [{}];
-  manager._unitsForLine = line => line === 0
-    ? [{ key: 'opening', estimatedDuration: 2, leadPause: 0 }]
-    : null;
+  manager._unitsForLine = (line) => (line === 0 ? [{ key: 'opening', estimatedDuration: 2, leadPause: 0 }] : null);
 
   await manager.prewarm();
 
@@ -99,22 +106,25 @@ test('Studio Local pre-render reaches character lines beyond the old six-unit li
     request(unit) {
       requested.push(unit);
       return Promise.resolve();
-    }
+    },
   });
   manager.scriptElements = Array.from({ length: 10 }, () => ({}));
-  manager._unitsForLine = line => line >= 0 && line < 10
-    ? [{
-        key: `unit-${line}`,
-        character: line < 7 ? 'NARRATOR' : 'RILEY',
-        estimatedDuration: 2,
-        leadPause: 0
-      }]
-    : null;
+  manager._unitsForLine = (line) =>
+    line >= 0 && line < 10
+      ? [
+          {
+            key: `unit-${line}`,
+            character: line < 7 ? 'NARRATOR' : 'RILEY',
+            estimatedDuration: 2,
+            leadPause: 0,
+          },
+        ]
+      : null;
 
   await manager.prewarm();
 
   assert.equal(requested.length, 10);
-  assert.ok(requested.some(unit => unit.character === 'RILEY'));
+  assert.ok(requested.some((unit) => unit.character === 'RILEY'));
 });
 
 test('Studio Local keeps background render requests in bounded batches', async () => {
@@ -130,26 +140,27 @@ test('Studio Local keeps background render requests in bounded batches', async (
       requested++;
       active++;
       maxActive = Math.max(maxActive, active);
-      return new Promise(resolve => {
+      return new Promise((resolve) => {
         completions.push(() => {
           active--;
           resolve();
         });
       });
-    }
+    },
   });
   manager.scriptElements = Array.from({ length: 14 }, () => ({}));
-  manager._unitsForLine = line => line >= 0 && line < 14
-    ? [{ key: `unit-${line}`, estimatedDuration: 1, leadPause: 0 }]
-    : null;
+  manager._unitsForLine = (line) =>
+    line >= 0 && line < 14 ? [{ key: `unit-${line}`, estimatedDuration: 1, leadPause: 0 }] : null;
 
   const prewarm = manager.prewarm();
   assert.equal(requested, 6);
 
   while (requested < 14 || completions.length > 0) {
     const batch = completions.splice(0);
-    batch.forEach(complete => complete());
-    await new Promise(resolve => setImmediate(resolve));
+    batch.forEach((complete) => {
+      complete();
+    });
+    await new Promise((resolve) => setImmediate(resolve));
   }
   await prewarm;
 
@@ -166,22 +177,25 @@ test('Studio Local keeps filling its persistent render cache during playback', a
     capabilities: { id: ENGINE_IDS.CHATTERBOX, metered: false },
     request() {
       requested++;
-      return new Promise(resolve => completions.push(() => resolve({ duration: 1 })));
-    }
+      return new Promise((resolve) => completions.push(() => resolve({ duration: 1 })));
+    },
   });
   manager.scriptElements = Array.from({ length: 8 }, () => ({}));
-  manager._unitsForLine = line => line >= 0 && line < 8
-    ? [{ key: `unit-${line}`, estimatedDuration: 1, leadPause: 0 }]
-    : null;
+  manager._unitsForLine = (line) =>
+    line >= 0 && line < 8 ? [{ key: `unit-${line}`, estimatedDuration: 1, leadPause: 0 }] : null;
 
   const prewarm = manager.prewarm();
   assert.equal(requested, 6);
   manager.playbackState = PLAYBACK_STATES.PLAYING;
-  completions.splice(0).forEach(complete => complete());
-  await new Promise(resolve => setImmediate(resolve));
+  completions.splice(0).forEach((complete) => {
+    complete();
+  });
+  await new Promise((resolve) => setImmediate(resolve));
 
   assert.equal(requested, 8);
-  completions.splice(0).forEach(complete => complete());
+  completions.splice(0).forEach((complete) => {
+    complete();
+  });
   await prewarm;
 });
 
@@ -192,31 +206,35 @@ test('Studio Local enables Play once a safe runway is rendered, before 100 perce
   manager.engine = fakeEngine({
     capabilities: { id: ENGINE_IDS.CHATTERBOX, metered: false },
     request() {
-      return new Promise(resolve => completions.push(resolve));
-    }
+      return new Promise((resolve) => completions.push(resolve));
+    },
   });
   manager.scriptElements = Array.from({ length: 20 }, () => ({}));
-  manager._unitsForLine = line => line >= 0 && line < 20
-    ? [{ key: `unit-${line}`, estimatedDuration: 30, leadPause: 0 }]
-    : null;
+  manager._unitsForLine = (line) =>
+    line >= 0 && line < 20 ? [{ key: `unit-${line}`, estimatedDuration: 30, leadPause: 0 }] : null;
   const runwayStatus = manager._studioRunwayStatus.bind(manager);
-  manager._studioRunwayStatus = (units, _renderRate, previousCanPlay) =>
-    runwayStatus(units, 0.5, previousCanPlay);
+  manager._studioRunwayStatus = (units, _renderRate, previousCanPlay) => runwayStatus(units, 0.5, previousCanPlay);
 
   const prewarm = manager.prewarm();
   assert.equal(manager.renderStatus.canPlay, false);
 
-  completions.splice(0).forEach(resolve => resolve());
-  await new Promise(resolve => setImmediate(resolve));
-  completions.splice(0).forEach(resolve => resolve());
-  await new Promise(resolve => setImmediate(resolve));
+  completions.splice(0).forEach((resolve) => {
+    resolve();
+  });
+  await new Promise((resolve) => setImmediate(resolve));
+  completions.splice(0).forEach((resolve) => {
+    resolve();
+  });
+  await new Promise((resolve) => setImmediate(resolve));
 
   assert.equal(manager.renderStatus.canPlay, true);
   assert.ok(manager.renderStatus.percent < 100);
 
   while (completions.length > 0 || manager.renderStatus.active) {
-    completions.splice(0).forEach(resolve => resolve());
-    await new Promise(resolve => setImmediate(resolve));
+    completions.splice(0).forEach((resolve) => {
+      resolve();
+    });
+    await new Promise((resolve) => setImmediate(resolve));
   }
   await prewarm;
 });
@@ -230,10 +248,13 @@ test('Studio Local does not begin playback before the safe runway is ready', asy
   manager._studioPrewarmTask = {
     engine: manager.engine,
     unitGeneration: manager.prewarmGeneration,
-    promise: new Promise(() => {})
+    promise: new Promise(() => {}),
   };
   let audioStarts = 0;
-  manager._ensureAudio = async () => { audioStarts++; return {}; };
+  manager._ensureAudio = async () => {
+    audioStarts++;
+    return {};
+  };
 
   await manager.play();
 
@@ -248,16 +269,22 @@ test('a superseded Studio Local load cannot pre-render a stale script', async ()
   const engine = fakeEngine({
     isReady: false,
     capabilities: { id: ENGINE_IDS.CHATTERBOX, metered: false },
-    async init() { this.isReady = true; },
-    request(unit) { requested.push(unit.key); }
+    async init() {
+      this.isReady = true;
+    },
+    request(unit) {
+      requested.push(unit.key);
+    },
   });
   manager.engineId = ENGINE_IDS.CHATTERBOX;
   manager.engine = engine;
-  manager.getChatterboxCacheStatus = () => new Promise(resolve => { finishStatusCheck = resolve; });
+  manager.getChatterboxCacheStatus = () =>
+    new Promise((resolve) => {
+      finishStatusCheck = resolve;
+    });
   manager.scriptElements = [{}];
-  manager._unitsForLine = line => line === 0
-    ? [{ key: 'stale-opening', estimatedDuration: 2, leadPause: 0 }]
-    : null;
+  manager._unitsForLine = (line) =>
+    line === 0 ? [{ key: 'stale-opening', estimatedDuration: 2, leadPause: 0 }] : null;
 
   const prewarm = manager.prewarm();
   manager.stop();
@@ -270,7 +297,11 @@ test('a superseded Studio Local load cannot pre-render a stale script', async ()
 test('switching engines cancels the old engine queue', () => {
   const manager = new ScreenplayAudioManager();
   let cancellations = 0;
-  const old = fakeEngine({ dropPendingExcept() { cancellations++; } });
+  const old = fakeEngine({
+    dropPendingExcept() {
+      cancellations++;
+    },
+  });
   manager.engineId = ENGINE_IDS.OPENAI;
   manager.engine = old;
   manager._engines.set(ENGINE_IDS.OPENAI, old);
@@ -322,7 +353,11 @@ test('a fatal engine error is surfaced and tears down paused playback', () => {
   manager._bindEngineProgress();
   manager.playbackState = PLAYBACK_STATES.PAUSED;
   let stopped = 0;
-  manager.scheduler = { stopAll() { stopped++; } };
+  manager.scheduler = {
+    stopAll() {
+      stopped++;
+    },
+  };
   const events = [];
   manager.subscribe((event, data) => events.push({ event, data }));
 
@@ -346,10 +381,12 @@ test('Play awaits an already-loading engine and falls back when it fails', async
       initCalls++;
       this.isLoading = false;
       throw new Error('model failed');
-    }
+    },
   });
   let fallback = false;
-  manager._runWebSpeech = () => { fallback = true; };
+  manager._runWebSpeech = () => {
+    fallback = true;
+  };
 
   const originalWarn = console.warn;
   console.warn = () => {};
@@ -375,10 +412,12 @@ test('resuming paused playback reinitializes an engine that became unavailable',
     async init() {
       initCalls++;
       this.isReady = true;
-    }
+    },
   });
   let restarted = 0;
-  manager._beginNeuralPlayback = () => { restarted++; };
+  manager._beginNeuralPlayback = () => {
+    restarted++;
+  };
 
   await manager.play();
 
@@ -408,13 +447,20 @@ test('resuming paused Studio Local playback is not blocked by a stale canPlay', 
   manager.renderStatus = { ...manager.renderStatus, visible: true, canPlay: false };
 
   let prewarmCalls = 0;
-  manager.prewarm = () => { prewarmCalls++; return null; };
+  manager.prewarm = () => {
+    prewarmCalls++;
+    return null;
+  };
   let restarted = 0;
-  manager._beginNeuralPlayback = () => { restarted++; };
+  manager._beginNeuralPlayback = () => {
+    restarted++;
+  };
   // The resume branch under test calls the real _startTick(), which would
   // otherwise leave a live setInterval running past the end of this test.
   let ticksStarted = 0;
-  manager._startTick = () => { ticksStarted++; };
+  manager._startTick = () => {
+    ticksStarted++;
+  };
 
   await manager.play();
 
@@ -429,7 +475,9 @@ test('Play uses Web Speech when no AudioContext scheduler can be created', async
   manager.scriptElements = [{ type: 'ACTION', character: 'NARRATOR', text: 'Opening' }];
   manager._ensureAudio = async () => null;
   let fallback = false;
-  manager._runWebSpeech = () => { fallback = true; };
+  manager._runWebSpeech = () => {
+    fallback = true;
+  };
 
   await manager.play();
   assert.equal(fallback, true);
@@ -443,23 +491,23 @@ test('overlap request pumping expands past the normal lookahead cap', () => {
     key: `unit-${index}`,
     estimatedDuration: 0.1,
     leadPause: 0,
-    playbackRate: 1
+    playbackRate: 1,
   }));
   manager.engine = fakeEngine({
     capabilities: { metered: false },
-    request(unit) { requested.push(unit.key); }
+    request(unit) {
+      requested.push(unit.key);
+    },
   });
   manager.cursorLine = 0;
   manager.cursorUnit = 0;
   manager.scriptElements = Array.from({ length: 20 }, (_, index) => ({
-    overlap: index === 0 ? null : { mode: 'simultaneous' }
+    overlap: index === 0 ? null : { mode: 'simultaneous' },
   }));
 
   // Present a cluster longer than both the normal lookahead and the former
   // fixed 16-line traversal cap.
-  manager._unitsForLine = line => line >= 0 && line < 20
-    ? units.slice(line * 2, line * 2 + 2)
-    : null;
+  manager._unitsForLine = (line) => (line >= 0 && line < 20 ? units.slice(line * 2, line * 2 + 2) : null);
   manager._pumpRequests();
   assert.equal(requested.length, 40);
 });
@@ -468,13 +516,17 @@ test('ready runway counts simultaneous voices by timeline coverage, not sum', ()
   const manager = new ScreenplayAudioManager();
   const units = [
     [{ key: 'left', playbackRate: 1, leadPause: 0, overlapMode: 'sequential' }],
-    [{ key: 'right', playbackRate: 1, leadPause: 0, overlapMode: 'simultaneous' }]
+    [{ key: 'right', playbackRate: 1, leadPause: 0, overlapMode: 'simultaneous' }],
   ];
   manager.scriptElements = [{}, {}];
   manager.cursorLine = 0;
   manager.cursorUnit = 0;
-  manager._unitsForLine = line => units[line] || null;
-  manager.engine = fakeEngine({ getCached() { return { duration: 1.6 }; } });
+  manager._unitsForLine = (line) => units[line] || null;
+  manager.engine = fakeEngine({
+    getCached() {
+      return { duration: 1.6 };
+    },
+  });
 
   assert.deepEqual(manager._readyRunway(), { seconds: 1.6, hitEnd: true });
 });
@@ -483,11 +535,17 @@ test('OpenAI preview failure never auditions a browser voice', async () => {
   const manager = new ScreenplayAudioManager();
   const error = Object.assign(new Error('speech endpoint unavailable'), { code: 'network' });
   let browserSpeeches = 0;
-  manager.webSpeechEngine.speakLine = () => { browserSpeeches++; };
+  manager.webSpeechEngine.speakLine = () => {
+    browserSpeeches++;
+  };
   manager.scheduler = { stopAll() {} };
   manager._ensureAudio = async () => manager.scheduler;
   manager.engineId = ENGINE_IDS.OPENAI;
-  manager.engine = fakeEngine({ request: async () => { throw error; } });
+  manager.engine = fakeEngine({
+    request: async () => {
+      throw error;
+    },
+  });
   const events = [];
   manager.subscribe((event, data) => events.push({ event, data }));
 
@@ -537,17 +595,22 @@ test('hybrid casting loads the narration engine, not just the selected one', asy
   const narrator = fakeEngine({
     isReady: false,
     capabilities: { id: ENGINE_IDS.KOKORO, metered: false },
-    async init() { narratorInits++; this.isReady = true; }
+    async init() {
+      narratorInits++;
+      this.isReady = true;
+    },
   });
   manager._engines.set(ENGINE_IDS.KOKORO, narrator);
 
   manager.scriptElements = [
     { type: 'ACTION', character: 'NARRATOR', text: 'Rain lashes against the glass.' },
-    { type: 'DIALOGUE', character: 'VALENTINE', text: 'Kira, breach is done.' }
+    { type: 'DIALOGUE', character: 'VALENTINE', text: 'Kira, breach is done.' },
   ];
 
   let started = 0;
-  manager._beginNeuralPlayback = () => { started++; };
+  manager._beginNeuralPlayback = () => {
+    started++;
+  };
   await manager.play();
 
   assert.equal(narratorInits, 1);
@@ -562,20 +625,25 @@ test('a narration engine that will not load reports it instead of buffering fore
   manager._ensureAudio = async () => manager.scheduler;
 
   manager.engine = fakeEngine({ capabilities: { id: ENGINE_IDS.CHATTERBOX, metered: false } });
-  manager._engines.set(ENGINE_IDS.KOKORO, fakeEngine({
-    isReady: false,
-    capabilities: { id: ENGINE_IDS.KOKORO, metered: false },
-    async init() { throw new Error('Model weights unavailable'); }
-  }));
+  manager._engines.set(
+    ENGINE_IDS.KOKORO,
+    fakeEngine({
+      isReady: false,
+      capabilities: { id: ENGINE_IDS.KOKORO, metered: false },
+      async init() {
+        throw new Error('Model weights unavailable');
+      },
+    }),
+  );
 
-  manager.scriptElements = [
-    { type: 'ACTION', character: 'NARRATOR', text: 'Rain lashes against the glass.' }
-  ];
+  manager.scriptElements = [{ type: 'ACTION', character: 'NARRATOR', text: 'Rain lashes against the glass.' }];
 
   const events = [];
   manager.subscribe((event, data) => events.push({ event, data }));
   let started = 0;
-  manager._beginNeuralPlayback = () => { started++; };
+  manager._beginNeuralPlayback = () => {
+    started++;
+  };
 
   const originalWarn = console.warn;
   console.warn = () => {};
@@ -586,7 +654,7 @@ test('a narration engine that will not load reports it instead of buffering fore
   }
 
   assert.equal(started, 0);
-  const error = events.findLast(entry => entry.event === 'engineError');
+  const error = events.findLast((entry) => entry.event === 'engineError');
   assert.ok(error, 'a failed narration engine must be reported');
   // The listener never asked for the split, so the fix is one click away rather
   // than a hunt through Voice Engine settings.
@@ -600,18 +668,20 @@ test('the Studio pre-render plan counts narration units, not just Chatterbox one
   manager.engineId = ENGINE_IDS.CHATTERBOX;
   manager.hybridCasting = true;
   manager.engine = fakeEngine({ capabilities: { id: ENGINE_IDS.CHATTERBOX, metered: false } });
-  manager._engines.set(ENGINE_IDS.KOKORO, fakeEngine({
-    capabilities: { id: ENGINE_IDS.KOKORO, metered: false }
-  }));
+  manager._engines.set(
+    ENGINE_IDS.KOKORO,
+    fakeEngine({
+      capabilities: { id: ENGINE_IDS.KOKORO, metered: false },
+    }),
+  );
 
   manager.scriptElements = [
     { type: 'ACTION', character: 'NARRATOR', text: 'Rain lashes against the glass.' },
-    { type: 'DIALOGUE', character: 'VALENTINE', text: 'Kira, breach is done.' }
+    { type: 'DIALOGUE', character: 'VALENTINE', text: 'Kira, breach is done.' },
   ];
 
-  const engineIds = manager._studioRenderUnits().units.map(unit => unit.engineId);
-  assert.ok(engineIds.includes(ENGINE_IDS.KOKORO),
-    'narration must be in the plan the progress bar reports against');
+  const engineIds = manager._studioRenderUnits().units.map((unit) => unit.engineId);
+  assert.ok(engineIds.includes(ENGINE_IDS.KOKORO), 'narration must be in the plan the progress bar reports against');
   assert.ok(engineIds.includes(ENGINE_IDS.CHATTERBOX));
 });
 
@@ -630,15 +700,16 @@ test('a cold engine is started once per run, not once per tick', () => {
   const cold = fakeEngine({
     isReady: false,
     capabilities: { id: ENGINE_IDS.KOKORO, metered: false },
-    async init() { inits++; throw new Error('weights unavailable'); },
-    request: () => null
+    async init() {
+      inits++;
+      throw new Error('weights unavailable');
+    },
+    request: () => null,
   });
   manager._engineForUnit = () => cold;
 
   manager.scriptElements = [{ type: 'ACTION', character: 'NARRATOR', text: 'Opening' }];
-  manager._unitsForLine = line => line === 0
-    ? [{ key: 'unit-0', estimatedDuration: 4, leadPause: 0 }]
-    : null;
+  manager._unitsForLine = (line) => (line === 0 ? [{ key: 'unit-0', estimatedDuration: 4, leadPause: 0 }] : null);
 
   for (let tick = 0; tick < 25; tick++) manager._pumpRequests();
   assert.equal(inits, 1);
@@ -654,9 +725,8 @@ test('buffering that never progresses is reported rather than spun on forever', 
   manager.engineId = ENGINE_IDS.CHATTERBOX;
   manager.engine = fakeEngine({ capabilities: { id: ENGINE_IDS.CHATTERBOX, metered: false } });
   manager.scriptElements = [{ type: 'ACTION', character: 'NARRATOR', text: 'Opening' }];
-  manager._unitsForLine = line => line === 0
-    ? [{ key: 'unit-0', estimatedDuration: 4, leadPause: 0, engineId: ENGINE_IDS.CHATTERBOX }]
-    : null;
+  manager._unitsForLine = (line) =>
+    line === 0 ? [{ key: 'unit-0', estimatedDuration: 4, leadPause: 0, engineId: ENGINE_IDS.CHATTERBOX }] : null;
   manager.scheduler = { bufferedAhead: 0, currentTime: 0, stopAll() {} };
   manager.playbackState = PLAYBACK_STATES.BUFFERING;
 
@@ -667,7 +737,7 @@ test('buffering that never progresses is reported rather than spun on forever', 
   manager.stallDeadline = Date.now() - 1;
   manager._pumpState();
 
-  const error = events.findLast(entry => entry.event === 'engineError');
+  const error = events.findLast((entry) => entry.event === 'engineError');
   assert.ok(error, 'a permanently starved pipeline must surface an error');
   assert.equal(error.data.code, 'render_stalled');
   assert.equal(manager.playbackState, PLAYBACK_STATES.IDLE);
@@ -677,12 +747,10 @@ test('a stall watchdog that sees progress rearms instead of firing', () => {
   const manager = new ScreenplayAudioManager();
   manager.engine = fakeEngine({
     capabilities: { id: ENGINE_IDS.KOKORO, metered: false },
-    getCached: () => ({ duration: 12 })
+    getCached: () => ({ duration: 12 }),
   });
   manager.scriptElements = [{ type: 'ACTION', character: 'NARRATOR', text: 'Opening' }];
-  manager._unitsForLine = line => line === 0
-    ? [{ key: 'unit-0', estimatedDuration: 4, leadPause: 0 }]
-    : null;
+  manager._unitsForLine = (line) => (line === 0 ? [{ key: 'unit-0', estimatedDuration: 4, leadPause: 0 }] : null);
   manager.scheduler = { bufferedAhead: 0, currentTime: 0 };
   manager.playbackState = PLAYBACK_STATES.BUFFERING;
 
@@ -691,7 +759,7 @@ test('a stall watchdog that sees progress rearms instead of firing', () => {
   manager.stallDeadline = Date.now() - 1;
   manager._pumpState();
 
-  assert.equal(events.filter(entry => entry.event === 'engineError').length, 0);
+  assert.equal(events.filter((entry) => entry.event === 'engineError').length, 0);
   assert.equal(manager.playbackState, PLAYBACK_STATES.BUFFERING);
   assert.ok(manager.stallDeadline > Date.now(), 'the watchdog must rearm on progress');
 });
@@ -704,7 +772,7 @@ test('short script safe runway calculates small cushion without forcing 5-minute
   const units = [
     { key: 'u1', estimatedDuration: 10 },
     { key: 'u2', estimatedDuration: 10 },
-    { key: 'u3', estimatedDuration: 10 }
+    { key: 'u3', estimatedDuration: 10 },
   ];
 
   // At 0 render rate, required runway is total (30s)
@@ -726,31 +794,39 @@ test('seeking under Studio Local preserves prewarm and resumes playing', async (
   const manager = new ScreenplayAudioManager();
   manager.engineId = ENGINE_IDS.CHATTERBOX;
   manager.engine = fakeEngine({
-    capabilities: { id: ENGINE_IDS.CHATTERBOX, metered: false }
+    capabilities: { id: ENGINE_IDS.CHATTERBOX, metered: false },
   });
   manager.scriptElements = [
     { type: 'DIALOGUE', character: 'VALENTINE', text: 'Line 0' },
     { type: 'DIALOGUE', character: 'VALENTINE', text: 'Line 1' },
-    { type: 'DIALOGUE', character: 'VALENTINE', text: 'Line 2' }
+    { type: 'DIALOGUE', character: 'VALENTINE', text: 'Line 2' },
   ];
-  manager._unitsForLine = line => [{
-    key: `unit-${line}`,
-    estimatedDuration: 2,
-    leadPause: 0,
-    engineId: ENGINE_IDS.CHATTERBOX
-  }];
+  manager._unitsForLine = (line) => [
+    {
+      key: `unit-${line}`,
+      estimatedDuration: 2,
+      leadPause: 0,
+      engineId: ENGINE_IDS.CHATTERBOX,
+    },
+  ];
 
   // Script is already rendered and ready to play
   manager._preparedStudioKeys.add('unit-0');
   manager._preparedStudioKeys.add('unit-1');
   manager._preparedStudioKeys.add('unit-2');
-  manager.renderStatus = { visible: true, active: false, canPlay: true, percent: 100, message: 'Studio Local audio ready' };
+  manager.renderStatus = {
+    visible: true,
+    active: false,
+    canPlay: true,
+    percent: 100,
+    message: 'Studio Local audio ready',
+  };
 
   let playbackStartedAt = null;
   manager._ensureAudio = async () => ({
     stopAll() {},
     resetTimeline() {},
-    currentTime: 0
+    currentTime: 0,
   });
   manager._beginNeuralPlayback = (fromIndex) => {
     playbackStartedAt = fromIndex;
@@ -764,7 +840,7 @@ test('seeking under Studio Local preserves prewarm and resumes playing', async (
 
   // Seek to line 2 while playing
   manager.seek(2);
-  await new Promise(resolve => setImmediate(resolve));
+  await new Promise((resolve) => setImmediate(resolve));
 
   // Playback must resume at line 2 and canPlay must not be reset to false
   assert.equal(manager.currentIndex, 2);
@@ -786,18 +862,20 @@ test('dropped prewarm requests are not marked as prepared in Studio render store
         return Promise.reject(new Error('Render request dropped'));
       }
       return Promise.resolve({ duration: 2 });
-    }
+    },
   });
   manager.scriptElements = [
     { type: 'DIALOGUE', character: 'VALENTINE', text: 'Line 0' },
-    { type: 'DIALOGUE', character: 'VALENTINE', text: 'Line 1' }
+    { type: 'DIALOGUE', character: 'VALENTINE', text: 'Line 1' },
   ];
-  manager._unitsForLine = line => [{
-    key: line === 0 ? 'unit-ok' : 'unit-dropped',
-    estimatedDuration: 2,
-    leadPause: 0,
-    engineId: ENGINE_IDS.CHATTERBOX
-  }];
+  manager._unitsForLine = (line) => [
+    {
+      key: line === 0 ? 'unit-ok' : 'unit-dropped',
+      estimatedDuration: 2,
+      leadPause: 0,
+      engineId: ENGINE_IDS.CHATTERBOX,
+    },
+  ];
 
   await manager._queueStudioPrewarm(manager.engine, manager.prewarmGeneration);
 
@@ -820,11 +898,15 @@ test('flushing pending requests drops lookahead across all engines in a hybrid c
 
   const chatterboxEngine = fakeEngine({
     capabilities: { id: ENGINE_IDS.CHATTERBOX, metered: false },
-    dropPendingExcept(keys) { chatterboxDropped.push(keys); }
+    dropPendingExcept(keys) {
+      chatterboxDropped.push(keys);
+    },
   });
   const kokoroEngine = fakeEngine({
     capabilities: { id: ENGINE_IDS.KOKORO, metered: false },
-    dropPendingExcept(keys) { kokoroDropped.push(keys); }
+    dropPendingExcept(keys) {
+      kokoroDropped.push(keys);
+    },
   });
 
   manager.engine = chatterboxEngine;
@@ -833,7 +915,7 @@ test('flushing pending requests drops lookahead across all engines in a hybrid c
 
   manager.scriptElements = [
     { type: 'ACTION', character: 'NARRATOR', text: 'Scene opening' },
-    { type: 'DIALOGUE', character: 'VALENTINE', text: 'Dialogue line' }
+    { type: 'DIALOGUE', character: 'VALENTINE', text: 'Dialogue line' },
   ];
 
   // Flush on cast change
@@ -854,20 +936,21 @@ test('RunPod pre-renders in the background ASAP before Play when configured with
     isReady: false,
     capabilities: { id: ENGINE_IDS.RUNPOD, label: 'RunPod GPU (Cloud L40S)', metered: false },
     getApiKey: () => 'valid-runpod-key',
-    async init() { this.isReady = true; },
+    async init() {
+      this.isReady = true;
+    },
     request(unit) {
       requested.push(unit.key);
       return Promise.resolve({ duration: 2.5 });
-    }
+    },
   });
 
   manager.engineId = ENGINE_IDS.RUNPOD;
   manager.engine = engine;
   manager._engines.set(ENGINE_IDS.RUNPOD, engine);
   manager.scriptElements = [{ type: 'DIALOGUE', character: 'HERO', text: 'To be or not to be.' }];
-  manager._unitsForLine = line => line === 0
-    ? [{ key: 'runpod-unit-1', estimatedDuration: 2.5, leadPause: 0 }]
-    : null;
+  manager._unitsForLine = (line) =>
+    line === 0 ? [{ key: 'runpod-unit-1', estimatedDuration: 2.5, leadPause: 0 }] : null;
 
   await manager.prewarm();
 
@@ -885,7 +968,9 @@ test('replacing a RunPod script releases the previous script-owned memory', () =
   manager.engineId = ENGINE_IDS.RUNPOD;
   manager.engine = fakeEngine({
     capabilities: { id: ENGINE_IDS.RUNPOD, metered: true },
-    release() { releases++; }
+    release() {
+      releases++;
+    },
   });
   manager.scriptElements = [{ type: 'ACTION', text: 'Previous script' }];
 
@@ -899,14 +984,16 @@ test('Play gates on runway readiness under RunPod when unrendered', async () => 
   let prewarmCalled = false;
   const engine = fakeEngine({
     isReady: true,
-    capabilities: { id: ENGINE_IDS.RUNPOD, label: 'RunPod GPU (Cloud L40S)', metered: false }
+    capabilities: { id: ENGINE_IDS.RUNPOD, label: 'RunPod GPU (Cloud L40S)', metered: false },
   });
 
   manager.engineId = ENGINE_IDS.RUNPOD;
   manager.engine = engine;
   manager.scriptElements = [{ type: 'DIALOGUE', character: 'HERO', text: 'Line one' }];
   manager.renderStatus = { visible: true, active: true, canPlay: false };
-  manager.prewarm = () => { prewarmCalled = true; };
+  manager.prewarm = () => {
+    prewarmCalled = true;
+  };
 
   await manager.play();
 

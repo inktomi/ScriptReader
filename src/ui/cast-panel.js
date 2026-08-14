@@ -1,14 +1,10 @@
-import { getIconSvg } from '../utils/icons.js';
-import { formatPitchOffset } from '../audio/performance-director.js';
-import { escapeHtml } from '../utils/escape-html.js';
-import { getVoiceById, getVoicesForEngine, makeDefaultAssignment } from '../audio/voice-catalog.js';
 import { ENGINE_IDS } from '../audio/engine-contract.js';
+import { formatPitchOffset } from '../audio/performance-director.js';
+import { getVoiceById, getVoicesForEngine, makeDefaultAssignment } from '../audio/voice-catalog.js';
+import { escapeHtml } from '../utils/escape-html.js';
+import { getIconSvg } from '../utils/icons.js';
 
-export function createCastPanel({
-  scriptStore,
-  audioManager,
-  onOpenVoiceConfig
-}) {
+export function createCastPanel({ scriptStore, audioManager, onOpenVoiceConfig }) {
   const panel = document.createElement('aside');
   panel.className = 'cast-sidebar';
 
@@ -26,36 +22,45 @@ export function createCastPanel({
     const enginePool = getVoicesForEngine(engineId);
     const narratorPool = getVoicesForEngine(narratorEngineId);
     const storedNarratorVoiceId = scriptStore.getNarratorVoice(narratorEngineId);
-    const narratorProfile = narratorPool.some(v => v.id === storedNarratorVoiceId)
+    const narratorProfile = narratorPool.some((v) => v.id === storedNarratorVoiceId)
       ? getVoiceById(storedNarratorVoiceId, narratorEngineId)
       : audioManager.getVoiceProfileForCharacter('NARRATOR', narratorEngineId);
     const narratorVoiceId = narratorProfile.id;
     const voiceIdOf = (assignment) => {
       const candidate = (assignment?.voiceIds && assignment.voiceIds[engineId]) || assignment?.voiceId;
-      if (!enginePool.some(voice => voice.id === candidate)) return enginePool[0]?.id || '';
+      if (!enginePool.some((voice) => voice.id === candidate)) return enginePool[0]?.id || '';
       return candidate;
     };
 
     // Build options for voice select
     const voiceOptionsHtml = (selectedId, pool = enginePool) => {
       // Group voices by sex / category
-      const femaleVoices = pool.filter(v => v.sex === 'Female');
-      const maleVoices = pool.filter(v => v.sex === 'Male');
-      const neutralVoices = pool.filter(v => v.sex === 'Neutral');
+      const femaleVoices = pool.filter((v) => v.sex === 'Female');
+      const maleVoices = pool.filter((v) => v.sex === 'Male');
+      const neutralVoices = pool.filter((v) => v.sex === 'Neutral');
 
-      const buildGroup = (label, voices) => voices.length === 0 ? '' : `
+      const buildGroup = (label, voices) =>
+        voices.length === 0
+          ? ''
+          : `
         <optgroup label="${label}">
-          ${voices.map(v => `
+          ${voices
+            .map(
+              (v) => `
             <option value="${v.id}" ${v.id === selectedId ? 'selected' : ''}>
               ${escapeHtml(v.name)} (${escapeHtml(v.sex)} ${escapeHtml(v.ageGroup)} • ${escapeHtml(v.accent)}) - ${escapeHtml(v.tone.split(',')[0])}
             </option>
-          `).join('')}
+          `,
+            )
+            .join('')}
         </optgroup>
       `;
 
-      return buildGroup('Female voices', femaleVoices)
-        + buildGroup('Male voices', maleVoices)
-        + buildGroup('Neutral voices', neutralVoices);
+      return (
+        buildGroup('Female voices', femaleVoices) +
+        buildGroup('Male voices', maleVoices) +
+        buildGroup('Neutral voices', neutralVoices)
+      );
     };
 
     // Calculate total dialogue lines
@@ -101,13 +106,15 @@ export function createCastPanel({
               <button class="btn btn-secondary btn-test-narrator ${auditioningChar === 'NARRATOR' ? (auditionPhase === 'playing' ? 'btn-active' : 'is-loading') : ''}"
                       style="padding: 6px 10px;"
                       title="${auditioningChar === 'NARRATOR' ? (auditionPhase === 'rendering' ? 'Synthesizing…' : 'Stop') : 'Test Narrator Voice'}">
-                ${auditioningChar === 'NARRATOR'
-                  ? (auditionPhase === 'preparing'
+                ${
+                  auditioningChar === 'NARRATOR'
+                    ? auditionPhase === 'preparing'
                       ? getIconSvg('replay', 14, 'spin-icon')
-                      : (auditionPhase === 'rendering'
-                          ? getIconSvg('sparkles', 14, 'pulse-icon')
-                          : getIconSvg('stop', 14)))
-                  : getIconSvg('volume', 14)}
+                      : auditionPhase === 'rendering'
+                        ? getIconSvg('sparkles', 14, 'pulse-icon')
+                        : getIconSvg('stop', 14)
+                    : getIconSvg('volume', 14)
+                }
               </button>
             </div>
           </div>
@@ -118,23 +125,23 @@ export function createCastPanel({
           Speaking Cast (${characters.length})
         </div>
 
-        ${characters.map(char => {
-          const charKey = char.name.toUpperCase().trim();
-          const assignment = scriptStore.castAssignments.get(charKey)
-            || makeDefaultAssignment();
-          const voiceProfile = getVoiceById(voiceIdOf(assignment), engineId);
-          const percent = Math.round((char.lineCount / totalDialogueLines) * 100);
-          const isPlaying = auditioningChar === charKey;
+        ${characters
+          .map((char) => {
+            const charKey = char.name.toUpperCase().trim();
+            const assignment = scriptStore.castAssignments.get(charKey) || makeDefaultAssignment();
+            const voiceProfile = getVoiceById(voiceIdOf(assignment), engineId);
+            const percent = Math.round((char.lineCount / totalDialogueLines) * 100);
+            const isPlaying = auditioningChar === charKey;
 
-          // The character name comes from the uploaded script, so it is escaped
-          // everywhere it appears — including in `data-char`, where a bare quote
-          // would otherwise close the attribute and let the rest of the cue
-          // become markup. Escaped attributes round-trip cleanly: the parser
-          // turns `&quot;` back into `"`, so `dataset.char` still matches the
-          // name the store is keyed by.
-          const charAttr = escapeHtml(char.name);
+            // The character name comes from the uploaded script, so it is escaped
+            // everywhere it appears — including in `data-char`, where a bare quote
+            // would otherwise close the attribute and let the rest of the cue
+            // become markup. Escaped attributes round-trip cleanly: the parser
+            // turns `&quot;` back into `"`, so `dataset.char` still matches the
+            // name the store is keyed by.
+            const charAttr = escapeHtml(char.name);
 
-          return `
+            return `
             <div class="character-card ${isPlaying ? 'is-previewing' : ''}" data-char="${charAttr}">
               <div class="char-header">
                 <div class="char-avatar" style="background: ${voiceProfile.avatarBg};">
@@ -147,11 +154,15 @@ export function createCastPanel({
                     <span class="badge-lines">${char.lineCount} lines (${percent}%)</span>
                     <span class="badge-voice">${escapeHtml(voiceProfile.name)}</span>
                   </div>
-                  ${char.introduction?.text ? `
+                  ${
+                    char.introduction?.text
+                      ? `
                     <div class="char-intro-line" title="${escapeHtml(char.introduction.sourceText || char.introduction.text)}">
                       ${escapeHtml(char.introduction.text)}
                     </div>
-                  ` : ''}
+                  `
+                      : ''
+                  }
                 </div>
               </div>
 
@@ -164,13 +175,15 @@ export function createCastPanel({
                           data-char="${charAttr}"
                           style="padding: 6px 10px;"
                           title="${isPlaying ? (auditionPhase === 'rendering' ? 'Synthesizing…' : 'Stop') : 'Test Assigned Voice'}">
-                    ${isPlaying
-                      ? (auditionPhase === 'preparing'
+                    ${
+                      isPlaying
+                        ? auditionPhase === 'preparing'
                           ? getIconSvg('replay', 14, 'spin-icon')
-                          : (auditionPhase === 'rendering'
-                              ? getIconSvg('sparkles', 14, 'pulse-icon')
-                              : getIconSvg('stop', 14)))
-                      : getIconSvg('volume', 14)}
+                          : auditionPhase === 'rendering'
+                            ? getIconSvg('sparkles', 14, 'pulse-icon')
+                            : getIconSvg('stop', 14)
+                        : getIconSvg('volume', 14)
+                    }
                   </button>
                 </div>
 
@@ -189,7 +202,8 @@ export function createCastPanel({
               </div>
             </div>
           `;
-        }).join('')}
+          })
+          .join('')}
       </div>
     `;
 
@@ -238,8 +252,12 @@ export function createCastPanel({
         try {
           await audioManager.previewVoice(
             narratorVoiceId,
-            "EXT. OMNICORP SPIRE - NIGHT. Torrential rain lashes against the glass as the city sleeps below.",
-            0, 1.0, '', narratorEngineId, onStateChange
+            'EXT. OMNICORP SPIRE - NIGHT. Torrential rain lashes against the glass as the city sleeps below.',
+            0,
+            1.0,
+            '',
+            narratorEngineId,
+            onStateChange,
           );
         } catch (e) {
           console.warn('Narrator test error:', e);
@@ -254,7 +272,7 @@ export function createCastPanel({
     }
 
     // Character voice selects
-    panel.querySelectorAll('.char-voice-select').forEach(select => {
+    panel.querySelectorAll('.char-voice-select').forEach((select) => {
       select.addEventListener('change', (e) => {
         const charName = select.dataset.char;
         const charKey = charName.toUpperCase().trim();
@@ -263,14 +281,14 @@ export function createCastPanel({
         scriptStore.updateCharacterVoice(charName, { voiceId: e.target.value, engineId });
         const assignment = scriptStore.castAssignments.get(charKey);
         audioManager.setVoiceAssignment(charName, assignment);
-        const charObj = characters.find(c => c.name.toUpperCase().trim() === charKey);
+        const charObj = characters.find((c) => c.name.toUpperCase().trim() === charKey);
         audioManager.prewarmAudition?.(e.target.value, charObj ? charObj.sampleLine : null, assignment, engineId);
         render(); // update avatar & badge
       });
     });
 
     // Character test buttons
-    panel.querySelectorAll('.btn-test-voice').forEach(btn => {
+    panel.querySelectorAll('.btn-test-voice').forEach((btn) => {
       btn.addEventListener('click', async () => {
         const charName = btn.dataset.char;
         const charKey = charName.toUpperCase().trim();
@@ -290,9 +308,9 @@ export function createCastPanel({
         render();
 
         const assignment = scriptStore.castAssignments.get(charKey) || makeDefaultAssignment();
-        const charObj = characters.find(c => c.name.toUpperCase().trim() === charKey);
+        const charObj = characters.find((c) => c.name.toUpperCase().trim() === charKey);
         const sampleText = charObj ? charObj.sampleLine : null;
-        
+
         const onStateChange = (phase) => {
           if (gen !== auditionGen) return;
           auditionPhase = phase;
@@ -310,7 +328,7 @@ export function createCastPanel({
             assignment.speedMultiplier || 1.0,
             assignment.direction || '',
             engineId,
-            onStateChange
+            onStateChange,
           );
         } catch (e) {
           console.warn('Character test error:', e);
@@ -325,7 +343,7 @@ export function createCastPanel({
     });
 
     // Pitch sliders
-    panel.querySelectorAll('.char-pitch-slider').forEach(slider => {
+    panel.querySelectorAll('.char-pitch-slider').forEach((slider) => {
       slider.addEventListener('input', (e) => {
         const charName = slider.dataset.char;
         const val = parseInt(e.target.value, 10);
@@ -339,7 +357,7 @@ export function createCastPanel({
     });
 
     // Speed sliders
-    panel.querySelectorAll('.char-speed-slider').forEach(slider => {
+    panel.querySelectorAll('.char-speed-slider').forEach((slider) => {
       slider.addEventListener('input', (e) => {
         const charName = slider.dataset.char;
         const val = parseInt(e.target.value, 10) / 100;
@@ -362,7 +380,7 @@ export function createCastPanel({
           audioManager.setScript(
             scriptStore.currentScript.elements,
             scriptStore.castAssignments,
-            scriptStore.activeLineIndex
+            scriptStore.activeLineIndex,
           );
           render();
         }
@@ -375,14 +393,13 @@ export function createCastPanel({
   function setSpeakingCharacters(charNames) {
     const speaking = (Array.isArray(charNames) ? charNames : [charNames])
       .filter(Boolean)
-      .map(name => name.toUpperCase().trim());
+      .map((name) => name.toUpperCase().trim());
 
-    panel.querySelectorAll('.character-card').forEach(card => {
+    panel.querySelectorAll('.character-card').forEach((card) => {
       const cardName = (card.dataset.char || '').toUpperCase().trim();
       card.classList.toggle('speaking', !!cardName && speaking.includes(cardName));
     });
   }
-
 
   // Subscribe to script store changes
   scriptStore.subscribe((event, data) => {
@@ -399,6 +416,6 @@ export function createCastPanel({
     render,
     setSpeakingCharacters,
     toggleCollapse: () => !panel.classList.toggle('collapsed'),
-    isOpen: () => !panel.classList.contains('collapsed')
+    isOpen: () => !panel.classList.contains('collapsed'),
   };
 }

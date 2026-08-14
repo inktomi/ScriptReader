@@ -103,7 +103,7 @@ export function hasCloudConsent() {
 export function grantCloudConsent() {
   return saveEngineSettings({
     cloudConsentVersion: CLOUD_DISCLOSURE_VERSION,
-    cloudConsentAt: Date.now()
+    cloudConsentAt: Date.now(),
   });
 }
 
@@ -130,7 +130,7 @@ export async function validateOpenAIKey(key, { signal, model = 'gpt-4o-mini-tts'
   try {
     const res = await fetch(`https://api.openai.com/v1/models/${model}`, {
       headers: { authorization: `Bearer ${trimmed}` },
-      signal
+      signal,
     });
     if (res.ok) return { ok: true };
     if (res.status === 401) return { ok: false, reason: 'invalid_key' };
@@ -145,12 +145,18 @@ export async function validateOpenAIKey(key, { signal, model = 'gpt-4o-mini-tts'
 
 export function describeValidationReason(reason) {
   switch (reason) {
-    case 'empty': return 'Enter a key to continue.';
-    case 'invalid_key': return 'OpenAI rejected this key.';
-    case 'no_model_access': return 'This key cannot reach gpt-4o-mini-tts. Check the project it belongs to.';
-    case 'rate_limited': return 'OpenAI is rate limiting this key right now. Try again shortly.';
-    case 'network': return 'Could not reach OpenAI. Check your connection.';
-    default: return 'Could not verify this key.';
+    case 'empty':
+      return 'Enter a key to continue.';
+    case 'invalid_key':
+      return 'OpenAI rejected this key.';
+    case 'no_model_access':
+      return 'This key cannot reach gpt-4o-mini-tts. Check the project it belongs to.';
+    case 'rate_limited':
+      return 'OpenAI is rate limiting this key right now. Try again shortly.';
+    case 'network':
+      return 'Could not reach OpenAI. Check your connection.';
+    default:
+      return 'Could not verify this key.';
   }
 }
 
@@ -223,13 +229,13 @@ export async function validateRunPodConnection({ key, endpointId, signal } = {})
   try {
     const res = await fetch(`https://api.runpod.ai/v2/${ep}/health`, {
       headers: { authorization: `Bearer ${apiKey}` },
-      signal
+      signal,
     });
     if (res.ok) {
       const data = await readBoundedResponseJson(res, {
         maxBytes: MAX_HEALTH_RESPONSE_BYTES,
         signal,
-        tooLargeError: () => new Error('RunPod returned an oversized health response.')
+        tooLargeError: () => new Error('RunPod returned an oversized health response.'),
       });
       return { ok: true, data };
     }
@@ -244,10 +250,15 @@ export async function validateRunPodConnection({ key, endpointId, signal } = {})
 
 export function describeRunPodValidationReason(reason) {
   switch (reason) {
-    case 'empty_key': return 'Enter your RunPod API key to continue.';
-    case 'invalid_key': return 'RunPod rejected this API key.';
-    case 'invalid_endpoint': return 'Could not find this Serverless Endpoint ID on RunPod.';
-    case 'network': return 'Could not reach RunPod. Check your internet connection.';
-    default: return 'Could not verify RunPod connection.';
+    case 'empty_key':
+      return 'Enter your RunPod API key to continue.';
+    case 'invalid_key':
+      return 'RunPod rejected this API key.';
+    case 'invalid_endpoint':
+      return 'Could not find this Serverless Endpoint ID on RunPod.';
+    case 'network':
+      return 'Could not reach RunPod. Check your internet connection.';
+    default:
+      return 'Could not verify RunPod connection.';
   }
 }

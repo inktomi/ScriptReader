@@ -1,18 +1,21 @@
-import { getIconSvg } from '../utils/icons.js';
-import { formatPitchOffset } from '../audio/performance-director.js';
-import { escapeHtml } from '../utils/escape-html.js';
 import {
-  VOICE_CATALOG,
+  hasChatterboxVoiceSample,
+  listChatterboxVoices,
+  saveChatterboxVoice,
+} from '../audio/chatterbox-voice-store.js';
+import { ENGINE_IDS } from '../audio/engine-contract.js';
+import { formatPitchOffset } from '../audio/performance-director.js';
+import {
+  getDefaultNarratorVoice,
+  getSuggestedVoiceForCharacter,
   getVoiceById,
   getVoicesForEngine,
-  getSuggestedVoiceForCharacter,
-  getDefaultNarratorVoice,
+  makeDefaultAssignment,
   mapVoiceAcrossEngines,
-  makeDefaultAssignment
 } from '../audio/voice-catalog.js';
-import { ENGINE_IDS } from '../audio/engine-contract.js';
-import { KOKORO_GRADES, gradeLabel, gradeColor } from '../audio/voice-grades.js';
-import { hasChatterboxVoiceSample, saveChatterboxVoice, listChatterboxVoices } from '../audio/chatterbox-voice-store.js';
+import { gradeColor, gradeLabel, KOKORO_GRADES } from '../audio/voice-grades.js';
+import { escapeHtml } from '../utils/escape-html.js';
+import { getIconSvg } from '../utils/icons.js';
 import { createVoiceSampleCatalogModal } from './voice-sample-catalog-modal.js';
 
 export function createVoiceConfigModal({
@@ -21,12 +24,10 @@ export function createVoiceConfigModal({
   onSave,
   onCancel,
   onOpenEngineSettings,
-  isInitialSetup = false
+  isInitialSetup = false,
 }) {
   const modal = document.createElement('div');
-  modal.className = isInitialSetup
-    ? 'casting-screen'
-    : 'modal-overlay voice-config-modal-overlay';
+  modal.className = isInitialSetup ? 'casting-screen' : 'modal-overlay voice-config-modal-overlay';
 
   const script = scriptStore.currentScript;
   const characters = script ? [...script.characters].sort((a, b) => b.lineCount - a.lineCount) : [];
@@ -44,9 +45,9 @@ export function createVoiceConfigModal({
 
   // Local working copy of assignments so user can edit, preview, and cancel if desired
   const storedNarratorVoiceId = scriptStore.getNarratorVoice(narratorEngineId);
-  let workingNarratorVoiceId = narratorPool.some(v => v.id === storedNarratorVoiceId)
+  let workingNarratorVoiceId = narratorPool.some((v) => v.id === storedNarratorVoiceId)
     ? storedNarratorVoiceId
-    : (narratorPool[0]?.id || audioManager.getVoiceProfileForCharacter('NARRATOR', narratorEngineId).id);
+    : narratorPool[0]?.id || audioManager.getVoiceProfileForCharacter('NARRATOR', narratorEngineId).id;
   const workingAssignments = new Map();
 
   for (const char of characters) {
@@ -79,7 +80,7 @@ export function createVoiceConfigModal({
   /** This character's voice under the active engine, falling back to the legacy field. */
   function voiceIdOf(assignment) {
     const candidate = (assignment.voiceIds && assignment.voiceIds[engineId]) || assignment.voiceId;
-    if ((isStudio || isRunPod) && !enginePool.some(voice => voice.id === candidate)) return enginePool[0]?.id || '';
+    if ((isStudio || isRunPod) && !enginePool.some((voice) => voice.id === candidate)) return enginePool[0]?.id || '';
     return candidate;
   }
 
@@ -91,37 +92,54 @@ export function createVoiceConfigModal({
   function qualityBadge(voiceId, forEngineId = engineId) {
     if (forEngineId === ENGINE_IDS.CHATTERBOX) return voiceId ? 'Studio reference' : 'Reference needed';
     if (forEngineId === ENGINE_IDS.RUNPOD) {
-      if (voiceId && !voiceId.startsWith('af_') && !voiceId.startsWith('am_') && !voiceId.startsWith('bf_') && !voiceId.startsWith('bm_') && !voiceId.startsWith('zf_') && !voiceId.startsWith('zm_')) {
+      if (
+        voiceId &&
+        !voiceId.startsWith('af_') &&
+        !voiceId.startsWith('am_') &&
+        !voiceId.startsWith('bf_') &&
+        !voiceId.startsWith('bm_') &&
+        !voiceId.startsWith('zf_') &&
+        !voiceId.startsWith('zm_')
+      ) {
         return 'Studio reference';
       }
       const grade = KOKORO_GRADES[voiceId];
       return grade ? `Kokoro · ${grade}` : 'RunPod GPU';
     }
     const grade = KOKORO_GRADES[voiceId];
-    return grade ? `${gradeLabel(voiceId)} · ${grade}` : (forEngineId === ENGINE_IDS.KOKORO ? 'Kokoro Neural' : 'Cloud');
+    return grade ? `${gradeLabel(voiceId)} · ${grade}` : forEngineId === ENGINE_IDS.KOKORO ? 'Kokoro Neural' : 'Cloud';
   }
 
   function buildVoiceOptions(selectedId, pool = enginePool) {
     if (pool.length === 0) {
       return '<option value="">Add a reference voice first</option>';
     }
-    const femaleVoices = pool.filter(v => v.sex === 'Female');
-    const maleVoices = pool.filter(v => v.sex === 'Male');
-    const neutralVoices = pool.filter(v => v.sex === 'Neutral');
+    const femaleVoices = pool.filter((v) => v.sex === 'Female');
+    const maleVoices = pool.filter((v) => v.sex === 'Male');
+    const neutralVoices = pool.filter((v) => v.sex === 'Neutral');
 
-    const buildGroup = (label, voices) => voices.length === 0 ? '' : `
+    const buildGroup = (label, voices) =>
+      voices.length === 0
+        ? ''
+        : `
       <optgroup label="${label}">
-        ${voices.map(v => `
+        ${voices
+          .map(
+            (v) => `
           <option value="${v.id}" ${v.id === selectedId ? 'selected' : ''}>
             ${escapeHtml(v.name)} (${escapeHtml(v.sex)} ${escapeHtml(v.ageGroup)} • ${escapeHtml(v.accent)}) - ${escapeHtml(v.tone.split(',')[0])}
           </option>
-        `).join('')}
+        `,
+          )
+          .join('')}
       </optgroup>
     `;
 
-    return buildGroup('Female voices', femaleVoices)
-      + buildGroup('Male voices', maleVoices)
-      + buildGroup('Neutral voices', neutralVoices);
+    return (
+      buildGroup('Female voices', femaleVoices) +
+      buildGroup('Male voices', maleVoices) +
+      buildGroup('Neutral voices', neutralVoices)
+    );
   }
 
   /**
@@ -146,13 +164,17 @@ export function createVoiceConfigModal({
     return `
       <div class="char-intro">
         <p class="char-intro-text">${escapeHtml(intro.text)}</p>
-        ${source ? `
+        ${
+          source
+            ? `
           <button type="button" class="char-intro-toggle" data-char="${charAttr}"
                   aria-expanded="${expanded}" aria-controls="${sourceId}">
             ${getIconSvg('chevronRight', 12)} As written
           </button>
           <p class="char-intro-source" id="${sourceId}" ${expanded ? '' : 'hidden'}>${escapeHtml(source)}</p>
-        ` : ''}
+        `
+            : ''
+        }
       </div>
     `;
   }
@@ -162,9 +184,10 @@ export function createVoiceConfigModal({
     const localNarrator = getDefaultNarratorVoice().id;
     const activeIsHybrid = isStudio && audioManager.hybridCasting;
     const activeNarratorEngine = activeIsHybrid ? ENGINE_IDS.KOKORO : engineId;
-    workingNarratorVoiceId = activeNarratorEngine === ENGINE_IDS.KOKORO
-      ? localNarrator
-      : mapVoiceAcrossEngines(localNarrator, activeNarratorEngine);
+    workingNarratorVoiceId =
+      activeNarratorEngine === ENGINE_IDS.KOKORO
+        ? localNarrator
+        : mapVoiceAcrossEngines(localNarrator, activeNarratorEngine);
     const usedLocalVoices = new Set([localNarrator]);
     const usedEngineVoices = new Set([workingNarratorVoiceId]);
 
@@ -172,12 +195,11 @@ export function createVoiceConfigModal({
       const localVoiceId = getSuggestedVoiceForCharacter(char.name, {
         sampleLine: char.sampleLine,
         introduction: char.introduction,
-        usedVoices: usedLocalVoices
+        usedVoices: usedLocalVoices,
       });
       usedLocalVoices.add(localVoiceId);
-      const suggestedVoiceId = engineId === ENGINE_IDS.KOKORO
-        ? localVoiceId
-        : mapVoiceAcrossEngines(localVoiceId, engineId, usedEngineVoices);
+      const suggestedVoiceId =
+        engineId === ENGINE_IDS.KOKORO ? localVoiceId : mapVoiceAcrossEngines(localVoiceId, engineId, usedEngineVoices);
       usedEngineVoices.add(suggestedVoiceId);
       const key = char.name.toUpperCase().trim();
       const existing = workingAssignments.get(key) || makeDefaultAssignment(localVoiceId);
@@ -188,7 +210,7 @@ export function createVoiceConfigModal({
         pitchOffset: 0,
         speedMultiplier: 1.0,
         tonePreset: 'natural',
-        auto: true
+        auto: true,
       });
     }
   }
@@ -199,11 +221,9 @@ export function createVoiceConfigModal({
     const activeNarratorEngine = activeIsHybrid ? ENGINE_IDS.KOKORO : engineId;
     narratorPool = getVoicesForEngine(activeNarratorEngine);
 
-    if (!narratorPool.some(voice => voice.id === workingNarratorVoiceId)) {
+    if (!narratorPool.some((voice) => voice.id === workingNarratorVoiceId)) {
       const stored = scriptStore.getNarratorVoice(activeNarratorEngine);
-      workingNarratorVoiceId = narratorPool.some(v => v.id === stored)
-        ? stored
-        : (narratorPool[0]?.id || 'af_heart');
+      workingNarratorVoiceId = narratorPool.some((v) => v.id === stored) ? stored : narratorPool[0]?.id || 'af_heart';
     }
 
     if (isStudio && enginePool.length > 0) {
@@ -211,27 +231,29 @@ export function createVoiceConfigModal({
         const key = char.name.toUpperCase().trim();
         const assignment = workingAssignments.get(key) || makeDefaultAssignment();
         const savedStudioVoice = assignment.voiceIds?.[engineId];
-        if (!enginePool.some(voice => voice.id === savedStudioVoice)) {
+        if (!enginePool.some((voice) => voice.id === savedStudioVoice)) {
           const voiceId = enginePool[index % enginePool.length].id;
           workingAssignments.set(key, {
             ...assignment,
-            voiceIds: { ...(assignment.voiceIds || {}), [engineId]: voiceId }
+            voiceIds: { ...(assignment.voiceIds || {}), [engineId]: voiceId },
           });
         }
       });
     }
     const narratorProfile = getVoiceById(workingNarratorVoiceId, activeNarratorEngine);
-    const studioCastReady = !isStudio || (
-      enginePool.length > 0
-      && !!workingNarratorVoiceId
-      && characters.every(char => {
-        const assignment = workingAssignments.get(char.name.toUpperCase().trim()) || {};
-        return enginePool.some(voice => voice.id === voiceIdOf(assignment));
-      })
-    );
+    const studioCastReady =
+      !isStudio ||
+      (enginePool.length > 0 &&
+        !!workingNarratorVoiceId &&
+        characters.every((char) => {
+          const assignment = workingAssignments.get(char.name.toUpperCase().trim()) || {};
+          return enginePool.some((voice) => voice.id === voiceIdOf(assignment));
+        }));
 
     modal.innerHTML = `
-      ${isInitialSetup ? `
+      ${
+        isInitialSetup
+          ? `
         <div class="workflow-header">
           <a class="wordmark" href="#" aria-label="ScriptReader">
             <span class="wordmark-mark">${getIconSvg('book', 17)}</span>
@@ -246,7 +268,9 @@ export function createVoiceConfigModal({
           </nav>
           <span class="workflow-privacy">Local by default</span>
         </div>
-      ` : ''}
+      `
+          : ''
+      }
       <div class="modal-card voice-config-card">
         <!-- Header -->
         <div class="modal-header voice-config-header">
@@ -268,7 +292,9 @@ export function createVoiceConfigModal({
           </div>
 
           <div style="display: flex; align-items: center; gap: 8px;">
-            ${!isInitialSetup ? `
+            ${
+              !isInitialSetup
+                ? `
               <button id="btn-modal-autocast" class="btn btn-secondary" style="padding: 6px 12px; font-size: 0.8rem;" title="Reset to recommended voices">
                 ${getIconSvg('replay', 14)}
                 <span>Recommended cast</span>
@@ -276,7 +302,9 @@ export function createVoiceConfigModal({
               <button class="btn-icon btn-close-voice-modal" title="Close">
                 ${getIconSvg('close', 18)}
               </button>
-            ` : ''}
+            `
+                : ''
+            }
           </div>
         </div>
 
@@ -289,23 +317,29 @@ export function createVoiceConfigModal({
                 <strong>${
                   engineId === ENGINE_IDS.OPENAI
                     ? 'OpenAI cloud voices'
-                    : (isRunPod
-                        ? 'RunPod Serverless GPU (L40S)'
-                        : (isStudio ? 'Studio Local · Chatterbox' : 'Kokoro local voices'))
+                    : isRunPod
+                      ? 'RunPod Serverless GPU (L40S)'
+                      : isStudio
+                        ? 'Studio Local · Chatterbox'
+                        : 'Kokoro local voices'
                 }</strong>
                 <small>${
                   engineId === ENGINE_IDS.OPENAI
                     ? 'Dialogue is sent to OpenAI for synthesis.'
-                    : (isRunPod
-                        ? 'High-speed Chatterbox and Kokoro neural synthesis on dedicated NVIDIA L40S GPUs.'
-                        : (isStudio ? 'Highest-quality local voices cloned from private reference recordings.' : 'Audio is generated on this device. Your screenplay stays local.'))
+                    : isRunPod
+                      ? 'High-speed Chatterbox and Kokoro neural synthesis on dedicated NVIDIA L40S GPUs.'
+                      : isStudio
+                        ? 'Highest-quality local voices cloned from private reference recordings.'
+                        : 'Audio is generated on this device. Your screenplay stays local.'
                 }</small>
               </span>
             </div>
             <button id="btn-casting-engine" class="btn btn-quiet" type="button">Change engine</button>
           </div>
 
-          ${hasReferenceVoices ? `
+          ${
+            hasReferenceVoices
+              ? `
             <section class="studio-voice-library" aria-labelledby="studio-voice-title">
               <div>
                 <span class="eyebrow">Private voice library</span>
@@ -329,9 +363,13 @@ export function createVoiceConfigModal({
               <p>Only clone a voice you own or have permission to use.</p>
               ${studioVoiceError ? `<div class="studio-voice-error" role="alert">${escapeHtml(studioVoiceError)}</div>` : ''}
             </section>
-          ` : ''}
+          `
+              : ''
+          }
 
-          ${setupMode === 'choice' ? `
+          ${
+            setupMode === 'choice'
+              ? `
             <div class="casting-choice">
               <div class="casting-choice-copy">
                 <div class="eyebrow">Choose your level of control</div>
@@ -341,9 +379,11 @@ export function createVoiceConfigModal({
               <div class="casting-choice-grid">
                 <button class="casting-path is-recommended" id="casting-path-recommended" type="button" ${isStudio && enginePool.length === 0 ? 'disabled' : ''}>
                   <span class="path-icon">${getIconSvg('sparkles', 20)}</span>
-                  <span><strong>Use recommended cast</strong><small>${isStudio && enginePool.length === 0
-                    ? 'Add at least one reference voice to create a Studio cast.'
-                    : 'Assign distinct voices automatically, then review them before listening.'}</small></span>
+                  <span><strong>Use recommended cast</strong><small>${
+                    isStudio && enginePool.length === 0
+                      ? 'Add at least one reference voice to create a Studio cast.'
+                      : 'Assign distinct voices automatically, then review them before listening.'
+                  }</small></span>
                   <em>Fastest</em>
                   ${getIconSvg('chevronRight', 18)}
                 </button>
@@ -354,13 +394,16 @@ export function createVoiceConfigModal({
                 </button>
               </div>
             </div>
-          ` : `
+          `
+              : `
             <div class="voice-config-instruction">
               ${getIconSvg('volume', 16)}
               <div>
-                ${setupMode === 'review'
-                  ? 'A recommended cast is ready. Audition any role, change a voice, or continue to the listening room.'
-                  : 'Audition each role and open Advanced only when you want to shape the performance.'}
+                ${
+                  setupMode === 'review'
+                    ? 'A recommended cast is ready. Audition any role, change a voice, or continue to the listening room.'
+                    : 'Audition each role and open Advanced only when you want to shape the performance.'
+                }
               </div>
               ${isInitialSetup ? `<button id="casting-change-path" class="text-button" type="button">Choose another path</button>` : ''}
             </div>
@@ -396,13 +439,15 @@ export function createVoiceConfigModal({
                 <button class="btn btn-secondary btn-audition-narrator ${currentlyPlayingChar === 'NARRATOR' ? (auditionPhase === 'playing' ? 'btn-active' : 'is-loading') : ''}"
                         style="padding: 7px 14px; white-space: nowrap; ${currentlyPlayingChar === 'NARRATOR' && auditionPhase === 'rendering' ? 'background: rgba(245, 158, 11, 0.15); border-color: rgba(245, 158, 11, 0.4); color: #F59E0B;' : ''}"
                         ${narratorPool.length === 0 ? 'disabled' : ''}>
-                  ${currentlyPlayingChar === 'NARRATOR'
-                    ? (auditionPhase === 'preparing'
+                  ${
+                    currentlyPlayingChar === 'NARRATOR'
+                      ? auditionPhase === 'preparing'
                         ? `${getIconSvg('replay', 14, 'spin-icon')} Loading model…`
-                        : (auditionPhase === 'rendering'
-                            ? `${getIconSvg('sparkles', 14, 'pulse-icon')} Synthesizing…`
-                            : `${getIconSvg('stop', 15)} Stop`))
-                    : `${getIconSvg('volume', 15)} Listen`}
+                        : auditionPhase === 'rendering'
+                          ? `${getIconSvg('sparkles', 14, 'pulse-icon')} Synthesizing…`
+                          : `${getIconSvg('stop', 15)} Stop`
+                      : `${getIconSvg('volume', 15)} Listen`
+                  }
                 </button>
               </div>
 
@@ -418,21 +463,22 @@ export function createVoiceConfigModal({
           </div>
 
           <div class="voice-cards-grid">
-            ${characters.map((char, charIndex) => {
-              const charKey = char.name.toUpperCase().trim();
-              const assignment = workingAssignments.get(charKey) || makeDefaultAssignment();
-              const voiceProfile = getVoiceById(voiceIdOf(assignment), engineId);
-              const percent = Math.round((char.lineCount / totalDialogue) * 100);
-              const isPlaying = currentlyPlayingChar === charKey;
+            ${characters
+              .map((char, charIndex) => {
+                const charKey = char.name.toUpperCase().trim();
+                const assignment = workingAssignments.get(charKey) || makeDefaultAssignment();
+                const voiceProfile = getVoiceById(voiceIdOf(assignment), engineId);
+                const percent = Math.round((char.lineCount / totalDialogue) * 100);
+                const isPlaying = currentlyPlayingChar === charKey;
 
-              // Character name and sample line both come from the uploaded
-              // script. Escaped in `data-char` too, where an unescaped quote
-              // would close the attribute and let the rest of the cue become
-              // markup; the parser decodes it back, so `dataset.char` still
-              // matches the key the assignments map uses.
-              const charAttr = escapeHtml(char.name);
+                // Character name and sample line both come from the uploaded
+                // script. Escaped in `data-char` too, where an unescaped quote
+                // would close the attribute and let the rest of the cue become
+                // markup; the parser decodes it back, so `dataset.char` still
+                // matches the key the assignments map uses.
+                const charAttr = escapeHtml(char.name);
 
-              return `
+                return `
                 <div class="voice-card ${isPlaying ? 'is-previewing' : ''}" data-char="${charAttr}">
                   <div class="voice-card-header">
                     <div class="char-avatar" style="background: ${voiceProfile.avatarBg}; width: 42px; height: 42px;">
@@ -463,12 +509,16 @@ export function createVoiceConfigModal({
                     "${escapeHtml(char.sampleLine || 'Ready for readthrough.')}"
                   </div>
 
-                  ${isPlaying && (auditionPhase === 'rendering' || auditionPhase === 'preparing') ? `
+                  ${
+                    isPlaying && (auditionPhase === 'rendering' || auditionPhase === 'preparing')
+                      ? `
                     <div class="audition-progress-hint" style="display: flex; align-items: center; gap: 8px; padding: 6px 10px; background: rgba(245, 158, 11, 0.1); border: 1px solid rgba(245, 158, 11, 0.25); border-radius: 6px; margin: 8px 0 4px; font-size: 0.76rem; color: #F59E0B;">
                       <span class="pulse-icon">${getIconSvg('sparkles', 14)}</span>
-                      <span>${auditionPhase === 'preparing' ? (isRunPod ? 'Connecting to RunPod GPU…' : 'Loading neural voice model into memory…') : (isRunPod ? 'Synthesizing with RunPod GPU…' : 'Generating custom performance with Studio Local…')}</span>
+                      <span>${auditionPhase === 'preparing' ? (isRunPod ? 'Connecting to RunPod GPU…' : 'Loading neural voice model into memory…') : isRunPod ? 'Synthesizing with RunPod GPU…' : 'Generating custom performance with Studio Local…'}</span>
                     </div>
-                  ` : ''}
+                  `
+                      : ''
+                  }
 
                   <!-- Voice Selection Row -->
                   <div class="voice-card-controls">
@@ -480,13 +530,15 @@ export function createVoiceConfigModal({
                               data-char="${charAttr}"
                               style="padding: 7px 12px; white-space: nowrap; ${isPlaying && auditionPhase === 'rendering' ? 'background: rgba(245, 158, 11, 0.15); border-color: rgba(245, 158, 11, 0.4); color: #F59E0B;' : ''}"
                               ${enginePool.length === 0 ? 'disabled' : ''}>
-                        ${isPlaying
-                          ? (auditionPhase === 'preparing'
+                        ${
+                          isPlaying
+                            ? auditionPhase === 'preparing'
                               ? `${getIconSvg('replay', 14, 'spin-icon')} Loading…`
-                              : (auditionPhase === 'rendering'
-                                  ? `${getIconSvg('sparkles', 14, 'pulse-icon')} Synthesizing…`
-                                  : `${getIconSvg('stop', 14)} Stop`))
-                          : `${getIconSvg('volume', 14)} Listen`}
+                              : auditionPhase === 'rendering'
+                                ? `${getIconSvg('sparkles', 14, 'pulse-icon')} Synthesizing…`
+                                : `${getIconSvg('stop', 14)} Stop`
+                            : `${getIconSvg('volume', 14)} Listen`
+                        }
                       </button>
                     </div>
 
@@ -520,7 +572,9 @@ export function createVoiceConfigModal({
                       <button class="btn-tone-chip ${assignment.tonePreset === 'whispering' ? 'active' : ''}" data-char="${charAttr}" data-preset="whispering">Intimate</button>
                     </div>
 
-                    ${supportsDirection ? `
+                    ${
+                      supportsDirection
+                        ? `
                       <div style="margin-top: 10px;">
                         <label style="font-size: 0.7rem; color: var(--text-muted); font-weight: 600;">
                           Direction — describe the voice in your own words
@@ -533,15 +587,19 @@ export function createVoiceConfigModal({
                                  font-family: inherit; line-height: 1.45;"
                         >${escapeHtml(assignment.direction || '')}</textarea>
                       </div>
-                    ` : ''}
+                    `
+                        : ''
+                    }
                       </div>
                     </details>
                   </div>
                 </div>
               `;
-            }).join('')}
+              })
+              .join('')}
           </div>
-          `}
+          `
+          }
         </div>
 
         <!-- Footer -->
@@ -574,10 +632,13 @@ export function createVoiceConfigModal({
       openingCatalog = true;
       const catalogButton = modal.querySelector('#btn-find-studio-voice');
       catalogButton.disabled = true;
-      const importedVoiceIds = (await Promise.all(enginePool
-        .filter(voice => voice.sourceVoiceId)
-        .map(async voice => await hasChatterboxVoiceSample(voice.id) ? voice.sourceVoiceId : '')))
-        .filter(Boolean);
+      const importedVoiceIds = (
+        await Promise.all(
+          enginePool
+            .filter((voice) => voice.sourceVoiceId)
+            .map(async (voice) => ((await hasChatterboxVoiceSample(voice.id)) ? voice.sourceVoiceId : '')),
+        )
+      ).filter(Boolean);
       openingCatalog = false;
       if (!modal.isConnected || catalogDialog) return;
       catalogDialog = createVoiceSampleCatalogModal({
@@ -585,20 +646,25 @@ export function createVoiceConfigModal({
         getAudioSettings: () => ({ volume: audioManager.volume, isMuted: audioManager.isMuted }),
         async onAdd(file, voice, { signal } = {}) {
           const wasEmpty = enginePool.length === 0;
-          const replacedVoiceIds = new Set(enginePool
-            .filter(profile => profile.sourceVoiceId === voice.id)
-            .map(profile => profile.id));
-          const saved = await saveChatterboxVoice(file, voice.name, {
-            sex: voice.gender,
-            // Age and accent are deliberately left to the store's defaults. The
-            // bundled catalog measures register and pace; it does not know how
-            // old the reader is or where they are from, and guessing would put
-            // invented biography on a real person's voice.
-            tone: [voice.registerLabel, voice.paceLabel].filter(Boolean).join(' · '),
-            description: voice.description,
-            source: 'Voice catalog',
-            sourceVoiceId: voice.id
-          }, { signal });
+          const replacedVoiceIds = new Set(
+            enginePool.filter((profile) => profile.sourceVoiceId === voice.id).map((profile) => profile.id),
+          );
+          const saved = await saveChatterboxVoice(
+            file,
+            voice.name,
+            {
+              sex: voice.gender,
+              // Age and accent are deliberately left to the store's defaults. The
+              // bundled catalog measures register and pace; it does not know how
+              // old the reader is or where they are from, and guessing would put
+              // invented biography on a real person's voice.
+              tone: [voice.registerLabel, voice.paceLabel].filter(Boolean).join(' · '),
+              description: voice.description,
+              source: 'Voice catalog',
+              sourceVoiceId: voice.id,
+            },
+            { signal },
+          );
           // Once storage commits, assignment reconciliation is part of that
           // transaction's logical completion even if the child catalog closes.
           // Skipping it would leave the working cast pointed at deleted samples.
@@ -609,7 +675,7 @@ export function createVoiceConfigModal({
             if (!replacedVoiceIds.has(assignment.voiceIds?.[engineId])) continue;
             workingAssignments.set(charKey, {
               ...assignment,
-              voiceIds: { ...(assignment.voiceIds || {}), [engineId]: saved.id }
+              voiceIds: { ...(assignment.voiceIds || {}), [engineId]: saved.id },
             });
           }
           if (wasEmpty) {
@@ -625,12 +691,12 @@ export function createVoiceConfigModal({
             button.disabled = false;
             button.focus();
           }
-        }
+        },
       });
       document.body.appendChild(catalogDialog);
     });
 
-    modal.querySelector('#studio-voice-file')?.addEventListener('change', async event => {
+    modal.querySelector('#studio-voice-file')?.addEventListener('change', async (event) => {
       const file = event.target.files?.[0];
       if (!file) return;
       addingStudioVoice = true;
@@ -666,7 +732,7 @@ export function createVoiceConfigModal({
       btnSave.addEventListener('click', handleSave);
     }
 
-    modal.querySelector('.wordmark')?.addEventListener('click', event => event.preventDefault());
+    modal.querySelector('.wordmark')?.addEventListener('click', (event) => event.preventDefault());
     modal.querySelector('#casting-path-recommended')?.addEventListener('click', () => {
       applyRecommendedCast();
       setupMode = 'review';
@@ -704,9 +770,10 @@ export function createVoiceConfigModal({
         workingNarratorVoiceId = e.target.value;
         const activeIsHybrid = isStudio && audioManager.hybridCasting;
         const activeNarratorEngine = activeIsHybrid ? ENGINE_IDS.KOKORO : engineId;
-        const sampleHeading = script && script.elements && script.elements[0]
-          ? script.elements[0].text
-          : "EXT. OMNICORP SPIRE - NIGHT. Torrential rain lashes against the glass as the city sleeps below.";
+        const sampleHeading =
+          script && script.elements && script.elements[0]
+            ? script.elements[0].text
+            : 'EXT. OMNICORP SPIRE - NIGHT. Torrential rain lashes against the glass as the city sleeps below.';
         audioManager.prewarmAudition?.(e.target.value, sampleHeading, {}, activeNarratorEngine);
         renderContent();
       });
@@ -730,9 +797,10 @@ export function createVoiceConfigModal({
         auditionPhase = 'rendering';
         renderContent();
 
-        const sampleHeading = script && script.elements && script.elements[0]
-          ? script.elements[0].text
-          : "EXT. OMNICORP SPIRE - NIGHT. Torrential rain lashes against the glass as the city sleeps below.";
+        const sampleHeading =
+          script && script.elements && script.elements[0]
+            ? script.elements[0].text
+            : 'EXT. OMNICORP SPIRE - NIGHT. Torrential rain lashes against the glass as the city sleeps below.';
 
         const activeIsHybrid = isStudio && audioManager.hybridCasting;
         const activeNarratorEngine = activeIsHybrid ? ENGINE_IDS.KOKORO : engineId;
@@ -747,7 +815,15 @@ export function createVoiceConfigModal({
         };
 
         try {
-          await audioManager.previewVoice(workingNarratorVoiceId, sampleHeading, 0, 1.0, '', activeNarratorEngine, onStateChange);
+          await audioManager.previewVoice(
+            workingNarratorVoiceId,
+            sampleHeading,
+            0,
+            1.0,
+            '',
+            activeNarratorEngine,
+            onStateChange,
+          );
         } catch (e) {
           console.warn('Narrator audition error:', e);
         } finally {
@@ -761,7 +837,7 @@ export function createVoiceConfigModal({
     }
 
     // Character Voice selects
-    modal.querySelectorAll('.modal-char-select').forEach(select => {
+    modal.querySelectorAll('.modal-char-select').forEach((select) => {
       select.addEventListener('change', (e) => {
         const charName = select.dataset.char;
         const charKey = charName.toUpperCase().trim();
@@ -773,9 +849,9 @@ export function createVoiceConfigModal({
           // because saved configs and older code still read it.
           voiceIds: { ...(existing.voiceIds || {}), [engineId]: e.target.value },
           voiceId: engineId === ENGINE_IDS.KOKORO ? e.target.value : existing.voiceId,
-          auto: false
+          auto: false,
         });
-        const charObj = characters.find(c => c.name.toUpperCase().trim() === charKey);
+        const charObj = characters.find((c) => c.name.toUpperCase().trim() === charKey);
         audioManager.prewarmAudition?.(e.target.value, charObj ? charObj.sampleLine : null, existing, engineId);
         renderContent();
       });
@@ -785,7 +861,7 @@ export function createVoiceConfigModal({
     // is already in the DOM, so flipping `hidden` shows it without disturbing
     // focus, scroll, or a running audition. The Set keeps it open across the
     // next full re-render.
-    modal.querySelectorAll('.char-intro-toggle').forEach(toggle => {
+    modal.querySelectorAll('.char-intro-toggle').forEach((toggle) => {
       toggle.addEventListener('click', () => {
         const charKey = toggle.dataset.char.toUpperCase().trim();
         const source = modal.querySelector(`#${CSS.escape(toggle.getAttribute('aria-controls'))}`);
@@ -803,7 +879,7 @@ export function createVoiceConfigModal({
     // text feeds the composed instructions, which feed the cache key, so saving
     // mid-word would invalidate — and on a metered engine re-buy — every one of
     // this character's rendered lines on the way to a finished sentence.
-    modal.querySelectorAll('.modal-direction-input').forEach(field => {
+    modal.querySelectorAll('.modal-direction-input').forEach((field) => {
       field.addEventListener('blur', (e) => {
         const charKey = field.dataset.char.toUpperCase().trim();
         const existing = workingAssignments.get(charKey) || {};
@@ -814,7 +890,7 @@ export function createVoiceConfigModal({
     });
 
     // Character Audition buttons
-    modal.querySelectorAll('.btn-audition-char').forEach(btn => {
+    modal.querySelectorAll('.btn-audition-char').forEach((btn) => {
       btn.addEventListener('click', async () => {
         const charName = btn.dataset.char;
         const charKey = charName.toUpperCase().trim();
@@ -834,14 +910,14 @@ export function createVoiceConfigModal({
         renderContent();
 
         const assignment = workingAssignments.get(charKey) || makeDefaultAssignment();
-        const charObj = characters.find(c => c.name.toUpperCase().trim() === charKey);
+        const charObj = characters.find((c) => c.name.toUpperCase().trim() === charKey);
         const sampleText = charObj ? charObj.sampleLine : null;
 
         // Read the direction out of the live field rather than the working copy:
         // auditioning without leaving the textarea first is the normal way to try
         // a direction out, and blur has not fired yet at that point.
         const liveDirection = modal.querySelector(`.modal-direction-input[data-char="${CSS.escape(charName)}"]`);
-        const direction = liveDirection ? liveDirection.value.trim() : (assignment.direction || '');
+        const direction = liveDirection ? liveDirection.value.trim() : assignment.direction || '';
 
         const onStateChange = (phase) => {
           if (generation !== auditionGeneration) return;
@@ -860,7 +936,7 @@ export function createVoiceConfigModal({
             assignment.speedMultiplier || 1.0,
             direction,
             engineId,
-            onStateChange
+            onStateChange,
           );
         } catch (e) {
           console.warn('Character audition error:', e);
@@ -875,7 +951,7 @@ export function createVoiceConfigModal({
     });
 
     // Pitch sliders
-    modal.querySelectorAll('.modal-pitch-slider').forEach(slider => {
+    modal.querySelectorAll('.modal-pitch-slider').forEach((slider) => {
       slider.addEventListener('input', (e) => {
         const charName = slider.dataset.char;
         const charKey = charName.toUpperCase().trim();
@@ -891,7 +967,7 @@ export function createVoiceConfigModal({
     });
 
     // Speed sliders
-    modal.querySelectorAll('.modal-speed-slider').forEach(slider => {
+    modal.querySelectorAll('.modal-speed-slider').forEach((slider) => {
       slider.addEventListener('input', (e) => {
         const charName = slider.dataset.char;
         const charKey = charName.toUpperCase().trim();
@@ -907,7 +983,7 @@ export function createVoiceConfigModal({
     });
 
     // Tone preset chips
-    modal.querySelectorAll('.btn-tone-chip').forEach(chip => {
+    modal.querySelectorAll('.btn-tone-chip').forEach((chip) => {
       chip.addEventListener('click', () => {
         const charName = chip.dataset.char;
         const charKey = charName.toUpperCase().trim();
@@ -930,7 +1006,6 @@ export function createVoiceConfigModal({
             pitchOffset = -10;
             speedMultiplier = 0.88;
             break;
-          case 'natural':
           default:
             pitchOffset = 0;
             speedMultiplier = 1.0;
@@ -941,7 +1016,7 @@ export function createVoiceConfigModal({
           ...existing,
           pitchOffset,
           speedMultiplier,
-          tonePreset: preset
+          tonePreset: preset,
         });
 
         renderContent();
@@ -984,7 +1059,7 @@ export function createVoiceConfigModal({
     scriptStore.updateCast({
       narratorVoiceId: workingNarratorVoiceId,
       narratorEngineId: activeNarratorEngine,
-      castAssignments: workingAssignments
+      castAssignments: workingAssignments,
     });
     audioManager.setNarratorVoice(workingNarratorVoiceId);
     if (audioManager.setCastAssignments) {
@@ -1000,7 +1075,7 @@ export function createVoiceConfigModal({
     if (onSave) {
       onSave({
         narratorVoiceId: workingNarratorVoiceId,
-        castAssignments: workingAssignments
+        castAssignments: workingAssignments,
       });
     }
   }
@@ -1013,17 +1088,13 @@ export function createVoiceConfigModal({
       const charKey = char.name.toUpperCase().trim();
       const assignment = workingAssignments.get(charKey);
       if (assignment) {
-        audioManager.prewarmAudition?.(
-          voiceIdOf(assignment),
-          char.sampleLine,
-          assignment,
-          engineId
-        );
+        audioManager.prewarmAudition?.(voiceIdOf(assignment), char.sampleLine, assignment, engineId);
       }
     }
-    const sampleHeading = script && script.elements && script.elements[0]
-      ? script.elements[0].text
-      : "EXT. OMNICORP SPIRE - NIGHT. Torrential rain lashes against the glass as the city sleeps below.";
+    const sampleHeading =
+      script && script.elements && script.elements[0]
+        ? script.elements[0].text
+        : 'EXT. OMNICORP SPIRE - NIGHT. Torrential rain lashes against the glass as the city sleeps below.';
     const activeIsHybrid = isStudio && audioManager.hybridCasting;
     const activeNarratorEngine = activeIsHybrid ? ENGINE_IDS.KOKORO : engineId;
     audioManager.prewarmAudition?.(workingNarratorVoiceId, sampleHeading, {}, activeNarratorEngine);

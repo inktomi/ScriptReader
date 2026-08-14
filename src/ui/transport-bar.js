@@ -1,6 +1,5 @@
-import { getIconSvg } from '../utils/icons.js';
 import { PLAYBACK_STATES } from '../audio/audio-manager.js';
-import { getVoiceById } from '../audio/voice-catalog.js';
+import { getIconSvg } from '../utils/icons.js';
 
 export function createTransportBar({
   audioManager,
@@ -10,7 +9,7 @@ export function createTransportBar({
   onStop,
   onSkipNext,
   onSkipPrev,
-  onSeek
+  onSeek,
 }) {
   const container = document.createElement('div');
   container.className = 'transport-container';
@@ -155,9 +154,11 @@ export function createTransportBar({
   });
 
   // Pacing mode chips
-  pacingChips.forEach(chip => {
+  pacingChips.forEach((chip) => {
     chip.addEventListener('click', () => {
-      pacingChips.forEach(c => c.classList.remove('active'));
+      pacingChips.forEach((c) => {
+        c.classList.remove('active');
+      });
       chip.classList.add('active');
       const mode = chip.dataset.pacing;
       audioManager.setPacingMode(mode);
@@ -167,8 +168,10 @@ export function createTransportBar({
   // Play / Pause toggle
   btnPlay.addEventListener('click', () => {
     // Buffering counts as "running" — the button has to stop it, not restart it.
-    if (audioManager.playbackState === PLAYBACK_STATES.PLAYING ||
-        audioManager.playbackState === PLAYBACK_STATES.BUFFERING) {
+    if (
+      audioManager.playbackState === PLAYBACK_STATES.PLAYING ||
+      audioManager.playbackState === PLAYBACK_STATES.BUFFERING
+    ) {
       onPause();
     } else {
       onPlay();
@@ -191,9 +194,11 @@ export function createTransportBar({
   });
 
   // Speed chips
-  speedChips.forEach(chip => {
+  speedChips.forEach((chip) => {
     chip.addEventListener('click', () => {
-      speedChips.forEach(c => c.classList.remove('active'));
+      speedChips.forEach((c) => {
+        c.classList.remove('active');
+      });
       chip.classList.add('active');
       const speed = parseFloat(chip.dataset.speed);
       audioManager.setMasterSpeed(speed);
@@ -213,8 +218,7 @@ export function createTransportBar({
       btnPlay.innerHTML = getIconSvg('play', 24);
       btnPlay.dataset.state = 'idle';
     }
-    setPlayDisabled(latestRenderStatus.visible && !latestRenderStatus.canPlay &&
-      state === PLAYBACK_STATES.IDLE);
+    setPlayDisabled(latestRenderStatus.visible && !latestRenderStatus.canPlay && state === PLAYBACK_STATES.IDLE);
   }
 
   function formatEta(seconds) {
@@ -263,8 +267,9 @@ export function createTransportBar({
       renderDetail.textContent = `Building a safe playback lead${formatEta(latestRenderStatus.etaSeconds) ? ` · ${formatEta(latestRenderStatus.etaSeconds)}` : ''}`;
     }
 
-    setPlayDisabled(latestRenderStatus.visible && !latestRenderStatus.canPlay &&
-      latestPlaybackState === PLAYBACK_STATES.IDLE);
+    setPlayDisabled(
+      latestRenderStatus.visible && !latestRenderStatus.canPlay && latestPlaybackState === PLAYBACK_STATES.IDLE,
+    );
     btnPlay.title = btnPlay.disabled
       ? `${engineLabel} is rendering enough audio for uninterrupted playback`
       : 'Play / Pause (Spacebar)';
@@ -280,18 +285,15 @@ export function createTransportBar({
     }
 
     const name = element.characterOriginal || element.character;
-    const alsoSpeaking = (others || [])
-      .filter(Boolean)
-      .map(other => other.characterOriginal || other.character);
-    speakerName.textContent = alsoSpeaking.length > 0
-      ? `${name} + ${alsoSpeaking.join(' + ')}`
-      : name;
+    const alsoSpeaking = (others || []).filter(Boolean).map((other) => other.characterOriginal || other.character);
+    speakerName.textContent = alsoSpeaking.length > 0 ? `${name} + ${alsoSpeaking.join(' + ')}` : name;
 
-    const emotionText = alsoSpeaking.length > 0
-      ? 'Talking over each other'
-      : (nuance && nuance.emotionKey && nuance.emotionKey !== 'neutral'
+    const emotionText =
+      alsoSpeaking.length > 0
+        ? 'Talking over each other'
+        : nuance && nuance.emotionKey && nuance.emotionKey !== 'neutral'
           ? `${nuance.emotionLabel} (${nuance.description})`
-          : 'Natural Delivery');
+          : 'Natural Delivery';
     speakerEmotion.textContent = emotionText;
 
     if (element.character === 'NARRATOR') {
@@ -323,6 +325,6 @@ export function createTransportBar({
     updatePlaybackState,
     updateRenderProgress,
     updateActiveSpeaker,
-    updateProgress
+    updateProgress,
   };
 }

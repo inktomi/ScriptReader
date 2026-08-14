@@ -1,34 +1,43 @@
-import test from 'node:test';
 import assert from 'node:assert/strict';
-
-import { ScriptStore } from '../src/screenplay/script-store.js';
+import test from 'node:test';
+import { ENGINE_IDS } from '../src/audio/engine-contract.js';
 import { parseFountainScript } from '../src/screenplay/fountain-parser.js';
 import { SAMPLE_SCRIPTS } from '../src/screenplay/sample-scripts.js';
-import { ENGINE_IDS } from '../src/audio/engine-contract.js';
+import { ScriptStore } from '../src/screenplay/script-store.js';
 import {
-  generateScriptKey,
   generateLegacyScriptKey,
+  generateScriptKey,
   loadScriptCastConfig,
   restoreCastBackup,
-  saveScriptCastConfig
+  saveScriptCastConfig,
 } from '../src/utils/storage.js';
 
 class MemoryStorage {
-  constructor() { this.data = new Map(); }
-  getItem(key) { return this.data.has(key) ? this.data.get(key) : null; }
-  setItem(key, value) { this.data.set(key, String(value)); }
-  removeItem(key) { this.data.delete(key); }
-  clear() { this.data.clear(); }
+  constructor() {
+    this.data = new Map();
+  }
+  getItem(key) {
+    return this.data.has(key) ? this.data.get(key) : null;
+  }
+  setItem(key, value) {
+    this.data.set(key, String(value));
+  }
+  removeItem(key) {
+    this.data.delete(key);
+  }
+  clear() {
+    this.data.clear();
+  }
 }
 
 const makeScript = (title, first, last = 'ending') => ({
   title,
   elements: [
     { type: 'ACTION', character: 'NARRATOR', text: first, parenthetical: '' },
-    { type: 'ACTION', character: 'NARRATOR', text: last, parenthetical: '' }
+    { type: 'ACTION', character: 'NARRATOR', text: last, parenthetical: '' },
   ],
   characters: [],
-  scenes: []
+  scenes: [],
 });
 
 test.beforeEach(() => {
@@ -43,7 +52,7 @@ test('script keys include the full script rather than only the opening prefix', 
   const opening = 'the same thirty character opening text';
   assert.notEqual(
     generateScriptKey(makeScript('Same title', opening, 'ending A')),
-    generateScriptKey(makeScript('Same title', opening, 'ending B'))
+    generateScriptKey(makeScript('Same title', opening, 'ending B')),
   );
 });
 
@@ -52,9 +61,7 @@ test('a bundled script keeps the key its saved cast is filed under', () => {
   // any change to how a line is classified silently orphans the cast every user
   // of that script already chose. Pinning one real script turns that into a
   // failing test rather than a support ticket.
-  const parsed = parseFountainScript(
-    SAMPLE_SCRIPTS.find(script => script.id === 'neon-heist').fountainText
-  );
+  const parsed = parseFountainScript(SAMPLE_SCRIPTS.find((script) => script.id === 'neon-heist').fountainText);
   assert.equal(generateScriptKey(parsed), 'custom_the_neon_heist_a196eb38');
 });
 
@@ -76,20 +83,25 @@ test('bulk cast save preserves per-engine character voice maps', () => {
   const store = new ScriptStore();
   store.currentScript = makeScript('Cast', 'Opening');
   store.scriptKey = generateScriptKey(store.currentScript);
-  const cast = new Map([['ALICE', {
-    voiceId: 'af_bella',
-    voiceIds: { [ENGINE_IDS.KOKORO]: 'af_bella', [ENGINE_IDS.OPENAI]: 'shimmer' }
-  }]]);
+  const cast = new Map([
+    [
+      'ALICE',
+      {
+        voiceId: 'af_bella',
+        voiceIds: { [ENGINE_IDS.KOKORO]: 'af_bella', [ENGINE_IDS.OPENAI]: 'shimmer' },
+      },
+    ],
+  ]);
 
   store.updateCast({
     narratorVoiceId: 'nova',
     narratorEngineId: ENGINE_IDS.OPENAI,
-    castAssignments: cast
+    castAssignments: cast,
   });
 
   assert.equal(
     loadScriptCastConfig(store.scriptKey).castAssignments.get('ALICE').voiceIds[ENGINE_IDS.OPENAI],
-    'shimmer'
+    'shimmer',
   );
 });
 
@@ -103,7 +115,7 @@ test('loading another script cancels a pending position save from the old script
   const second = makeScript('Second', 'Opening B');
   const secondKey = generateScriptKey(second);
   store.setScriptData(second, { scriptKey: secondKey, scriptType: 'custom' });
-  await new Promise(resolve => setTimeout(resolve, 450));
+  await new Promise((resolve) => setTimeout(resolve, 450));
 
   assert.equal(loadScriptCastConfig(secondKey).activeLineIndex, 0);
 });
@@ -115,7 +127,7 @@ test('legacy cloud narrator IDs migrate into the OpenAI slot', () => {
     narratorVoiceId: 'nova',
     narratorVoiceIds: null,
     castAssignments: new Map(),
-    castVersion: 2
+    castVersion: 2,
   });
 
   const store = new ScriptStore();
@@ -127,27 +139,32 @@ test('legacy cloud narrator IDs migrate into the OpenAI slot', () => {
 test('legacy-key cast migration creates a working Undo backup under the new key', () => {
   const script = {
     ...makeScript('Legacy cast', 'Opening'),
-    characters: [{ name: 'ALICE', lineCount: 1, sampleLine: 'Hello.' }]
+    characters: [{ name: 'ALICE', lineCount: 1, sampleLine: 'Hello.' }],
   };
   const legacyKey = generateLegacyScriptKey(script);
   const strongKey = generateScriptKey(script);
   saveScriptCastConfig(legacyKey, {
     narratorVoiceId: 'bm_george',
-    castAssignments: new Map([['ALICE', {
-      voiceId: 'am_adam',
-      pitchOffset: 0,
-      speedMultiplier: 1,
-      tonePreset: 'natural',
-      auto: true
-    }]]),
-    castVersion: 1
+    castAssignments: new Map([
+      [
+        'ALICE',
+        {
+          voiceId: 'am_adam',
+          pitchOffset: 0,
+          speedMultiplier: 1,
+          tonePreset: 'natural',
+          auto: true,
+        },
+      ],
+    ]),
+    castVersion: 1,
   });
 
   const store = new ScriptStore();
   store.setScriptData(script, {
     scriptKey: strongKey,
     scriptType: 'custom',
-    legacyConfigKey: legacyKey
+    legacyConfigKey: legacyKey,
   });
   assert.ok(store.pendingCastMigration);
   assert.equal(restoreCastBackup(strongKey), true);
@@ -165,13 +182,13 @@ test('a new script never inherits an unrelated config that only shares its legac
     narratorVoiceId: 'bm_george',
     castAssignments: new Map(),
     activeLineIndex: 1,
-    castVersion: 2
+    castVersion: 2,
   });
 
   const store = new ScriptStore();
   store.setScriptData(second, {
     scriptKey: generateScriptKey(second),
-    scriptType: 'custom'
+    scriptType: 'custom',
   });
 
   assert.equal(store.narratorVoiceId, 'bf_emma');
@@ -181,7 +198,7 @@ test('a new script never inherits an unrelated config that only shares its legac
   store.setScriptData(second, {
     scriptKey: generateScriptKey(second),
     scriptType: 'custom',
-    legacyConfigKey: legacyKey
+    legacyConfigKey: legacyKey,
   });
   assert.equal(store.narratorVoiceId, 'bm_george');
   assert.equal(store.activeLineIndex, 1);
@@ -191,21 +208,21 @@ test('sidebar auto-cast changes only the active engine voice slots', () => {
   const store = new ScriptStore();
   store.currentScript = {
     ...makeScript('Cast', 'Opening'),
-    characters: [{ name: 'ALICE', lineCount: 1, sampleLine: 'Hello.' }]
+    characters: [{ name: 'ALICE', lineCount: 1, sampleLine: 'Hello.' }],
   };
   store.scriptKey = generateScriptKey(store.currentScript);
   store.narratorVoiceId = 'bf_emma';
   store.narratorVoiceIds = {
     [ENGINE_IDS.KOKORO]: 'bf_emma',
-    [ENGINE_IDS.OPENAI]: 'shimmer'
+    [ENGINE_IDS.OPENAI]: 'shimmer',
   };
   store.castAssignments.set('ALICE', {
     ...store.castAssignments.get('ALICE'),
     voiceId: 'af_bella',
     voiceIds: {
       [ENGINE_IDS.KOKORO]: 'af_bella',
-      [ENGINE_IDS.OPENAI]: 'shimmer'
-    }
+      [ENGINE_IDS.OPENAI]: 'shimmer',
+    },
   });
 
   store.autoCastCurrentScript(ENGINE_IDS.OPENAI);

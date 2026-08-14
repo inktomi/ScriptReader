@@ -1,18 +1,17 @@
-import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
-
+import test from 'node:test';
+import { ENGINE_IDS } from '../src/audio/engine-contract.js';
+import { createEngineSettingsModal } from '../src/ui/engine-settings-modal.js';
 import { createResumeToastElement } from '../src/ui/resume-toast.js';
 import { createVoiceConfigModal } from '../src/ui/voice-config-modal.js';
-import { createEngineSettingsModal } from '../src/ui/engine-settings-modal.js';
-import { ENGINE_IDS } from '../src/audio/engine-contract.js';
 import {
   grantCloudConsent,
   hasCloudConsent,
   loadRunPodEndpointId,
   loadRunPodKey,
   saveRunPodEndpointId,
-  saveRunPodKey
+  saveRunPodKey,
 } from '../src/utils/credentials.js';
 import { installDom, removeDom } from './dom-helpers.js';
 
@@ -42,16 +41,16 @@ test('voice setup escapes a screenplay title before assigning innerHTML', () => 
       currentScript: {
         title: '<img src=x onerror="window.pwned=1">',
         characters: [],
-        elements: []
+        elements: [],
       },
       castAssignments: new Map(),
-      getNarratorVoice: () => 'bf_emma'
+      getNarratorVoice: () => 'bf_emma',
     };
     const audioManager = {
       engineId: ENGINE_IDS.KOKORO,
       capabilities: { supportsInstructions: false },
       getVoiceProfileForCharacter: () => ({ id: 'bf_emma' }),
-      stop() {}
+      stop() {},
     };
 
     const modal = createVoiceConfigModal({ scriptStore, audioManager });
@@ -74,22 +73,22 @@ test('a character description from an uploaded script renders as text, not marku
       age: '<img src=x onerror="window.pwned=2">',
       sourceText: '<img src=x onerror="window.pwned=3"> sets down a tray.',
       elementId: 'line-4',
-      form: 'parenthetical'
+      form: 'parenthetical',
     };
     const scriptStore = {
       currentScript: {
         title: 'Manor',
         characters: [{ name: 'HIGGINS', lineCount: 1, sampleLine: 'Tea, sir?', introduction }],
-        elements: [{ type: 'DIALOGUE', character: 'HIGGINS', text: 'Tea, sir?' }]
+        elements: [{ type: 'DIALOGUE', character: 'HIGGINS', text: 'Tea, sir?' }],
       },
       castAssignments: new Map(),
-      getNarratorVoice: () => 'bf_emma'
+      getNarratorVoice: () => 'bf_emma',
     };
     const audioManager = {
       engineId: ENGINE_IDS.KOKORO,
       capabilities: { supportsInstructions: false },
       getVoiceProfileForCharacter: () => ({ id: 'bf_emma' }),
-      stop() {}
+      stop() {},
     };
 
     const modal = createVoiceConfigModal({ scriptStore, audioManager });
@@ -113,14 +112,21 @@ test('Smart Auto-Cast preserves voice choices for the other engine', () => {
       currentScript: {
         title: 'Cast',
         characters: [{ name: 'ALICE', lineCount: 1, sampleLine: 'Hello.' }],
-        elements: [{ type: 'DIALOGUE', character: 'ALICE', text: 'Hello.' }]
+        elements: [{ type: 'DIALOGUE', character: 'ALICE', text: 'Hello.' }],
       },
-      castAssignments: new Map([['ALICE', {
-        voiceId: 'af_bella',
-        voiceIds: { [ENGINE_IDS.KOKORO]: 'af_bella', [ENGINE_IDS.OPENAI]: 'shimmer' }
-      }]]),
+      castAssignments: new Map([
+        [
+          'ALICE',
+          {
+            voiceId: 'af_bella',
+            voiceIds: { [ENGINE_IDS.KOKORO]: 'af_bella', [ENGINE_IDS.OPENAI]: 'shimmer' },
+          },
+        ],
+      ]),
       getNarratorVoice: () => 'nova',
-      updateCast(payload) { savedCast = payload.castAssignments; }
+      updateCast(payload) {
+        savedCast = payload.castAssignments;
+      },
     };
     const audioManager = {
       engineId: ENGINE_IDS.OPENAI,
@@ -128,7 +134,7 @@ test('Smart Auto-Cast preserves voice choices for the other engine', () => {
       getVoiceProfileForCharacter: () => ({ id: 'nova' }),
       stop() {},
       setNarratorVoice() {},
-      setVoiceAssignment() {}
+      setVoiceAssignment() {},
     };
     const modal = createVoiceConfigModal({ scriptStore, audioManager });
     document.body.appendChild(modal);
@@ -153,7 +159,7 @@ test('revoking consent immediately switches an active cloud engine to local', ()
       setEngine(engineId) {
         switches.push(engineId);
         this.engineId = engineId;
-      }
+      },
     };
     const modal = createEngineSettingsModal({ audioManager });
     document.body.appendChild(modal);
@@ -175,7 +181,10 @@ test('RunPod requires informed cloud consent and discloses ephemeral remote proc
     const switches = [];
     const audioManager = {
       engineId: ENGINE_IDS.RUNPOD,
-      setEngine(engineId) { switches.push(engineId); this.engineId = engineId; }
+      setEngine(engineId) {
+        switches.push(engineId);
+        this.engineId = engineId;
+      },
     };
     const modal = createEngineSettingsModal({ audioManager });
     document.body.appendChild(modal);
@@ -205,17 +214,18 @@ test('RunPod validation preserves keyboard focus through loading and success', a
   try {
     grantCloudConsent();
     saveRunPodKey('rpa_test');
-    globalThis.fetch = async () => new Response(JSON.stringify({ workers: { ready: 1 } }), {
-      status: 200,
-      headers: { 'content-type': 'application/json' }
-    });
+    globalThis.fetch = async () =>
+      new Response(JSON.stringify({ workers: { ready: 1 } }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      });
     const modal = createEngineSettingsModal({ audioManager: { engineId: ENGINE_IDS.RUNPOD } });
     document.body.appendChild(modal);
     const testButton = modal.querySelector('#btn-test-runpod-key');
     testButton.focus();
     testButton.click();
     assert.equal(document.activeElement.id, 'btn-test-runpod-key');
-    await new Promise(resolve => setTimeout(resolve, 0));
+    await new Promise((resolve) => setTimeout(resolve, 0));
     assert.equal(document.activeElement.id, 'btn-test-runpod-key');
     assert.match(modal.textContent, /Connected to RunPod/);
   } finally {
@@ -256,13 +266,19 @@ test('applying changed RunPod settings releases script memory before reconnectin
     saveRunPodEndpointId('endpoint-original');
     const calls = [];
     const runPodEngine = {
-      release() { calls.push('release'); },
-      async init() { calls.push('init'); }
+      release() {
+        calls.push('release');
+      },
+      async init() {
+        calls.push('init');
+      },
     };
     const audioManager = {
       engineId: ENGINE_IDS.RUNPOD,
       getEngine: () => runPodEngine,
-      prewarm() { calls.push('prewarm'); }
+      prewarm() {
+        calls.push('prewarm');
+      },
     };
     const modal = createEngineSettingsModal({ audioManager });
     document.body.appendChild(modal);
@@ -271,7 +287,7 @@ test('applying changed RunPod settings releases script memory before reconnectin
     endpoint.value = 'endpoint-new';
     endpoint.dispatchEvent(new dom.window.Event('input', { bubbles: true }));
     modal.querySelector('#btn-engine-apply').click();
-    await new Promise(resolve => setTimeout(resolve, 0));
+    await new Promise((resolve) => setTimeout(resolve, 0));
 
     assert.equal(loadRunPodEndpointId(), 'endpoint-new');
     assert.deepEqual(calls, ['release', 'init', 'prewarm']);

@@ -1,6 +1,6 @@
+import { hasCloudConsent, loadOpenAIKey } from '../utils/credentials.js';
 import { getAudioContext } from './audio-context.js';
 import { ENGINE_IDS } from './engine-contract.js';
-import { hasCloudConsent, loadOpenAIKey } from '../utils/credentials.js';
 import { OPENAI_VOICE_CATALOG } from './voice-catalog.js';
 
 /**
@@ -59,10 +59,14 @@ function sleep(ms, signal) {
     }
     const timer = setTimeout(resolve, ms);
     if (!signal) return;
-    signal.addEventListener('abort', () => {
-      clearTimeout(timer);
-      reject(new DOMException('aborted', 'AbortError'));
-    }, { once: true });
+    signal.addEventListener(
+      'abort',
+      () => {
+        clearTimeout(timer);
+        reject(new DOMException('aborted', 'AbortError'));
+      },
+      { once: true },
+    );
   });
 }
 
@@ -107,9 +111,9 @@ export class OpenAiTtsEngine {
     this.phase = 'idle';
     this.lastError = null;
 
-    this.audioCache = new Map();   // key -> AudioBuffer
+    this.audioCache = new Map(); // key -> AudioBuffer
     this.cachedSeconds = 0;
-    this.pending = new Map();      // key -> pending entry
+    this.pending = new Map(); // key -> pending entry
     this.progressListeners = new Set();
     this.initPromise = null;
 
@@ -141,13 +145,13 @@ export class OpenAiTtsEngine {
       concurrency: CONCURRENCY,
       // Never silently drop a paying listener onto the browser's built-in voice:
       // if this engine cannot start, the reason is something they must act on.
-      onUnavailable: 'error'
+      onUnavailable: 'error',
     };
   }
 
   resolveVoiceId(voiceProfile) {
     const candidate = voiceProfile && (voiceProfile.openaiId || voiceProfile.id);
-    if (candidate && OPENAI_VOICE_CATALOG.some(v => v.id === candidate)) return candidate;
+    if (candidate && OPENAI_VOICE_CATALOG.some((v) => v.id === candidate)) return candidate;
     return OPENAI_VOICE_CATALOG[0].id;
   }
 
@@ -167,7 +171,7 @@ export class OpenAiTtsEngine {
           message,
           phase,
           isCachedLocally: false,
-          engineId: ENGINE_IDS.OPENAI
+          engineId: ENGINE_IDS.OPENAI,
         });
       } catch (err) {
         console.error('Engine progress subscriber error:', err);
@@ -193,7 +197,7 @@ export class OpenAiTtsEngine {
         const error = new EngineError(
           'no_consent',
           'Cloud voice consent is required before screenplay text can be sent to OpenAI.',
-          { fatal: true }
+          { fatal: true },
         );
         this.lastError = error;
         this.notifyProgress(0, error.message, 'error');
@@ -207,7 +211,7 @@ export class OpenAiTtsEngine {
         const error = new EngineError(
           'no_key',
           'No OpenAI API key set. Add one in Voice Engine settings, or switch back to Kokoro.',
-          { fatal: true }
+          { fatal: true },
         );
         this.lastError = error;
         this.notifyProgress(0, error.message, 'error');
@@ -218,11 +222,7 @@ export class OpenAiTtsEngine {
       this.isReady = true;
       this.lastError = null;
       this._pausedUntil = 0;
-      this.notifyProgress(
-        100,
-        'OpenAI voices ready — dialogue is sent to OpenAI to be spoken.',
-        'ready'
-      );
+      this.notifyProgress(100, 'OpenAI voices ready — dialogue is sent to OpenAI to be spoken.', 'ready');
     })().finally(() => {
       this.initPromise = null;
     });
@@ -278,7 +278,7 @@ export class OpenAiTtsEngine {
       promise,
       resolve: resolveFn,
       reject: rejectFn,
-      started: false
+      started: false,
     });
 
     this._pump();
@@ -305,8 +305,7 @@ export class OpenAiTtsEngine {
       let best = null;
       for (const entry of this.pending.values()) {
         if (entry.started) continue;
-        if (!best || entry.priority < best.priority
-            || (entry.priority === best.priority && entry.seq < best.seq)) {
+        if (!best || entry.priority < best.priority || (entry.priority === best.priority && entry.seq < best.seq)) {
           best = entry;
         }
       }
@@ -347,7 +346,7 @@ export class OpenAiTtsEngine {
           // One exhausted render does not make the engine unusable. Reporting a
           // warning keeps already-buffered dialogue playing while the manager
           // can request that unit again if it is still needed.
-          'warning'
+          'warning',
         );
       }
       entry.reject(error);
@@ -368,11 +367,7 @@ export class OpenAiTtsEngine {
 
   async _synthesize(unit, signal) {
     if (!this.hasConsent()) {
-      throw new EngineError(
-        'no_consent',
-        'Cloud voice consent was revoked.',
-        { fatal: true }
-      );
+      throw new EngineError('no_consent', 'Cloud voice consent was revoked.', { fatal: true });
     }
     const key = this.getApiKey();
     if (!key) throw new EngineError('no_key', 'No OpenAI API key set.', { fatal: true });
@@ -384,7 +379,7 @@ export class OpenAiTtsEngine {
       speed: Math.min(4, Math.max(0.25, Number(unit.synthSpeed) || 1)),
       // Raw samples at the rate the AudioContext already runs at: no decode, no
       // encoder delay, no resampling.
-      response_format: 'pcm'
+      response_format: 'pcm',
     };
     // Omitted rather than sent empty, so a line with nothing to say about it does
     // not carry a paragraph telling the model to be normal.
@@ -398,10 +393,10 @@ export class OpenAiTtsEngine {
       // "the OpenAI API doesn't support CORS" — the API does; the SDK doesn't.
       headers: {
         authorization: `Bearer ${key}`,
-        'content-type': 'application/json'
+        'content-type': 'application/json',
       },
       body: JSON.stringify(body),
-      signal
+      signal,
     });
 
     const arrayBuffer = await response.arrayBuffer();
@@ -437,9 +432,7 @@ export class OpenAiTtsEngine {
       // Honour Retry-After when the server sends one; it knows better than our
       // exponent does.
       const retryAfter = Number(response.headers.get('retry-after'));
-      const wait = Number.isFinite(retryAfter) && retryAfter > 0
-        ? retryAfter * 1000
-        : backoffMs(attempt);
+      const wait = Number.isFinite(retryAfter) && retryAfter > 0 ? retryAfter * 1000 : backoffMs(attempt);
 
       this._pausedUntil = Date.now() + wait;
       this.notifyProgress(this.loadProgress, 'OpenAI is rate limiting — slowing down…', 'loading');
@@ -459,19 +452,22 @@ export class OpenAiTtsEngine {
 
     switch (response.status) {
       case 401:
-        return new EngineError('invalid_key',
-          'OpenAI rejected the API key. Check it in Voice Engine settings.', { fatal: true });
+        return new EngineError('invalid_key', 'OpenAI rejected the API key. Check it in Voice Engine settings.', {
+          fatal: true,
+        });
       case 403:
-        return new EngineError('forbidden',
-          'This key is not permitted to use the speech endpoint.', { fatal: true });
+        return new EngineError('forbidden', 'This key is not permitted to use the speech endpoint.', { fatal: true });
       case 429:
         return isQuota
-          ? new EngineError('quota',
-              'The OpenAI account is out of credit. Add billing, or switch back to Kokoro.', { fatal: true })
+          ? new EngineError('quota', 'The OpenAI account is out of credit. Add billing, or switch back to Kokoro.', {
+              fatal: true,
+            })
           : new EngineError('rate_limit', 'OpenAI is rate limiting this key.');
       default:
-        return new EngineError(`http_${response.status}`,
-          `OpenAI returned ${response.status}${detail ? `: ${detail}` : ''}`);
+        return new EngineError(
+          `http_${response.status}`,
+          `OpenAI returned ${response.status}${detail ? `: ${detail}` : ''}`,
+        );
     }
   }
 

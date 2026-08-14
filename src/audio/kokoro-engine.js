@@ -1,7 +1,7 @@
-import { ModelCacheManager, DEFAULT_MODEL_ID } from './model-cache-manager.js';
 import { getAudioContext } from './audio-context.js';
 import { ENGINE_IDS } from './engine-contract.js';
 import { KokoroDownloadProgress } from './kokoro-model-files.js';
+import { DEFAULT_MODEL_ID, ModelCacheManager } from './model-cache-manager.js';
 
 /**
  * Neural synthesis service.
@@ -47,9 +47,9 @@ export class KokoroNeuralEngine {
     this._lastEmitted = null;
     this._stallTimer = null;
 
-    this.audioCache = new Map();      // key -> AudioBuffer (insertion-ordered, LRU-trimmed)
+    this.audioCache = new Map(); // key -> AudioBuffer (insertion-ordered, LRU-trimmed)
     this.cachedSeconds = 0;
-    this.pending = new Map();         // key -> { promise, priority }
+    this.pending = new Map(); // key -> { promise, priority }
     this.progressListeners = new Set();
     this.initPromise = null;
   }
@@ -72,7 +72,7 @@ export class KokoroNeuralEngine {
       concurrency: 1,
       // A failed local download is exactly the case the browser's built-in voice
       // exists to cover.
-      onUnavailable: 'webspeech'
+      onUnavailable: 'webspeech',
     };
   }
 
@@ -149,7 +149,7 @@ export class KokoroNeuralEngine {
       this.notifyProgress(
         this.loadProgress,
         `${base} — still waiting on the network (no data for ${seconds}s)`,
-        'loading'
+        'loading',
       );
       // The hint went out around `_emitLoading`, so forget what was last
       // emitted: otherwise the resuming chunk could be deduplicated against the
@@ -254,7 +254,7 @@ export class KokoroNeuralEngine {
         this.worker.postMessage({
           type: 'init',
           id,
-          payload: { modelId: DEFAULT_MODEL_ID, device }
+          payload: { modelId: DEFAULT_MODEL_ID, device },
         });
       });
 
@@ -272,13 +272,17 @@ export class KokoroNeuralEngine {
       this.isCachedLocally = postStatus.isModelCached;
 
       const accel = this.device === 'webgpu' ? ' (WebGPU accelerated)' : '';
-      this.notifyProgress(100, postStatus.isModelCached
-        ? `⚡ Kokoro Neural Engine ready & cached locally${accel}`
-        : `Kokoro Neural Engine ready${accel} — weights too large to cache, will re-download`, 'ready');
+      this.notifyProgress(
+        100,
+        postStatus.isModelCached
+          ? `⚡ Kokoro Neural Engine ready & cached locally${accel}`
+          : `Kokoro Neural Engine ready${accel} — weights too large to cache, will re-download`,
+        'ready',
+      );
 
       getAudioContext();
 
-      ModelCacheManager.preloadAllVoices(DEFAULT_MODEL_ID).catch(err => {
+      ModelCacheManager.preloadAllVoices(DEFAULT_MODEL_ID).catch((err) => {
         console.warn('Voice pre-caching notice:', err);
       });
 
@@ -333,7 +337,7 @@ export class KokoroNeuralEngine {
         existing.priority = priority;
         this.worker.postMessage({
           type: 'reprioritize',
-          payload: { priorities: { [unit.key]: priority } }
+          payload: { priorities: { [unit.key]: priority } },
         });
       }
       return existing.promise;
@@ -370,8 +374,8 @@ export class KokoroNeuralEngine {
           text: unit.text,
           voiceId: unit.voiceId,
           speed: unit.synthSpeed,
-          priority
-        }
+          priority,
+        },
       });
     });
 

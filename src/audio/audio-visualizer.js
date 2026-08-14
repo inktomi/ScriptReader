@@ -116,7 +116,7 @@ export class AudioVisualizer {
     this.renderIdle();
   }
 
-  setSpeaking(isSpeaking, emotion = null) {
+  setSpeaking(isSpeaking, _emotion = null) {
     this.isPlaying = Boolean(isSpeaking);
     if (this.isPlaying) {
       if (!this.animationId) {
@@ -216,7 +216,9 @@ export class AudioVisualizer {
         const x = paddingX + i * (segmentWidth + segmentGap);
         const active = clampedLevel > 0 && i < activeSegments;
         this.ctx.fillStyle = active
-          ? (i >= Math.floor(segments * 0.82) ? this.accentColor : this.secondaryColor)
+          ? i >= Math.floor(segments * 0.82)
+            ? this.accentColor
+            : this.secondaryColor
           : 'rgba(167, 160, 149, 0.18)';
 
         if (typeof this.ctx.roundRect === 'function') {

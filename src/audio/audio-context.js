@@ -22,9 +22,9 @@ export function getAudioContext() {
   try {
     sharedContext = new AudioContextClass({
       sampleRate: KOKORO_SAMPLE_RATE,
-      latencyHint: 'playback'
+      latencyHint: 'playback',
     });
-  } catch (err) {
+  } catch (_err) {
     // Some browsers reject explicit sample rates; a resampled context is fine.
     sharedContext = new AudioContextClass({ latencyHint: 'playback' });
   }

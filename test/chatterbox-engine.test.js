@@ -1,24 +1,24 @@
-import test from 'node:test';
 import assert from 'node:assert/strict';
+import test from 'node:test';
 
 import {
-  ChatterboxStudioEngine,
   CHATTERBOX_DOWNLOAD_BYTES,
-  getChatterboxCacheStatus
+  ChatterboxStudioEngine,
+  getChatterboxCacheStatus,
 } from '../src/audio/chatterbox-engine.js';
 import { expectedFilesFor } from '../src/audio/chatterbox-model-files.js';
-import { ENGINE_IDS } from '../src/audio/engine-contract.js';
-import { createVoiceConfigModal } from '../src/ui/voice-config-modal.js';
-import { createEngineSettingsModal } from '../src/ui/engine-settings-modal.js';
-import { listChatterboxVoices } from '../src/audio/chatterbox-voice-store.js';
 import { decodePcm16, encodePcm16, MAX_RENDER_CACHE_BYTES } from '../src/audio/chatterbox-render-store.js';
+import { listChatterboxVoices } from '../src/audio/chatterbox-voice-store.js';
+import { ENGINE_IDS } from '../src/audio/engine-contract.js';
+import { createEngineSettingsModal } from '../src/ui/engine-settings-modal.js';
+import { createVoiceConfigModal } from '../src/ui/voice-config-modal.js';
 import { installDom, removeDom } from './dom-helpers.js';
 import { installFakeOpfs } from './fake-opfs.js';
 
-const tick = () => new Promise(resolve => setTimeout(resolve, 0));
+const tick = () => new Promise((resolve) => setTimeout(resolve, 0));
 // The modal coalesces progress writes into an animation frame, and with no
 // requestAnimationFrame in this environment it falls back to a ~16ms timer.
-const nextFrame = () => new Promise(resolve => setTimeout(resolve, 40));
+const nextFrame = () => new Promise((resolve) => setTimeout(resolve, 40));
 
 /**
  * Translate repo-relative model paths into the encoded URL keys the OPFS cache
@@ -28,7 +28,7 @@ const nextFrame = () => new Promise(resolve => setTimeout(resolve, 40));
 function opfsSizes(sizes = {}) {
   const encoded = {};
   for (const [path, size] of Object.entries(sizes)) {
-    const file = expectedFilesFor('wasm').find(entry => entry.path === path);
+    const file = expectedFilesFor('wasm').find((entry) => entry.path === path);
     encoded[encodeURIComponent(file ? file.url : path)] = size;
   }
   return encoded;
@@ -38,14 +38,14 @@ const GRAPH_FILES = {
   'onnx/embed_tokens.onnx': 13_286,
   'onnx/speech_encoder.onnx': 1_184_608,
   'onnx/language_model_q4.onnx': 227_911,
-  'onnx/conditional_decoder.onnx': 6_350_448
+  'onnx/conditional_decoder.onnx': 6_350_448,
 };
 
 const WEIGHT_FILES = {
   'onnx/embed_tokens.onnx_data': 61_640_704,
   'onnx/speech_encoder.onnx_data': 591_274_880,
   'onnx/language_model_q4.onnx_data': 353_621_248,
-  'onnx/conditional_decoder.onnx_data': 533_970_816
+  'onnx/conditional_decoder.onnx_data': 533_970_816,
 };
 
 test('Studio Local advertises private non-metered synthesis and bounded chunks', () => {
@@ -64,16 +64,23 @@ test('render cache PCM16 encoding is bounded and preserves the waveform', () => 
   const decoded = decodePcm16(encoded);
 
   assert.equal(encoded.byteLength, source.length * 2);
-  assert.deepEqual(Array.from(decoded, value => Number(value.toFixed(3))), [-1, -0.5, 0, 0.5, 1]);
+  assert.deepEqual(
+    Array.from(decoded, (value) => Number(value.toFixed(3))),
+    [-1, -0.5, 0, 0.5, 1],
+  );
 });
 
 test('Studio Local reuses a persistent render without synthesizing it again', async () => {
   const stored = { audio: new Int16Array([0, 100]), sampleRate: 24000 };
   const engine = new ChatterboxStudioEngine({
     renderStore: {
-      async get(key) { return key === 'cached-line' ? stored : null; },
-      async put() { throw new Error('a cache hit must not be rewritten'); }
-    }
+      async get(key) {
+        return key === 'cached-line' ? stored : null;
+      },
+      async put() {
+        throw new Error('a cache hit must not be rewritten');
+      },
+    },
   });
   const buffer = { duration: 2 };
   engine._bufferFromPcm = (audio, sampleRate) => {
@@ -81,7 +88,9 @@ test('Studio Local reuses a persistent render without synthesizing it again', as
     assert.equal(sampleRate, 24000);
     return buffer;
   };
-  engine._synthesize = async () => { throw new Error('a cache hit must not synthesize'); };
+  engine._synthesize = async () => {
+    throw new Error('a cache hit must not synthesize');
+  };
 
   assert.equal(await engine._loadOrSynthesize({ key: 'cached-line' }, 0), buffer);
 });
@@ -92,9 +101,13 @@ test('new Studio renders are durably cached before becoming ready', async () => 
   const buffer = { sampleRate: 24000, getChannelData: () => samples };
   const engine = new ChatterboxStudioEngine({
     renderStore: {
-      async get() { return null; },
-      async put(key, audio, sampleRate) { writes.push({ key, audio, sampleRate }); }
-    }
+      async get() {
+        return null;
+      },
+      async put(key, audio, sampleRate) {
+        writes.push({ key, audio, sampleRate });
+      },
+    },
   });
   engine._synthesize = async () => buffer;
 
@@ -119,7 +132,7 @@ test('Studio Local reports not installed when no storage backend can hold the mo
       expectedBytes: 0,
       missing: [],
       fileCount: 0,
-      persisted: false
+      persisted: false,
     });
   } finally {
     if (original) Object.defineProperty(globalThis, 'navigator', original);
@@ -166,8 +179,8 @@ test('a truncated weight file does not count as installed', async () => {
     sizes: opfsSizes({
       ...GRAPH_FILES,
       ...WEIGHT_FILES,
-      'onnx/speech_encoder.onnx_data': 1024
-    })
+      'onnx/speech_encoder.onnx_data': 1024,
+    }),
   });
   try {
     const status = await getChatterboxCacheStatus();
@@ -205,13 +218,21 @@ test('an install is refused up front when the browser cannot store the model', a
       modelCacheManager: { getStorageEstimate: async () => ({ quota: 0, usage: 0 }) },
       getEngine: () => ({
         capabilities: { id: ENGINE_IDS.CHATTERBOX },
-        onProgress() { return () => {}; }
+        onProgress() {
+          return () => {};
+        },
       }),
       getChatterboxCacheStatus: async () => ({
-        installed: false, partial: false, storable: false, persisted: false, fileCount: 0
+        installed: false,
+        partial: false,
+        storable: false,
+        persisted: false,
+        fileCount: 0,
       }),
-      prepareEngine: async () => { prepared++; },
-      setEngine() {}
+      prepareEngine: async () => {
+        prepared++;
+      },
+      setEngine() {},
     };
 
     const modal = createEngineSettingsModal({ audioManager });
@@ -246,13 +267,16 @@ test('progress advances when every event claims loaded === total', () => {
     for (const loaded of [50_000_000, 150_000_000, 300_000_000, 590_000_000]) {
       engine._noteProgress({
         stage: 'download',
-        files: [{ file, loaded, total: loaded, status: 'progress' }]
+        files: [{ file, loaded, total: loaded, status: 'progress' }],
       });
     }
 
     assert.ok(seen.length >= 4, `expected several updates, saw ${seen.length}`);
     assert.ok(seen[seen.length - 1] > seen[0], 'progress never advanced');
-    assert.ok(seen.every((value, i) => i === 0 || value >= seen[i - 1]), 'progress went backwards');
+    assert.ok(
+      seen.every((value, i) => i === 0 || value >= seen[i - 1]),
+      'progress went backwards',
+    );
     // Inside the download band throughout, rather than jumping to it and staying.
     assert.ok(seen[0] < 30, `should start low in the band, got ${seen[0]}`);
     assert.ok(seen[seen.length - 1] <= 80, `download band tops out at 80, got ${seen[seen.length - 1]}`);
@@ -269,7 +293,7 @@ test('a trustworthy total is preferred over the published size', () => {
   try {
     engine._noteProgress({
       stage: 'download',
-      files: [{ file: 'onnx/speech_encoder.onnx_data', loaded: 4_000_000, total: 8_000_000, status: 'progress' }]
+      files: [{ file: 'onnx/speech_encoder.onnx_data', loaded: 4_000_000, total: 8_000_000, status: 'progress' }],
     });
     const [first] = seen;
     // Half of a real 8 MB total lands mid-band; half of the 591 MB published
@@ -288,16 +312,16 @@ test('Studio casting requires a private reference before the player can open', (
       currentScript: {
         title: 'Reference Test',
         characters: [{ name: 'ALICE', lineCount: 1, sampleLine: 'Hello.' }],
-        elements: [{ type: 'DIALOGUE', character: 'ALICE', text: 'Hello.' }]
+        elements: [{ type: 'DIALOGUE', character: 'ALICE', text: 'Hello.' }],
       },
       castAssignments: new Map(),
-      getNarratorVoice: () => ''
+      getNarratorVoice: () => '',
     };
     const audioManager = {
       engineId: ENGINE_IDS.CHATTERBOX,
       capabilities: { supportsInstructions: false },
       getVoiceProfileForCharacter: () => ({ id: '' }),
-      stop() {}
+      stop() {},
     };
 
     const modal = createVoiceConfigModal({ scriptStore, audioManager, isInitialSetup: true });
@@ -316,30 +340,35 @@ test('Studio casting requires a private reference before the player can open', (
 test('user-named Studio references are escaped in casting', () => {
   const dom = installDom();
   try {
-    localStorage.setItem('scriptreader_chatterbox_voice_metadata', JSON.stringify([{
-      id: 'studio-test',
-      name: '<img src=x onerror="window.pwned=1">',
-      duration: 8,
-      createdAt: 1
-    }]));
+    localStorage.setItem(
+      'scriptreader_chatterbox_voice_metadata',
+      JSON.stringify([
+        {
+          id: 'studio-test',
+          name: '<img src=x onerror="window.pwned=1">',
+          duration: 8,
+          createdAt: 1,
+        },
+      ]),
+    );
     const assignment = {
       voiceId: 'af_heart',
-      voiceIds: { [ENGINE_IDS.CHATTERBOX]: 'studio-test' }
+      voiceIds: { [ENGINE_IDS.CHATTERBOX]: 'studio-test' },
     };
     const scriptStore = {
       currentScript: {
         title: 'Safe References',
         characters: [{ name: 'ALICE', lineCount: 1, sampleLine: 'Hello.' }],
-        elements: [{ type: 'DIALOGUE', character: 'ALICE', text: 'Hello.' }]
+        elements: [{ type: 'DIALOGUE', character: 'ALICE', text: 'Hello.' }],
       },
       castAssignments: new Map([['ALICE', assignment]]),
-      getNarratorVoice: () => 'studio-test'
+      getNarratorVoice: () => 'studio-test',
     };
     const audioManager = {
       engineId: ENGINE_IDS.CHATTERBOX,
       capabilities: { supportsInstructions: false },
       getVoiceProfileForCharacter: () => ({ id: 'studio-test' }),
-      stop() {}
+      stop() {},
     };
 
     const modal = createVoiceConfigModal({ scriptStore, audioManager });
@@ -355,14 +384,19 @@ test('user-named Studio references are escaped in casting', () => {
 test('malformed persisted Studio metadata is normalized before casting uses it', () => {
   const dom = installDom();
   try {
-    localStorage.setItem('scriptreader_chatterbox_voice_metadata', JSON.stringify([{
-      id: 'studio-malformed',
-      name: 'Safe fallback',
-      tone: { unexpected: true },
-      sex: 'provider-specific',
-      accent: 42,
-      duration: 8
-    }]));
+    localStorage.setItem(
+      'scriptreader_chatterbox_voice_metadata',
+      JSON.stringify([
+        {
+          id: 'studio-malformed',
+          name: 'Safe fallback',
+          tone: { unexpected: true },
+          sex: 'provider-specific',
+          accent: 42,
+          duration: 8,
+        },
+      ]),
+    );
     const [voice] = listChatterboxVoices();
     assert.equal(typeof voice.tone, 'string');
     assert.equal(voice.sex, 'Neutral');
@@ -389,19 +423,25 @@ test('a progress event patches the install bar instead of rebuilding the modal',
       capabilities: { id: ENGINE_IDS.CHATTERBOX },
       onProgress(callback) {
         emit = callback;
-        return () => { emit = null; };
-      }
+        return () => {
+          emit = null;
+        };
+      },
     };
     const audioManager = {
       engineId: ENGINE_IDS.CHATTERBOX,
       modelCacheManager: { getStorageEstimate: async () => ({ quota: 0, usage: 0 }) },
       getEngine: () => studioEngine,
       getChatterboxCacheStatus: async () => ({
-        installed: false, partial: false, storable: true, persisted: false, fileCount: 0
+        installed: false,
+        partial: false,
+        storable: true,
+        persisted: false,
+        fileCount: 0,
       }),
       // Never settles: the point is to observe the modal mid-install.
       prepareEngine: () => new Promise(() => {}),
-      setEngine() {}
+      setEngine() {},
     };
 
     const modal = createEngineSettingsModal({ audioManager });
@@ -416,7 +456,12 @@ test('a progress event patches the install bar instead of rebuilding the modal',
     assert.equal(button.textContent.trim(), 'Installing…');
     assert.ok(emit, 'the modal did not subscribe to engine progress');
 
-    emit({ progress: 42, message: 'Downloading Studio Local: 42% · 600 MB / 1.4 GB', phase: 'loading', stage: 'download' });
+    emit({
+      progress: 42,
+      message: 'Downloading Studio Local: 42% · 600 MB / 1.4 GB',
+      phase: 'loading',
+      stage: 'download',
+    });
     await nextFrame();
 
     assert.equal(modal.querySelector('#btn-engine-apply'), button, 'the modal was rebuilt');
@@ -437,17 +482,26 @@ test('a zero-progress error event is not discarded', async () => {
     let emit = null;
     const studioEngine = {
       capabilities: { id: ENGINE_IDS.CHATTERBOX },
-      onProgress(callback) { emit = callback; return () => { emit = null; }; }
+      onProgress(callback) {
+        emit = callback;
+        return () => {
+          emit = null;
+        };
+      },
     };
     const audioManager = {
       engineId: ENGINE_IDS.CHATTERBOX,
       modelCacheManager: { getStorageEstimate: async () => ({ quota: 0, usage: 0 }) },
       getEngine: () => studioEngine,
       getChatterboxCacheStatus: async () => ({
-        installed: false, partial: false, storable: true, persisted: false, fileCount: 0
+        installed: false,
+        partial: false,
+        storable: true,
+        persisted: false,
+        fileCount: 0,
       }),
       prepareEngine: () => new Promise(() => {}),
-      setEngine() {}
+      setEngine() {},
     };
 
     const modal = createEngineSettingsModal({ audioManager });

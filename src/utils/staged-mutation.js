@@ -1,9 +1,6 @@
 import { throwIfAborted } from './latest-operation.js';
 
-export function createMutationQueue({
-  lockName = '',
-  getLockManager = () => globalThis.navigator?.locks
-} = {}) {
+export function createMutationQueue({ lockName = '', getLockManager = () => globalThis.navigator?.locks } = {}) {
   let tail = Promise.resolve();
   return {
     run(operation) {
@@ -17,7 +14,7 @@ export function createMutationQueue({
       const result = tail.then(runGuarded, runGuarded);
       tail = result.catch(() => {});
       return result;
-    }
+    },
   };
 }
 
@@ -43,18 +40,18 @@ export async function runStagedMutation({
   persistMetadata,
   compensateDurable,
   reconcile,
-  cleanupStage
+  cleanupStage,
 }) {
   throwIfAborted(signal);
   let staged;
   let durable;
+  let result;
   let primaryError = null;
   try {
     staged = await stage();
     throwIfAborted(signal);
     durable = await commitDurable(staged);
 
-    let result;
     try {
       result = await persistMetadata(durable, staged);
     } catch (error) {
@@ -68,18 +65,19 @@ export async function runStagedMutation({
     }
 
     await reconcile?.(durable, staged, result);
-    return result;
   } catch (error) {
     primaryError = error;
-    throw error;
-  } finally {
-    if (staged !== undefined) {
-      try {
-        await cleanupStage?.(staged, { durable, primaryError });
-      } catch (cleanupError) {
-        if (primaryError) attachCleanupFailure(primaryError, cleanupError);
-        else throw cleanupError;
-      }
+  }
+
+  if (staged !== undefined) {
+    try {
+      await cleanupStage?.(staged, { durable, primaryError });
+    } catch (cleanupError) {
+      if (primaryError) attachCleanupFailure(primaryError, cleanupError);
+      else primaryError = cleanupError;
     }
   }
+
+  if (primaryError) throw primaryError;
+  return result;
 }

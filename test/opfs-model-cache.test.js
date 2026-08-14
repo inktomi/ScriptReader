@@ -1,10 +1,11 @@
-import test from 'node:test';
 import assert from 'node:assert/strict';
+import test from 'node:test';
 
 import { createOpfsModelCache } from '../src/audio/opfs-model-cache.js';
 import { installFakeOpfs } from './fake-opfs.js';
 
-const URL_UNDER_TEST = 'https://huggingface.co/onnx-community/chatterbox-ONNX/resolve/main/onnx/speech_encoder.onnx_data';
+const URL_UNDER_TEST =
+  'https://huggingface.co/onnx-community/chatterbox-ONNX/resolve/main/onnx/speech_encoder.onnx_data';
 const KEY = encodeURIComponent(URL_UNDER_TEST);
 const BODY = new Uint8Array([1, 2, 3, 4, 5, 6, 7, 8]);
 
@@ -28,19 +29,23 @@ function stubFetch({ gate = null, failAfterFirstChunk = false } = {}) {
         }
         controller.enqueue(BODY.slice(4));
         controller.close();
-      }
+      },
     });
     return new Response(stream, {
       status: 200,
-      headers: { 'content-length': String(BODY.length) }
+      headers: { 'content-length': String(BODY.length) },
     });
   };
-  return () => { globalThis.fetch = original; };
+  return () => {
+    globalThis.fetch = original;
+  };
 }
 
 function openGate() {
   const gate = {};
-  gate.opened = new Promise(resolve => { gate.open = resolve; });
+  gate.opened = new Promise((resolve) => {
+    gate.open = resolve;
+  });
   return gate;
 }
 
@@ -176,14 +181,19 @@ test('a storage failure names the file and keeps the original error', async () =
     const cache = await createOpfsModelCache('ns');
     const quota = new Error('The quota has been exceeded.');
     quota.name = 'QuotaExceededError';
-    globalThis.FileSystemFileHandle.prototype.createWritable = () => { throw quota; };
+    globalThis.FileSystemFileHandle.prototype.createWritable = () => {
+      throw quota;
+    };
 
-    await assert.rejects(() => cache.download(URL_UNDER_TEST), error => {
-      assert.match(error.message, /ran out of storage/);
-      assert.match(error.message, /speech_encoder\.onnx_data/);
-      assert.equal(error.cause, quota);
-      return true;
-    });
+    await assert.rejects(
+      () => cache.download(URL_UNDER_TEST),
+      (error) => {
+        assert.match(error.message, /ran out of storage/);
+        assert.match(error.message, /speech_encoder\.onnx_data/);
+        assert.equal(error.cause, quota);
+        return true;
+      },
+    );
   } finally {
     restoreFetch();
     opfs.restore();
@@ -199,12 +209,15 @@ test('an unrecognised storage failure keeps its browser text but gains a subject
       throw new TypeError('Not enough arguments');
     };
 
-    await assert.rejects(() => cache.download(URL_UNDER_TEST), error => {
-      assert.match(error.message, /could not save/);
-      assert.match(error.message, /speech_encoder\.onnx_data/);
-      assert.match(error.message, /Not enough arguments/);
-      return true;
-    });
+    await assert.rejects(
+      () => cache.download(URL_UNDER_TEST),
+      (error) => {
+        assert.match(error.message, /could not save/);
+        assert.match(error.message, /speech_encoder\.onnx_data/);
+        assert.match(error.message, /Not enough arguments/);
+        return true;
+      },
+    );
   } finally {
     restoreFetch();
     opfs.restore();
@@ -222,12 +235,15 @@ test('a cancelled install is not reported as a storage fault', async () => {
     controller.abort();
     gate.open();
 
-    await assert.rejects(() => pending, error => {
-      // The user's own Cancel. `abortInit` relies on this staying recognisable
-      // so it does not present a deliberate stop back as a failure.
-      assert.equal(error.name, 'AbortError');
-      return true;
-    });
+    await assert.rejects(
+      () => pending,
+      (error) => {
+        // The user's own Cancel. `abortInit` relies on this staying recognisable
+        // so it does not present a deliberate stop back as a failure.
+        assert.equal(error.name, 'AbortError');
+        return true;
+      },
+    );
   } finally {
     restoreFetch();
     opfs.restore();

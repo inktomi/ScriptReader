@@ -28,7 +28,7 @@ export class WebSpeechEngine {
 
   loadVoices() {
     return new Promise((resolve) => {
-      let v = this.synth ? this.synth.getVoices() : [];
+      const v = this.synth ? this.synth.getVoices() : [];
       if (v.length > 0) {
         this.voices = v;
         this.voiceAssignmentCache.clear();
@@ -67,30 +67,31 @@ export class WebSpeechEngine {
     const isFemale = voiceProfile?.sex === 'Female';
 
     // Find English voices
-    const enVoices = this.voices.filter(v => (v.lang || '').toLowerCase().startsWith('en'));
+    const enVoices = this.voices.filter((v) => (v.lang || '').toLowerCase().startsWith('en'));
     const pool = enVoices.length > 0 ? enVoices : this.voices;
 
     // Best effort match
-    let matched = pool.find(v => {
-      const name = v.name.toLowerCase();
-      if (isBritish && (v.lang.includes('GB') || name.includes('uk') || name.includes('british'))) return true;
-      if (isFemale && (name.includes('female') || name.includes('samantha') || name.includes('karen') || name.includes('zira') || name.includes('siri'))) return true;
-      return false;
-    }) || pool[0];
+    const matched =
+      pool.find((v) => {
+        const name = v.name.toLowerCase();
+        if (isBritish && (v.lang.includes('GB') || name.includes('uk') || name.includes('british'))) return true;
+        if (
+          isFemale &&
+          (name.includes('female') ||
+            name.includes('samantha') ||
+            name.includes('karen') ||
+            name.includes('zira') ||
+            name.includes('siri'))
+        )
+          return true;
+        return false;
+      }) || pool[0];
 
     this.voiceAssignmentCache.set(profileId, matched);
     return matched;
   }
 
-  speakLine({
-    text,
-    voiceProfile,
-    nuance = {},
-    speedMultiplier = 1.0,
-    onStart,
-    onEnd,
-    onError
-  }) {
+  speakLine({ text, voiceProfile, nuance = {}, speedMultiplier = 1.0, onStart, onEnd, onError }) {
     if (!this.synth) {
       if (onError) onError(new Error('Web Speech API is not supported in this browser.'));
       return;
@@ -129,7 +130,7 @@ export class WebSpeechEngine {
       if (onStart) onStart();
 
       const wordCount = spokenText.split(/\s+/).length || 1;
-      const estimatedSec = Math.max(8.0, (wordCount / (1.2 * utterance.rate)) + 6.0);
+      const estimatedSec = Math.max(8.0, wordCount / (1.2 * utterance.rate) + 6.0);
       this.watchdogTimer = setTimeout(() => {
         if (!hasEnded && this.synth && this.synth.speaking) {
           if (this.synth) this.synth.cancel();

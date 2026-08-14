@@ -1,9 +1,9 @@
-import test from 'node:test';
 import assert from 'node:assert/strict';
+import test from 'node:test';
 
 import { OpenAiTtsEngine } from '../src/audio/openai-engine.js';
 
-const tick = () => new Promise(resolve => setImmediate(resolve));
+const tick = () => new Promise((resolve) => setImmediate(resolve));
 
 test('OpenAI init can run again after a later fatal runtime failure', async () => {
   let keyReads = 0;
@@ -12,7 +12,7 @@ test('OpenAI init can run again after a later fatal runtime failure', async () =
     getApiKey: () => {
       keyReads++;
       return 'test-key';
-    }
+    },
   });
 
   await engine.init();
@@ -24,9 +24,9 @@ test('OpenAI init can run again after a later fatal runtime failure', async () =
 test('revoked consent is enforced by the engine boundary', async () => {
   const engine = new OpenAiTtsEngine({
     hasConsent: () => false,
-    getApiKey: () => 'test-key'
+    getApiKey: () => 'test-key',
   });
-  await assert.rejects(engine.init(), error => error.code === 'no_consent');
+  await assert.rejects(engine.init(), (error) => error.code === 'no_consent');
   assert.equal(engine.isReady, false);
 });
 
@@ -57,7 +57,7 @@ test('fatal failures surface errors while isolated render failures are warnings'
     const engine = new OpenAiTtsEngine({ hasConsent: () => true, getApiKey: () => 'test-key' });
     engine.isReady = true;
     const phases = [];
-    engine.onProgress(payload => phases.push(payload.phase));
+    engine.onProgress((payload) => phases.push(payload.phase));
     engine._synthesize = async () => {
       const error = new Error(fatal ? 'invalid key' : 'network exhausted');
       error.fatal = fatal;
@@ -76,12 +76,17 @@ test('OpenAI advertises the provider input limit and sends exact numeric speed',
     return { arrayBuffer: async () => new ArrayBuffer(2) };
   };
 
-  await assert.rejects(engine._synthesize({
-    voiceId: 'marin',
-    text: 'Read this precisely.',
-    synthSpeed: 1.37,
-    instructions: 'Sound urgent.'
-  }, new AbortController().signal));
+  await assert.rejects(
+    engine._synthesize(
+      {
+        voiceId: 'marin',
+        text: 'Read this precisely.',
+        synthSpeed: 1.37,
+        instructions: 'Sound urgent.',
+      },
+      new AbortController().signal,
+    ),
+  );
 
   assert.equal(engine.capabilities.supportsSpeed, true);
   assert.equal(engine.capabilities.maxChunkChars, 4096);

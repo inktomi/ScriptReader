@@ -1,11 +1,7 @@
-import { getIconSvg } from '../utils/icons.js';
 import { escapeHtml } from '../utils/escape-html.js';
+import { getIconSvg } from '../utils/icons.js';
 
-export function createSceneDrawer({
-  scriptStore,
-  onSelectScene,
-  onClose
-}) {
+export function createSceneDrawer({ scriptStore, onSelectScene, onClose }) {
   const drawer = document.createElement('aside');
   drawer.className = 'scene-drawer collapsed';
 
@@ -25,13 +21,19 @@ export function createSceneDrawer({
       </div>
 
       <div class="cast-scroll-area">
-        ${scenes.length === 0 ? `
+        ${
+          scenes.length === 0
+            ? `
           <div style="text-align: center; color: var(--text-muted); padding: 40px 10px;">
             No scenes detected in this script.
           </div>
-        ` : ''}
+        `
+            : ''
+        }
 
-        ${scenes.map(s => `
+        ${scenes
+          .map(
+            (s) => `
           <div class="character-card scene-nav-card" data-index="${s.lineIndex}">
             <div style="display: flex; align-items: flex-start; gap: 10px;">
               <span style="font-size: 0.75rem; font-weight: 700; background: rgba(6, 182, 212, 0.15); color: #06B6D4; padding: 2px 6px; border-radius: 4px; font-family: var(--font-mono);">
@@ -43,7 +45,9 @@ export function createSceneDrawer({
               </div>
             </div>
           </div>
-        `).join('')}
+        `,
+          )
+          .join('')}
       </div>
     `;
 
@@ -54,10 +58,10 @@ export function createSceneDrawer({
       });
     }
 
-    drawer.querySelectorAll('.scene-nav-card').forEach(card => {
+    drawer.querySelectorAll('.scene-nav-card').forEach((card) => {
       card.addEventListener('click', () => {
         const lineIdx = parseInt(card.dataset.index, 10);
-        if (!isNaN(lineIdx)) {
+        if (!Number.isNaN(lineIdx)) {
           onSelectScene(lineIdx);
         }
       });
@@ -97,6 +101,6 @@ export function createSceneDrawer({
     open,
     close,
     toggle,
-    isOpen: () => !drawer.classList.contains('collapsed')
+    isOpen: () => !drawer.classList.contains('collapsed'),
   };
 }

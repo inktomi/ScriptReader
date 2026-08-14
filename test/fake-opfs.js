@@ -24,7 +24,7 @@
  */
 function entrySize(entry) {
   if (!entry) return 0;
-  return entry.bytes ? entry.bytes.byteLength : (entry.size || 0);
+  return entry.bytes ? entry.bytes.byteLength : entry.size || 0;
 }
 
 function notFound() {
@@ -66,7 +66,9 @@ class FakeWritableFileStream extends WritableStream {
   static create(dir, name) {
     const chunks = [];
     return new FakeWritableFileStream({
-      write(chunk) { chunks.push(chunk); },
+      write(chunk) {
+        chunks.push(chunk);
+      },
       close() {
         let total = 0;
         for (const chunk of chunks) total += chunk.byteLength;
@@ -77,7 +79,7 @@ class FakeWritableFileStream extends WritableStream {
           offset += chunk.byteLength;
         }
         dir._entries.set(name, { bytes });
-      }
+      },
     });
   }
 
@@ -93,7 +95,7 @@ class FakeWritableFileStream extends WritableStream {
 
 const MOVE_MODES = {
   /** Chromium and Firefox: both the one- and two-argument spellings resolve. */
-  chromium(handle, args, calls) {
+  chromium(_handle, args, calls) {
     calls.push(args);
     if (args.length < 1) throw new TypeError('Failed to execute move: 1 argument required, but only 0 present.');
     const [first, second] = args;
@@ -107,7 +109,7 @@ const MOVE_MODES = {
    * a *synchronous* throw from the binding layer — it happens before any of the
    * implementation runs, which is why it cannot be caught as a rejection.
    */
-  webkit(handle, args, calls) {
+  webkit(_handle, args, calls) {
     calls.push(args);
     if (args.length < 2) throw new TypeError('Not enough arguments');
     const [destination, newName] = args;
@@ -120,12 +122,12 @@ const MOVE_MODES = {
   },
 
   /** A browser whose rename exists but always refuses at runtime. */
-  throws(handle, args, calls) {
+  throws(_handle, args, calls) {
     calls.push(args);
     const error = new Error('Renaming is not permitted here.');
     error.name = 'NotAllowedError';
     throw error;
-  }
+  },
 };
 
 /**
@@ -156,7 +158,9 @@ export function installFakeOpfs({ sizes = {}, move = 'chromium', writable = true
       }
       return new FakeFileSystemFileHandle(dir, name);
     },
-    async removeEntry(name) { entries.delete(name); }
+    async removeEntry(name) {
+      entries.delete(name);
+    },
   };
 
   if (writable) {
@@ -192,33 +196,43 @@ export function installFakeOpfs({ sizes = {}, move = 'chromium', writable = true
         async getDirectory() {
           return {
             kind: 'directory',
-            async getDirectoryHandle() { return dir; },
-            async removeEntry() { entries.clear(); }
+            async getDirectoryHandle() {
+              return dir;
+            },
+            async removeEntry() {
+              entries.clear();
+            },
           };
         },
-        async persisted() { return true; },
-        async persist() { return true; }
-      }
+        async persisted() {
+          return true;
+        },
+        async persist() {
+          return true;
+        },
+      },
     },
     configurable: true,
-    writable: true
+    writable: true,
   });
 
   Object.defineProperty(globalThis, 'FileSystemFileHandle', {
     value: FakeFileSystemFileHandle,
     configurable: true,
-    writable: true
+    writable: true,
   });
 
   return {
     entries,
     moveCalls,
-    sizeOf(name) { return entrySize(entries.get(name)); },
+    sizeOf(name) {
+      return entrySize(entries.get(name));
+    },
     restore() {
       if (originalNavigator) Object.defineProperty(globalThis, 'navigator', originalNavigator);
       else delete globalThis.navigator;
       if (originalHandle) Object.defineProperty(globalThis, 'FileSystemFileHandle', originalHandle);
       else delete globalThis.FileSystemFileHandle;
-    }
+    },
   };
 }

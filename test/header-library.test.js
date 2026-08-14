@@ -1,8 +1,7 @@
-import test from 'node:test';
 import assert from 'node:assert/strict';
-
-import { createHeader } from '../src/ui/header.js';
+import test from 'node:test';
 import { ENGINE_TYPES } from '../src/audio/audio-manager.js';
+import { createHeader } from '../src/ui/header.js';
 import { installDom, removeDom } from './dom-helpers.js';
 
 test('header creates library button with active state and toggle handler', () => {
@@ -12,10 +11,12 @@ test('header creates library button with active state and toggle handler', () =>
     const header = createHeader({
       onChangeScript: () => {},
       onOpenVoiceConfig: () => {},
-      onToggleLibrary: () => { toggleCount++; },
+      onToggleLibrary: () => {
+        toggleCount++;
+      },
       onToggleHelp: () => {},
       onOpenEngineSettings: () => {},
-      currentEngine: ENGINE_TYPES.KOKORO_NEURAL
+      currentEngine: ENGINE_TYPES.KOKORO_NEURAL,
     });
     document.body.appendChild(header.element);
 
@@ -49,10 +50,10 @@ test('header falls back to onShowLibrary when onToggleLibrary is omitted', () =>
     const header = createHeader({
       onChangeScript: () => {},
       onOpenVoiceConfig: () => {},
-      onShowLibrary: tab => shownTabs.push(tab),
+      onShowLibrary: (tab) => shownTabs.push(tab),
       onToggleHelp: () => {},
       onOpenEngineSettings: () => {},
-      currentEngine: ENGINE_TYPES.KOKORO_NEURAL
+      currentEngine: ENGINE_TYPES.KOKORO_NEURAL,
     });
     document.body.appendChild(header.element);
 
@@ -72,14 +73,14 @@ test('header updates script info and engine badge correctly', () => {
       onOpenVoiceConfig: () => {},
       onToggleHelp: () => {},
       onOpenEngineSettings: () => {},
-      currentEngine: ENGINE_TYPES.KOKORO_NEURAL
+      currentEngine: ENGINE_TYPES.KOKORO_NEURAL,
     });
     document.body.appendChild(header.element);
 
     header.setScript({
       title: 'Hamlet',
       scenes: [1, 2, 3],
-      characters: ['Hamlet', 'Ophelia']
+      characters: ['Hamlet', 'Ophelia'],
     });
 
     assert.equal(header.element.querySelector('#header-script-title').textContent, 'Hamlet');
@@ -94,4 +95,3 @@ test('header updates script info and engine badge correctly', () => {
     removeDom(dom);
   }
 });
-

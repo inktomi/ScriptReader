@@ -1,6 +1,6 @@
-import { getAudioContext } from './audio-context.js';
-import { createMutationQueue, runStagedMutation } from '../utils/staged-mutation.js';
 import { throwIfAborted } from '../utils/latest-operation.js';
+import { createMutationQueue, runStagedMutation } from '../utils/staged-mutation.js';
+import { getAudioContext } from './audio-context.js';
 
 const DB_NAME = 'scriptreader-studio-voices';
 const DB_VERSION = 1;
@@ -17,7 +17,7 @@ function storage() {
 function parseMetadata(raw) {
   const parsed = JSON.parse(raw || '[]');
   if (!Array.isArray(parsed)) throw new Error('Studio voice metadata is malformed.');
-  return parsed.filter(item => item && item.id && item.name);
+  return parsed.filter((item) => item && item.id && item.name);
 }
 
 function readMetadataStrict() {
@@ -39,7 +39,7 @@ function writeMetadata(items) {
     const metadataStorage = storage();
     if (!metadataStorage) throw new Error('Local storage is unavailable.');
     metadataStorage.setItem(META_KEY, JSON.stringify(items));
-  } catch (error) {
+  } catch (_error) {
     throw new Error('The reference voice could not be saved in this browser.');
   }
 }
@@ -98,7 +98,7 @@ async function deleteSamples(ids) {
     await new Promise((resolve, reject) => {
       const transaction = db.transaction(STORE_NAME, 'readwrite');
       const store = transaction.objectStore(STORE_NAME);
-      ids.forEach(id => store.delete(id));
+      for (const id of ids) store.delete(id);
       transaction.oncomplete = resolve;
       transaction.onerror = () => reject(transaction.error || new Error('Could not remove voice samples.'));
       transaction.onabort = () => reject(transaction.error || new Error('Voice storage cleanup was interrupted.'));
@@ -144,10 +144,10 @@ const defaultPersistence = {
   putSample,
   deleteSample,
   deleteSamples,
-  inspectSampleRecords
+  inspectSampleRecords,
 };
 const voiceMutationQueue = createMutationQueue({
-  lockName: 'scriptreader-chatterbox-voice-mutation'
+  lockName: 'scriptreader-chatterbox-voice-mutation',
 });
 
 /**
@@ -159,14 +159,14 @@ export async function reconcileChatterboxVoiceStorage({ persistence = defaultPer
   return await voiceMutationQueue.run(async () => {
     const metadata = persistence.readMetadata();
     const sampleRecords = await persistence.inspectSampleRecords();
-    const sampleIds = sampleRecords.map(record => String(record.id));
-    const samples = new Set(sampleRecords.filter(record => record.usable).map(record => String(record.id)));
-    const validMetadata = metadata.filter(item => samples.has(item.id));
+    const sampleIds = sampleRecords.map((record) => String(record.id));
+    const samples = new Set(sampleRecords.filter((record) => record.usable).map((record) => String(record.id)));
+    const validMetadata = metadata.filter((item) => samples.has(item.id));
     const removedMetadata = metadata.length - validMetadata.length;
     if (removedMetadata > 0) await persistence.writeMetadata(validMetadata);
 
-    const referenced = new Set(validMetadata.map(item => item.id));
-    const orphanIds = sampleIds.filter(id => !referenced.has(id));
+    const referenced = new Set(validMetadata.map((item) => item.id));
+    const orphanIds = sampleIds.filter((id) => !referenced.has(id));
     let failedOrphanIds = [];
     if (typeof persistence.deleteSamples === 'function') {
       try {
@@ -177,7 +177,7 @@ export async function reconcileChatterboxVoiceStorage({ persistence = defaultPer
         failedOrphanIds = orphanIds;
       }
     } else {
-      const cleanup = await Promise.allSettled(orphanIds.map(id => persistence.deleteSample(id)));
+      const cleanup = await Promise.allSettled(orphanIds.map((id) => persistence.deleteSample(id)));
       failedOrphanIds = orphanIds.filter((_, index) => cleanup[index].status === 'rejected');
     }
     return { removedMetadata, removedOrphans: orphanIds.length - failedOrphanIds.length, failedOrphanIds };
@@ -215,9 +215,7 @@ export async function getChatterboxVoiceSample(id) {
           reject(new Error('This Studio voice is missing its reference recording. Add it again in casting.'));
           return;
         }
-        resolve(record.audio instanceof Float32Array
-          ? record.audio
-          : new Float32Array(record.audio));
+        resolve(record.audio instanceof Float32Array ? record.audio : new Float32Array(record.audio));
       };
       request.onerror = () => reject(request.error || new Error('Could not read the reference voice.'));
     });
@@ -246,7 +244,7 @@ export function listChatterboxVoices() {
     source: metadataText(item.source, 'Private upload', 80),
     sourceVoiceId: metadataText(item.sourceVoiceId, '', 100),
     renderRevision: item.createdAt || index,
-    createdAt: item.createdAt || index
+    createdAt: item.createdAt || index,
   }));
 }
 
@@ -262,7 +260,7 @@ function mixToMono(buffer) {
 
 function resampleLinear(source, sourceRate, targetRate) {
   if (sourceRate === targetRate) return source.slice();
-  const targetLength = Math.max(1, Math.round(source.length * targetRate / sourceRate));
+  const targetLength = Math.max(1, Math.round((source.length * targetRate) / sourceRate));
   const output = new Float32Array(targetLength);
   const scale = sourceRate / targetRate;
   for (let i = 0; i < targetLength; i++) {
@@ -276,7 +274,10 @@ function resampleLinear(source, sourceRate, targetRate) {
 }
 
 function voiceNameFromFile(file) {
-  const base = (file.name || 'Studio voice').replace(/\.[^/.]+$/, '').replace(/[_-]+/g, ' ').trim();
+  const base = (file.name || 'Studio voice')
+    .replace(/\.[^/.]+$/, '')
+    .replace(/[_-]+/g, ' ')
+    .trim();
   return base || 'Studio voice';
 }
 
@@ -285,10 +286,12 @@ function metadataText(value, fallback = '', maxLength = 160) {
   return (text || fallback).slice(0, maxLength);
 }
 
-export async function saveChatterboxVoice(file, name = '', profile = {}, {
-  signal,
-  persistence = defaultPersistence
-} = {}) {
+export async function saveChatterboxVoice(
+  file,
+  name = '',
+  profile = {},
+  { signal, persistence = defaultPersistence } = {},
+) {
   throwIfAborted(signal);
   if (!file || typeof file.arrayBuffer !== 'function') {
     throw new Error('Choose an audio recording to create a Studio voice.');
@@ -322,17 +325,18 @@ export async function saveChatterboxVoice(file, name = '', profile = {}, {
     const sourceVoiceId = metadataText(profile.sourceVoiceId, '', 100);
     const currentMetadata = persistence.readMetadata();
     const replacedIds = sourceVoiceId
-      ? currentMetadata.filter(item => item.sourceVoiceId === sourceVoiceId).map(item => item.id)
+      ? currentMetadata.filter((item) => item.sourceVoiceId === sourceVoiceId).map((item) => item.id)
       : [];
     // Reuse a catalog voice's local identity. Cast assignments remain valid
     // when refreshing the same provider voice.
-    const id = replacedIds[0]
-      || `studio-${globalThis.crypto?.randomUUID?.() || `${Date.now()}-${Math.random().toString(36).slice(2)}`}`;
+    const id =
+      replacedIds[0] ||
+      `studio-${globalThis.crypto?.randomUUID?.() || `${Date.now()}-${Math.random().toString(36).slice(2)}`}`;
     const isReplacement = replacedIds.includes(id);
     const record = { id, audio, sampleRate: TARGET_SAMPLE_RATE, duration, createdAt: Date.now() };
     // A catalog voice is a replaceable source, not an endlessly duplicated
     // identity. This also repairs metadata whose IndexedDB sample was evicted.
-    const metadata = currentMetadata.filter(item => !sourceVoiceId || item.sourceVoiceId !== sourceVoiceId);
+    const metadata = currentMetadata.filter((item) => !sourceVoiceId || item.sourceVoiceId !== sourceVoiceId);
     const savedMetadata = {
       id,
       name: (name || voiceNameFromFile(file)).slice(0, 80),
@@ -344,7 +348,7 @@ export async function saveChatterboxVoice(file, name = '', profile = {}, {
       description: metadataText(profile.description, '', 240),
       source: metadataText(profile.source, 'Private upload', 80),
       sourceVoiceId,
-      createdAt: record.createdAt
+      createdAt: record.createdAt,
     };
     metadata.push(savedMetadata);
 
@@ -354,7 +358,7 @@ export async function saveChatterboxVoice(file, name = '', profile = {}, {
       // stable-ID put is the one atomic durable boundary; it never exposes a
       // partial replacement and does not require a quota-consuming duplicate.
       stage: async () => record,
-      commitDurable: async stagedRecord => {
+      commitDurable: async (stagedRecord) => {
         await persistence.putSample(stagedRecord);
         return stagedRecord;
       },
@@ -366,10 +370,12 @@ export async function saveChatterboxVoice(file, name = '', profile = {}, {
         if (!isReplacement) await persistence.deleteSample(id);
       },
       reconcile: async () => {
-        await Promise.all(replacedIds.filter(replacedId => replacedId !== id).map(replacedId => (
-          persistence.deleteSample(replacedId).catch(() => {})
-        )));
-      }
+        await Promise.all(
+          replacedIds
+            .filter((replacedId) => replacedId !== id)
+            .map((replacedId) => persistence.deleteSample(replacedId).catch(() => {})),
+        );
+      },
     });
   });
 }
@@ -377,5 +383,5 @@ export async function saveChatterboxVoice(file, name = '', profile = {}, {
 export const CHATTERBOX_REFERENCE_LIMITS = Object.freeze({
   minSeconds: MIN_REFERENCE_SECONDS,
   maxSeconds: MAX_REFERENCE_SECONDS,
-  sampleRate: TARGET_SAMPLE_RATE
+  sampleRate: TARGET_SAMPLE_RATE,
 });

@@ -1,15 +1,9 @@
-import { getAudioContext } from './audio-context.js';
-import { ENGINE_IDS } from './engine-contract.js';
-import {
-  loadRunPodKey,
-  loadRunPodEndpointId,
-  hasRunPodKey,
-  hasCloudConsent,
-  DEFAULT_RUNPOD_ENDPOINT
-} from '../utils/credentials.js';
-import { getChatterboxVoiceSample } from './chatterbox-voice-store.js';
-import { chatterboxRenderStore, decodePcm16 } from './chatterbox-render-store.js';
 import { readBoundedResponseJson } from '../utils/bounded-response.js';
+import { DEFAULT_RUNPOD_ENDPOINT, hasCloudConsent, loadRunPodEndpointId, loadRunPodKey } from '../utils/credentials.js';
+import { getAudioContext } from './audio-context.js';
+import { chatterboxRenderStore, decodePcm16 } from './chatterbox-render-store.js';
+import { getChatterboxVoiceSample } from './chatterbox-voice-store.js';
+import { ENGINE_IDS } from './engine-contract.js';
 
 const MAX_CACHED_SECONDS = 1500;
 const CONCURRENCY = 6;
@@ -28,10 +22,14 @@ function sleep(ms, signal) {
       return;
     }
     const timer = setTimeout(resolve, ms);
-    signal?.addEventListener('abort', () => {
-      clearTimeout(timer);
-      reject(new DOMException('aborted', 'AbortError'));
-    }, { once: true });
+    signal?.addEventListener(
+      'abort',
+      () => {
+        clearTimeout(timer);
+        reject(new DOMException('aborted', 'AbortError'));
+      },
+      { once: true },
+    );
   });
 }
 
@@ -77,11 +75,12 @@ function float32ToWavBase64(pcmFloat32, sampleRate = 24000) {
 
 export function isAudioSilent(buffer) {
   if (!buffer || (buffer.duration !== undefined && buffer.duration <= 0)) return true;
-  const channelData = typeof buffer.getChannelData === 'function'
-    ? buffer.getChannelData(0)
-    : (buffer.channelData?.[0] || null);
+  const channelData =
+    typeof buffer.getChannelData === 'function' ? buffer.getChannelData(0) : buffer.channelData?.[0] || null;
   if (!channelData) {
-    return (buffer.duration !== undefined && buffer.duration <= 0) || (buffer.length !== undefined && buffer.length <= 0);
+    return (
+      (buffer.duration !== undefined && buffer.duration <= 0) || (buffer.length !== undefined && buffer.length <= 0)
+    );
   }
   if (channelData.length === 0) return true;
   for (let i = 0; i < channelData.length; i++) {
@@ -95,7 +94,7 @@ export class RunPodServerlessEngine {
     getApiKey = loadRunPodKey,
     getEndpointId = loadRunPodEndpointId,
     hasConsent = hasCloudConsent,
-    renderStore = chatterboxRenderStore
+    renderStore = chatterboxRenderStore,
   } = {}) {
     this.getApiKey = getApiKey;
     this.getEndpointId = getEndpointId;
@@ -131,7 +130,7 @@ export class RunPodServerlessEngine {
       nativeSampleRate: 24000,
       maxChunkChars: 350,
       concurrency: CONCURRENCY,
-      onUnavailable: 'error'
+      onUnavailable: 'error',
     };
   }
 
@@ -192,7 +191,7 @@ export class RunPodServerlessEngine {
     try {
       const endpointId = this.getEndpointId() || DEFAULT_RUNPOD_ENDPOINT;
       const res = await fetch(`https://api.runpod.ai/v2/${endpointId}/health`, {
-        headers: { authorization: `Bearer ${key}` }
+        headers: { authorization: `Bearer ${key}` },
       });
 
       if (!res.ok) {
@@ -200,7 +199,7 @@ export class RunPodServerlessEngine {
       }
       await readBoundedResponseJson(res, {
         maxBytes: 64 * 1024,
-        tooLargeError: () => new Error('RunPod returned an oversized health response.')
+        tooLargeError: () => new Error('RunPod returned an oversized health response.'),
       });
 
       this.isReady = true;
@@ -306,9 +305,8 @@ export class RunPodServerlessEngine {
 
     if (this.renderStore && buffer) {
       try {
-        const channelData = typeof buffer.getChannelData === 'function'
-          ? buffer.getChannelData(0)
-          : (buffer.channelData?.[0] || null);
+        const channelData =
+          typeof buffer.getChannelData === 'function' ? buffer.getChannelData(0) : buffer.channelData?.[0] || null;
         if (channelData) {
           await this.renderStore.put(unit.key, channelData, buffer.sampleRate || 24000);
           if (signal?.aborted) throw new DOMException('aborted', 'AbortError');
@@ -333,12 +331,13 @@ export class RunPodServerlessEngine {
     const endpointId = this.getEndpointId().trim() || DEFAULT_RUNPOD_ENDPOINT;
 
     const voiceIdStr = String(unit.voiceId || '');
-    const isKokoro = voiceIdStr.startsWith('af_') ||
-                     voiceIdStr.startsWith('am_') ||
-                     voiceIdStr.startsWith('bf_') ||
-                     voiceIdStr.startsWith('bm_') ||
-                     voiceIdStr.startsWith('zf_') ||
-                     voiceIdStr.startsWith('zm_');
+    const isKokoro =
+      voiceIdStr.startsWith('af_') ||
+      voiceIdStr.startsWith('am_') ||
+      voiceIdStr.startsWith('bf_') ||
+      voiceIdStr.startsWith('bm_') ||
+      voiceIdStr.startsWith('zf_') ||
+      voiceIdStr.startsWith('zm_');
 
     const voiceCacheId = unit.voiceCacheId || unit.voiceId;
     const refB64 = isKokoro ? null : await this._getVoiceReferenceB64(unit.voiceId, voiceCacheId);
@@ -357,8 +356,8 @@ export class RunPodServerlessEngine {
         voice_id: voiceCacheId,
         reference_audio_b64: refB64,
         speed: unit.synthSpeed ?? unit.speed ?? 1.0,
-        exaggeration: unit.exaggeration ?? 0.5
-      }
+        exaggeration: unit.exaggeration ?? 0.5,
+      },
     };
 
     let res = null;
@@ -369,10 +368,10 @@ export class RunPodServerlessEngine {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
-            'Authorization': `Bearer ${key}`
+            Authorization: `Bearer ${key}`,
           },
           body: JSON.stringify(payload),
-          signal
+          signal,
         });
       } catch (err) {
         if (err.name === 'AbortError') throw err;
@@ -387,8 +386,12 @@ export class RunPodServerlessEngine {
       // failures can be emitted after work was accepted, so retrying them could
       // create a second paid job without an identity for the first.
       if (RETRYABLE_SUBMISSION_STATUS.has(res.status) && attempts < MAX_ATTEMPTS) {
-        try { await res.body?.cancel?.(); } catch (_) { /* preserve HTTP status */ }
-        await sleep(500 * Math.pow(2, attempts), signal);
+        try {
+          await res.body?.cancel?.();
+        } catch (_) {
+          /* preserve HTTP status */
+        }
+        await sleep(500 * 2 ** attempts, signal);
         continue;
       }
       throw new Error(`RunPod HTTP ${res.status}`);
@@ -397,7 +400,7 @@ export class RunPodServerlessEngine {
     const data = await readBoundedResponseJson(res, {
       maxBytes: MAX_RUNPOD_RESPONSE_BYTES,
       signal,
-      tooLargeError: () => new Error('RunPod returned too much audio data.')
+      tooLargeError: () => new Error('RunPod returned too much audio data.'),
     });
     let audioB64 = '';
 
@@ -444,12 +447,16 @@ export class RunPodServerlessEngine {
 
       const res = await fetch(statusUrl, {
         headers: { Authorization: `Bearer ${apiKey}` },
-        signal
+        signal,
       });
 
       if (!res.ok) {
         if (RETRYABLE_POLL_STATUS.has(res.status)) {
-          try { await res.body?.cancel?.(); } catch (_) { /* preserve HTTP status */ }
+          try {
+            await res.body?.cancel?.();
+          } catch (_) {
+            /* preserve HTTP status */
+          }
           continue;
         }
         throw new Error(`RunPod status check failed with HTTP ${res.status}`);
@@ -457,7 +464,7 @@ export class RunPodServerlessEngine {
       const data = await readBoundedResponseJson(res, {
         maxBytes: MAX_RUNPOD_RESPONSE_BYTES,
         signal,
-        tooLargeError: () => new Error('RunPod returned too much audio data.')
+        tooLargeError: () => new Error('RunPod returned too much audio data.'),
       });
 
       if (data.status === 'COMPLETED') {
@@ -482,14 +489,14 @@ export class RunPodServerlessEngine {
 
       this.activeWorkers++;
       this._loadOrSynthesize(item.unit, item.controller.signal)
-        .then(buffer => {
+        .then((buffer) => {
           if (item.controller.signal.aborted || item.generation !== this.generation) {
             throw new DOMException('aborted', 'AbortError');
           }
           this._cacheBuffer(item.unit.key, buffer);
           item.resolve(buffer);
         })
-        .catch(err => {
+        .catch((err) => {
           item.reject(err);
         })
         .finally(() => {
@@ -538,7 +545,7 @@ export class RunPodServerlessEngine {
       promise,
       resolve: resolvePromise,
       reject: rejectPromise,
-      generation: this.generation
+      generation: this.generation,
     };
 
     this.pending.set(unit.key, pendingEntry);
@@ -550,7 +557,7 @@ export class RunPodServerlessEngine {
 
   dropPendingExcept(keepKeys = []) {
     const keepSet = new Set(keepKeys);
-    this.queue = this.queue.filter(item => {
+    this.queue = this.queue.filter((item) => {
       if (!keepSet.has(item.unit.key)) {
         item.controller.abort();
         item.reject(new DOMException('aborted', 'AbortError'));

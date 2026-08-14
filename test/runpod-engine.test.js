@@ -1,14 +1,14 @@
-import test from 'node:test';
 import assert from 'node:assert/strict';
-
-import { RunPodServerlessEngine as RealRunPodServerlessEngine, isAudioSilent } from '../src/audio/runpod-engine.js';
+import test from 'node:test';
 import { ENGINE_IDS } from '../src/audio/engine-contract.js';
+import { isAudioSilent, RunPodServerlessEngine as RealRunPodServerlessEngine } from '../src/audio/runpod-engine.js';
 
-const tick = () => new Promise(resolve => setImmediate(resolve));
-const jsonResponse = (data, status = 200) => new Response(JSON.stringify(data), {
-  status,
-  headers: { 'content-type': 'application/json' }
-});
+const tick = () => new Promise((resolve) => setImmediate(resolve));
+const jsonResponse = (data, status = 200) =>
+  new Response(JSON.stringify(data), {
+    status,
+    headers: { 'content-type': 'application/json' },
+  });
 
 class RunPodServerlessEngine extends RealRunPodServerlessEngine {
   constructor(options = {}) {
@@ -20,22 +20,22 @@ test('RunPod enforces cloud consent at the engine boundary', async () => {
   const engine = new RealRunPodServerlessEngine({
     hasConsent: () => false,
     getApiKey: () => 'test-key',
-    getEndpointId: () => 'test-endpoint'
+    getEndpointId: () => 'test-endpoint',
   });
-  await assert.rejects(engine.init(), error => error.code === 'no_consent');
+  await assert.rejects(engine.init(), (error) => error.code === 'no_consent');
   await assert.rejects(
     engine._synthesize({ text: 'Private line', voiceId: 'af_heart' }, new AbortController().signal),
-    error => error.code === 'no_consent'
+    (error) => error.code === 'no_consent',
   );
 });
 
 test('RunPod init rejects when API key is missing', async () => {
   const engine = new RunPodServerlessEngine({
     getApiKey: () => '',
-    getEndpointId: () => 'test-endpoint'
+    getEndpointId: () => 'test-endpoint',
   });
 
-  await assert.rejects(engine.init(), error => error.code === 'no_key');
+  await assert.rejects(engine.init(), (error) => error.code === 'no_key');
   assert.equal(engine.isReady, false);
   assert.equal(engine.phase, 'error');
 });
@@ -52,7 +52,7 @@ test('RunPod init marks ready when health check passes', async () => {
   try {
     const engine = new RunPodServerlessEngine({
       getApiKey: () => 'valid-test-key',
-      getEndpointId: () => 'test-endpoint'
+      getEndpointId: () => 'test-endpoint',
     });
 
     await engine.init();
@@ -66,7 +66,7 @@ test('RunPod init marks ready when health check passes', async () => {
 test('RunPod capabilities specify correct concurrency and engine ID', () => {
   const engine = new RunPodServerlessEngine({
     getApiKey: () => 'test-key',
-    getEndpointId: () => 'test-endpoint'
+    getEndpointId: () => 'test-endpoint',
   });
 
   assert.equal(engine.capabilities.id, ENGINE_IDS.RUNPOD);
@@ -78,7 +78,7 @@ test('RunPod capabilities specify correct concurrency and engine ID', () => {
 test('RunPod durable render identity changes with endpoint configuration', () => {
   let endpointId = 'endpoint-a';
   const engine = new RunPodServerlessEngine({
-    getEndpointId: () => endpointId
+    getEndpointId: () => endpointId,
   });
   const profile = { id: 'studio-alice', renderRevision: 4 };
   const first = engine.resolveVoiceCacheId(profile);
@@ -93,7 +93,7 @@ test('an aborted RunPod request does not delete a replacement with the same key'
   const deferred = [];
   const engine = new RunPodServerlessEngine({
     getApiKey: () => 'test-key',
-    getEndpointId: () => 'test-endpoint'
+    getEndpointId: () => 'test-endpoint',
   });
   engine.isReady = true;
   engine._synthesize = () => new Promise((resolve, reject) => deferred.push({ resolve, reject }));
@@ -119,12 +119,12 @@ test('an aborted RunPod request does not delete a replacement with the same key'
 test('RunPod _synthesize polls when status is IN_PROGRESS or IN_QUEUE', async () => {
   const originalFetch = globalThis.fetch;
   let statusPolls = 0;
-  globalThis.fetch = async (url, options) => {
+  globalThis.fetch = async (url, _options) => {
     if (url.includes('/runsync')) {
       return {
         ok: true,
         status: 200,
-        json: async () => ({ status: 'IN_PROGRESS', id: 'job-123' })
+        json: async () => ({ status: 'IN_PROGRESS', id: 'job-123' }),
       };
     }
     if (url.includes('/status/job-123')) {
@@ -134,8 +134,9 @@ test('RunPod _synthesize polls when status is IN_PROGRESS or IN_QUEUE', async ()
         status: 200,
         json: async () => ({
           status: statusPolls >= 2 ? 'COMPLETED' : 'IN_PROGRESS',
-          output: statusPolls >= 2 ? { audio_base64: 'UklGRigAAABXQVZFZm10IBAAAAABAAEARKwAAIhYAQACABAAZGF0YQAAAAA=' } : null
-        })
+          output:
+            statusPolls >= 2 ? { audio_base64: 'UklGRigAAABXQVZFZm10IBAAAAABAAEARKwAAIhYAQACABAAZGF0YQAAAAA=' } : null,
+        }),
       };
     }
     return { ok: false, status: 404 };
@@ -144,7 +145,7 @@ test('RunPod _synthesize polls when status is IN_PROGRESS or IN_QUEUE', async ()
   try {
     const engine = new RunPodServerlessEngine({
       getApiKey: () => 'test-key',
-      getEndpointId: () => 'test-endpoint'
+      getEndpointId: () => 'test-endpoint',
     });
     engine.isReady = true;
 
@@ -172,13 +173,13 @@ test('RunPod _pollJob rejects immediately on terminal failure statuses without t
   try {
     const engine = new RunPodServerlessEngine({
       getApiKey: () => 'test-key',
-      getEndpointId: () => 'test-endpoint'
+      getEndpointId: () => 'test-endpoint',
     });
     engine.isReady = true;
 
     await assert.rejects(
       engine._pollJob('test-endpoint', 'job-fail', 'test-key', new AbortController().signal),
-      error => error.message.includes('GPU out of memory')
+      (error) => error.message.includes('GPU out of memory'),
     );
   } finally {
     globalThis.fetch = originalFetch;
@@ -195,18 +196,18 @@ test('RunPod reuses persistent renderStore cache and writes new renders', async 
     },
     async put(key, audio, sampleRate) {
       writes.push({ key, audio, sampleRate });
-    }
+    },
   };
 
   const engine = new RunPodServerlessEngine({
     getApiKey: () => 'test-key',
     getEndpointId: () => 'test-endpoint',
-    renderStore: fakeStore
+    renderStore: fakeStore,
   });
   engine.isReady = true;
 
   const mockBuffer = { duration: 1.0, sampleRate: 24000, getChannelData: () => new Float32Array([0, 0.5]) };
-  engine._bufferFromPcm = (pcm, sampleRate) => {
+  engine._bufferFromPcm = (pcm, _sampleRate) => {
     assert.equal(pcm, storedPcm);
     return mockBuffer;
   };
@@ -229,22 +230,26 @@ test('RunPod reuses persistent renderStore cache and writes new renders', async 
 
 test('RunPod release cannot be undone by a late browser-store write', async () => {
   let finishWrite;
-  const writeStarted = new Promise(resolve => {
+  const writeStarted = new Promise((resolve) => {
     finishWrite = { signal: resolve };
   });
   let resolveWrite;
   const fakeStore = {
-    async get() { return null; },
+    async get() {
+      return null;
+    },
     async put() {
       finishWrite.signal();
-      return new Promise(resolve => { resolveWrite = resolve; });
-    }
+      return new Promise((resolve) => {
+        resolveWrite = resolve;
+      });
+    },
   };
   const engine = new RunPodServerlessEngine({ renderStore: fakeStore });
   const buffer = {
     duration: 1,
     sampleRate: 24000,
-    getChannelData: () => new Float32Array([0.2, -0.2])
+    getChannelData: () => new Float32Array([0.2, -0.2]),
   };
   engine._synthesize = async () => buffer;
 
@@ -253,7 +258,7 @@ test('RunPod release cannot be undone by a late browser-store write', async () =
   engine.release();
   resolveWrite();
 
-  await assert.rejects(request, error => error.name === 'AbortError');
+  await assert.rejects(request, (error) => error.name === 'AbortError');
   assert.equal(engine.audioCache.size, 0);
   assert.equal(engine.pending.size, 0);
 });
@@ -261,7 +266,7 @@ test('RunPod release cannot be undone by a late browser-store write', async () =
 test('RunPod _getVoiceReferenceB64 correctly encodes Float32Array reference audio', async () => {
   const engine = new RunPodServerlessEngine({
     getApiKey: () => 'test-key',
-    getEndpointId: () => 'test-endpoint'
+    getEndpointId: () => 'test-endpoint',
   });
 
   // Mock global storage/store for test
@@ -269,7 +274,7 @@ test('RunPod _getVoiceReferenceB64 correctly encodes Float32Array reference audi
   pcm[100] = 0.5;
   pcm[200] = -0.5;
 
-  const originalGet = globalThis.getChatterboxVoiceSample;
+  const _originalGet = globalThis.getChatterboxVoiceSample;
   // Test with mock internal call
   engine._voiceBase64Cache.clear();
 
@@ -288,7 +293,7 @@ test('voice mapping preserves Kokoro voice IDs when mapping to RunPod', async ()
   assert.equal(mappedFenrir, 'am_fenrir');
 
   const runpodPool = getVoicesForEngine(ENGINE_IDS.RUNPOD);
-  assert.ok(runpodPool.some(v => v.id === 'af_heart'));
+  assert.ok(runpodPool.some((v) => v.id === 'af_heart'));
   assert.ok(runpodPool.length >= 20);
 });
 
@@ -302,10 +307,10 @@ test('casting modal under RunPod renders reference voice library and allows brow
       currentScript: {
         title: 'Test RunPod Screenplay',
         characters: [{ name: 'ALICE', lineCount: 2, sampleLine: 'Hello.' }],
-        elements: [{ type: 'DIALOGUE', character: 'ALICE', text: 'Hello.' }]
+        elements: [{ type: 'DIALOGUE', character: 'ALICE', text: 'Hello.' }],
       },
       castAssignments: new Map(),
-      getNarratorVoice: () => 'af_heart'
+      getNarratorVoice: () => 'af_heart',
     };
     const audioManager = {
       engineId: ENGINE_IDS.RUNPOD,
@@ -313,7 +318,7 @@ test('casting modal under RunPod renders reference voice library and allows brow
       getVoiceProfileForCharacter: () => ({ id: 'af_heart', name: 'Heart', avatarBg: '#333' }),
       stop() {},
       volume: 1,
-      isMuted: false
+      isMuted: false,
     };
 
     const modal = createVoiceConfigModal({ scriptStore, audioManager, isInitialSetup: true });
@@ -325,7 +330,7 @@ test('casting modal under RunPod renders reference voice library and allows brow
     const findBtn = modal.querySelector('#btn-find-studio-voice');
     findBtn.click();
 
-    await new Promise(resolve => setTimeout(resolve, 50));
+    await new Promise((resolve) => setTimeout(resolve, 50));
     const catalogDialog = document.body.querySelector('.voice-sample-catalog-overlay');
     assert.ok(catalogDialog, 'opens voice sample catalog modal');
   } finally {
@@ -341,7 +346,7 @@ test('RunPod _synthesize propagates worker error when status is COMPLETED with o
       submissions++;
       return jsonResponse({
         status: 'COMPLETED',
-        output: { error: 'CUDA out of memory in Kokoro forward pass' }
+        output: { error: 'CUDA out of memory in Kokoro forward pass' },
       });
     }
     return { ok: false, status: 404 };
@@ -350,13 +355,13 @@ test('RunPod _synthesize propagates worker error when status is COMPLETED with o
   try {
     const engine = new RunPodServerlessEngine({
       getApiKey: () => 'test-key',
-      getEndpointId: () => 'test-endpoint'
+      getEndpointId: () => 'test-endpoint',
     });
     engine.isReady = true;
 
     await assert.rejects(
       engine._synthesize({ text: 'Hello', voiceId: 'af_heart' }, new AbortController().signal),
-      error => error.message.includes('CUDA out of memory')
+      (error) => error.message.includes('CUDA out of memory'),
     );
     assert.equal(submissions, 1, 'an accepted failed job must not be resubmitted');
   } finally {
@@ -378,12 +383,14 @@ test('RunPod does not resubmit after an accepted queued job later fails', async 
   try {
     const engine = new RunPodServerlessEngine({
       getApiKey: () => 'test-key',
-      getEndpointId: () => 'test-endpoint'
+      getEndpointId: () => 'test-endpoint',
     });
-    engine._pollJob = async () => { throw new Error('status stream disconnected'); };
+    engine._pollJob = async () => {
+      throw new Error('status stream disconnected');
+    };
     await assert.rejects(
       engine._synthesize({ text: 'Hello', voiceId: 'af_heart' }, new AbortController().signal),
-      /status stream disconnected/
+      /status stream disconnected/,
     );
     assert.equal(submissions, 1);
   } finally {
@@ -393,21 +400,22 @@ test('RunPod does not resubmit after an accepted queued job later fails', async 
 
 test('RunPod rejects an oversized streamed response before audio decoding', async () => {
   const originalFetch = globalThis.fetch;
-  globalThis.fetch = async () => new Response('{}', {
-    status: 200,
-    headers: {
-      'content-type': 'application/json',
-      'content-length': String(9 * 1024 * 1024)
-    }
-  });
+  globalThis.fetch = async () =>
+    new Response('{}', {
+      status: 200,
+      headers: {
+        'content-type': 'application/json',
+        'content-length': String(9 * 1024 * 1024),
+      },
+    });
   try {
     const engine = new RunPodServerlessEngine({
       getApiKey: () => 'test-key',
-      getEndpointId: () => 'test-endpoint'
+      getEndpointId: () => 'test-endpoint',
     });
     await assert.rejects(
       engine._synthesize({ text: 'Hello', voiceId: 'af_heart' }, new AbortController().signal),
-      /too much audio data/
+      /too much audio data/,
     );
   } finally {
     globalThis.fetch = originalFetch;
@@ -424,16 +432,19 @@ test('RunPod sends the revisioned voice cache identity to its ephemeral worker',
   try {
     const engine = new RunPodServerlessEngine({
       getApiKey: () => 'test-key',
-      getEndpointId: () => 'test-endpoint'
+      getEndpointId: () => 'test-endpoint',
     });
     engine._getVoiceReferenceB64 = async () => 'UklGRg==';
     await assert.rejects(
-      engine._synthesize({
-        text: 'Hello',
-        voiceId: 'studio-alice',
-        voiceCacheId: 'studio-alice@revision-2'
-      }, new AbortController().signal),
-      /stop after payload capture/
+      engine._synthesize(
+        {
+          text: 'Hello',
+          voiceId: 'studio-alice',
+          voiceCacheId: 'studio-alice@revision-2',
+        },
+        new AbortController().signal,
+      ),
+      /stop after payload capture/,
     );
     assert.equal(body.input.voice, 'studio-alice');
     assert.equal(body.input.voice_id, 'studio-alice@revision-2');
@@ -465,10 +476,10 @@ test('RunPod _synthesize skips reference lookup for Kokoro voices and errors on 
     let refLookups = 0;
     const engine = new RunPodServerlessEngine({
       getApiKey: () => 'test-key',
-      getEndpointId: () => 'test-endpoint'
+      getEndpointId: () => 'test-endpoint',
     });
     engine.isReady = true;
-    engine._getVoiceReferenceB64 = async (voiceId) => {
+    engine._getVoiceReferenceB64 = async (_voiceId) => {
       refLookups++;
       return null;
     };
@@ -476,16 +487,16 @@ test('RunPod _synthesize skips reference lookup for Kokoro voices and errors on 
     // 1. Missing Studio reference voice errors out immediately
     await assert.rejects(
       engine._synthesize({ text: 'Hello', voiceId: 'custom-voice-ref' }, new AbortController().signal),
-      error => error.message.includes('missing its reference recording')
+      (error) => error.message.includes('missing its reference recording'),
     );
     assert.equal(refLookups, 1);
 
     // 2. Kokoro voice does NOT query reference audio
     const originalFetch = globalThis.fetch;
-    globalThis.fetch = async (url) => {
+    globalThis.fetch = async (_url) => {
       return jsonResponse({
         status: 'COMPLETED',
-        output: { audio_base64: 'UklGRigAAABXQVZFZm10IBAAAAABAAEARKwAAIhYAQACABAAZGF0YQAAAAA=' }
+        output: { audio_base64: 'UklGRigAAABXQVZFZm10IBAAAAABAAEARKwAAIhYAQACABAAZGF0YQAAAAA=' },
       });
     };
 
@@ -524,12 +535,15 @@ test('auditioning character and narrator in casting modal under RunPod invokes p
       currentScript: {
         title: 'RunPod Audition Script',
         characters: [{ name: 'VALENTINE', lineCount: 4, sampleLine: 'Breach confirmed.' }],
-        elements: [{ type: 'DIALOGUE', character: 'VALENTINE', text: 'Breach confirmed.' }]
+        elements: [{ type: 'DIALOGUE', character: 'VALENTINE', text: 'Breach confirmed.' }],
       },
       castAssignments: new Map([
-        ['VALENTINE', { voiceId: 'af_sarah', voiceIds: { [ENGINE_IDS.RUNPOD]: 'af_sarah' }, pitchOffset: 0, speedMultiplier: 1.0 }]
+        [
+          'VALENTINE',
+          { voiceId: 'af_sarah', voiceIds: { [ENGINE_IDS.RUNPOD]: 'af_sarah' }, pitchOffset: 0, speedMultiplier: 1.0 },
+        ],
       ]),
-      getNarratorVoice: () => 'bf_emma'
+      getNarratorVoice: () => 'bf_emma',
     };
 
     const previews = [];
@@ -543,7 +557,7 @@ test('auditioning character and narrator in casting modal under RunPod invokes p
         onStateChange?.('playing');
       },
       volume: 1,
-      isMuted: false
+      isMuted: false,
     };
 
     const modal = createVoiceConfigModal({ scriptStore, audioManager, isInitialSetup: false });
@@ -582,11 +596,11 @@ test('cast panel character test under RunPod handles missing assignment cleanly'
       currentScript: {
         title: 'RunPod Cast Panel Script',
         characters: [{ name: 'KIRA', lineCount: 3, sampleLine: 'Copy that.' }],
-        elements: [{ type: 'DIALOGUE', character: 'KIRA', text: 'Copy that.' }]
+        elements: [{ type: 'DIALOGUE', character: 'KIRA', text: 'Copy that.' }],
       },
       castAssignments: new Map(), // empty assignments
       getNarratorVoice: () => 'af_heart',
-      subscribe: () => () => {}
+      subscribe: () => () => {},
     };
 
     const previews = [];
@@ -600,7 +614,7 @@ test('cast panel character test under RunPod handles missing assignment cleanly'
         onStateChange?.('playing');
       },
       volume: 1,
-      isMuted: false
+      isMuted: false,
     };
 
     const panel = createCastPanel({ scriptStore, audioManager, onOpenVoiceConfig: () => {} });
@@ -622,14 +636,17 @@ test('isAudioSilent accurately detects silent audio vs audible speech', () => {
   assert.equal(isAudioSilent(null), true);
   assert.equal(isAudioSilent({ duration: 0 }), true);
   assert.equal(isAudioSilent({ duration: 1.0, getChannelData: () => new Float32Array(1000) }), true);
-  assert.equal(isAudioSilent({ duration: 1.0, getChannelData: () => new Float32Array([0, 0, 0.00001, -0.00001]) }), true);
+  assert.equal(
+    isAudioSilent({ duration: 1.0, getChannelData: () => new Float32Array([0, 0, 0.00001, -0.00001]) }),
+    true,
+  );
   assert.equal(isAudioSilent({ duration: 1.0, getChannelData: () => new Float32Array([0, 0, 0.05, 0.1]) }), false);
 });
 
 test('RunPod _synthesize rejects empty or silent audio and prevents caching invalid renders', async () => {
   const engine = new RunPodServerlessEngine({
     getApiKey: () => 'test-key',
-    getEndpointId: () => 'test-endpoint'
+    getEndpointId: () => 'test-endpoint',
   });
   engine.isReady = true;
 
@@ -637,19 +654,19 @@ test('RunPod _synthesize rejects empty or silent audio and prevents caching inva
   const silentBuffer = {
     duration: 1.5,
     sampleRate: 24000,
-    getChannelData: () => new Float32Array(24000)
+    getChannelData: () => new Float32Array(24000),
   };
   engine._synthesize = async () => silentBuffer;
 
   await assert.rejects(
     engine._loadOrSynthesize({ key: 'silent-line', text: 'Hello world' }, new AbortController().signal),
-    error => error.message.includes('empty or silent audio')
+    (error) => error.message.includes('empty or silent audio'),
   );
 });
 
 test('RunPod _loadOrSynthesize bypasses and replaces corrupt silent renders from renderStore', async () => {
   const silentPcm = new Int16Array(24000); // 1.0 sec of zeros
-  let writes = [];
+  const writes = [];
   const fakeStore = {
     async get(key) {
       if (key === 'corrupt-line') return { audio: silentPcm, sampleRate: 24000 };
@@ -657,29 +674,32 @@ test('RunPod _loadOrSynthesize bypasses and replaces corrupt silent renders from
     },
     async put(key, audio, sampleRate) {
       writes.push({ key, audio, sampleRate });
-    }
+    },
   };
 
   const engine = new RunPodServerlessEngine({
     getApiKey: () => 'test-key',
     getEndpointId: () => 'test-endpoint',
-    renderStore: fakeStore
+    renderStore: fakeStore,
   });
   engine.isReady = true;
   engine._bufferFromPcm = (pcm, sr) => ({
     duration: 1.0,
     sampleRate: sr,
-    getChannelData: () => new Float32Array(pcm.length) // returns all zeros
+    getChannelData: () => new Float32Array(pcm.length), // returns all zeros
   });
 
   const validBuffer = {
     duration: 1.5,
     sampleRate: 24000,
-    getChannelData: () => new Float32Array([0.1, -0.2, 0.3])
+    getChannelData: () => new Float32Array([0.1, -0.2, 0.3]),
   };
   engine._synthesize = async () => validBuffer;
 
-  const result = await engine._loadOrSynthesize({ key: 'corrupt-line', text: 'Re-render me' }, new AbortController().signal);
+  const result = await engine._loadOrSynthesize(
+    { key: 'corrupt-line', text: 'Re-render me' },
+    new AbortController().signal,
+  );
   assert.equal(result, validBuffer);
   assert.equal(writes.length, 1);
   assert.equal(writes[0].key, 'corrupt-line');

@@ -1,20 +1,20 @@
-import { ENGINE_IDS } from './engine-contract.js';
 import { getAudioContext } from './audio-context.js';
-import { ModelCacheManager } from './model-cache-manager.js';
-import { getChatterboxVoiceSample } from './chatterbox-voice-store.js';
-import { createOpfsModelCache } from './opfs-model-cache.js';
-import { chatterboxRenderStore, decodePcm16 } from './chatterbox-render-store.js';
-import { isAudioSilent } from './runpod-engine.js';
 import {
   CHATTERBOX_DOWNLOAD_BYTES,
   CHATTERBOX_MODEL_ID,
-  OPFS_NAMESPACE,
   expectedBytesForUrl,
   expectedFilesFor,
   expectedTotalBytes,
   isCompleteSize,
-  pickChatterboxDevice
+  OPFS_NAMESPACE,
+  pickChatterboxDevice,
 } from './chatterbox-model-files.js';
+import { chatterboxRenderStore, decodePcm16 } from './chatterbox-render-store.js';
+import { getChatterboxVoiceSample } from './chatterbox-voice-store.js';
+import { ENGINE_IDS } from './engine-contract.js';
+import { ModelCacheManager } from './model-cache-manager.js';
+import { createOpfsModelCache } from './opfs-model-cache.js';
+import { isAudioSilent } from './runpod-engine.js';
 
 // Re-exported because the settings modal and the tests import them from here.
 export { CHATTERBOX_DOWNLOAD_BYTES, CHATTERBOX_MODEL_ID };
@@ -31,7 +31,7 @@ const SIGNIFICANT_BYTES = 1024 * 1024;
 // 80-95, with the creep below reaching 97. 100 belongs to `ready` alone.
 const STAGE_BANDS = {
   download: [8, 80],
-  building: [80, 95]
+  building: [80, 95],
 };
 
 // While ORT instantiates four sessions from ~1.4 GB there is no signal of any
@@ -86,7 +86,7 @@ export async function getChatterboxCacheStatus(preferredDevice = 'auto') {
       expectedBytes: 0,
       missing: [],
       fileCount: 0,
-      persisted
+      persisted,
     };
   }
 
@@ -113,12 +113,12 @@ export async function getChatterboxCacheStatus(preferredDevice = 'auto') {
     partial: missing.length > 0 && fileCount > 0,
     storable: true,
     device,
-    weightFiles: { cached: weightsCached, expected: files.filter(file => file.isWeights).length },
+    weightFiles: { cached: weightsCached, expected: files.filter((file) => file.isWeights).length },
     cachedBytes,
     expectedBytes: expectedTotalBytes(device),
     missing,
     fileCount,
-    persisted
+    persisted,
   };
 }
 
@@ -132,8 +132,8 @@ export async function getChatterboxCacheStatus(preferredDevice = 'auto') {
 export async function clearChatterboxCache() {
   const cache = await createOpfsModelCache(OPFS_NAMESPACE);
   const clearedOpfs = cache ? await cache.clear() : false;
-  const sweptLegacy = await ModelCacheManager.clearMatchingEntries(
-    url => url.toLowerCase().includes('chatterbox-onnx')
+  const sweptLegacy = await ModelCacheManager.clearMatchingEntries((url) =>
+    url.toLowerCase().includes('chatterbox-onnx'),
   );
   const clearedRenders = await chatterboxRenderStore.clear();
   return clearedOpfs || sweptLegacy || clearedRenders;
@@ -197,7 +197,7 @@ export class ChatterboxStudioEngine {
       nativeSampleRate: 24000,
       maxChunkChars: 125,
       concurrency: 1,
-      onUnavailable: 'error'
+      onUnavailable: 'error',
     };
   }
 
@@ -225,7 +225,7 @@ export class ChatterboxStudioEngine {
       phase,
       stage: this.stage,
       isCachedLocally: this.isCachedLocally,
-      error: this.lastError
+      error: this.lastError,
     };
     for (const callback of this.progressListeners) {
       // One throwing subscriber used to silence every later one — and because
@@ -312,7 +312,7 @@ export class ChatterboxStudioEngine {
         loaded,
         total,
         totalTrusted,
-        status: entry.status || known.status
+        status: entry.status || known.status,
       });
     }
 
@@ -356,9 +356,12 @@ export class ChatterboxStudioEngine {
 
     const percent = Math.min(100, Math.round((loadedBytes / totalBytes) * 100));
     const size = `${ModelCacheManager.formatBytes(loadedBytes)} / ${ModelCacheManager.formatBytes(totalBytes)}`;
-    const verb = this.stage === 'building'
-      ? 'Loading the voice model from this device'
-      : (this.isCachedLocally ? 'Verifying Studio Local' : 'Downloading Studio Local');
+    const verb =
+      this.stage === 'building'
+        ? 'Loading the voice model from this device'
+        : this.isCachedLocally
+          ? 'Verifying Studio Local'
+          : 'Downloading Studio Local';
 
     this._loadingBaseMessage = `${verb}: ${percent}% · ${size}`;
     this._emitLoading(floor + (percent / 100) * (ceiling - floor), this._loadingBaseMessage);
@@ -378,7 +381,8 @@ export class ChatterboxStudioEngine {
         this._stopCreep();
         return;
       }
-      this._loadingBaseMessage = 'Preparing the voice model — building four speech models from 1.4 GB. This can take a minute.';
+      this._loadingBaseMessage =
+        'Preparing the voice model — building four speech models from 1.4 GB. This can take a minute.';
       this._emitLoading(Math.min(CREEP_CEILING, this._maxOverall + 1), this._loadingBaseMessage);
     }, CREEP_INTERVAL_MS);
   }
@@ -416,9 +420,11 @@ export class ChatterboxStudioEngine {
     if (this._deadlineTimer) clearTimeout(this._deadlineTimer);
     this._deadlineTimer = setTimeout(() => {
       const where = this.stage === 'building' ? 'building the voice model' : 'downloading the voice model';
-      this._handleWorkerCrash(new Error(
-        `Studio Local stopped responding while ${where}. This browser most likely ran out of memory. Try again, or switch to Kokoro.`
-      ));
+      this._handleWorkerCrash(
+        new Error(
+          `Studio Local stopped responding while ${where}. This browser most likely ran out of memory. Try again, or switch to Kokoro.`,
+        ),
+      );
     }, ms);
   }
 
@@ -446,9 +452,8 @@ export class ChatterboxStudioEngine {
    * later request hung on a resolver nobody would settle.
    */
   _handleWorkerCrash(err) {
-    const error = err instanceof Error
-      ? err
-      : new Error(truncate(err?.message) || 'The Studio Local worker stopped unexpectedly.');
+    const error =
+      err instanceof Error ? err : new Error(truncate(err?.message) || 'The Studio Local worker stopped unexpectedly.');
     error.reported = true;
 
     const pending = [...this.resolvers.values()];
@@ -489,7 +494,9 @@ export class ChatterboxStudioEngine {
   async init(device = 'auto') {
     if (this.isReady) return true;
     if (this.initPromise) return this.initPromise;
-    this.initPromise = this._init(device).finally(() => { this.initPromise = null; });
+    this.initPromise = this._init(device).finally(() => {
+      this.initPromise = null;
+    });
     return this.initPromise;
   }
 
@@ -511,13 +518,11 @@ export class ChatterboxStudioEngine {
 
     try {
       this.worker = new Worker(new URL('./chatterbox-worker.js', import.meta.url), { type: 'module' });
-      this.worker.onmessage = event => this._onWorkerMessage(event);
-      this.worker.onerror = event => this._handleWorkerCrash(
-        new Error(truncate(event?.message) || 'The Studio Local worker stopped unexpectedly.')
-      );
-      this.worker.onmessageerror = () => this._handleWorkerCrash(
-        new Error('The Studio Local worker sent an unreadable message.')
-      );
+      this.worker.onmessage = (event) => this._onWorkerMessage(event);
+      this.worker.onerror = (event) =>
+        this._handleWorkerCrash(new Error(truncate(event?.message) || 'The Studio Local worker stopped unexpectedly.'));
+      this.worker.onmessageerror = () =>
+        this._handleWorkerCrash(new Error('The Studio Local worker sent an unreadable message.'));
 
       this.stage = 'download';
       this._armStallWatchdog();
@@ -572,9 +577,15 @@ export class ChatterboxStudioEngine {
     }
   }
 
-  getCached(key) { return this.audioCache.get(key) || null; }
-  has(key) { return this.audioCache.has(key); }
-  isPending(key) { return this.pending.has(key); }
+  getCached(key) {
+    return this.audioCache.get(key) || null;
+  }
+  has(key) {
+    return this.audioCache.has(key);
+  }
+  isPending(key) {
+    return this.pending.has(key);
+  }
 
   request(unit, priority = 1000) {
     if (!this.isReady || !this.worker) return null;
@@ -590,12 +601,12 @@ export class ChatterboxStudioEngine {
     }
 
     const promise = this._loadOrSynthesize(unit, priority)
-      .then(buffer => {
+      .then((buffer) => {
         this.pending.delete(unit.key);
         this._store(unit.key, buffer);
         return buffer;
       })
-      .catch(error => {
+      .catch((error) => {
         this.pending.delete(unit.key);
         // Recorded but not broadcast. The rejection already propagates to the
         // caller, and emitting a progress update from here is how the invalid
@@ -646,18 +657,21 @@ export class ChatterboxStudioEngine {
     const raw = await new Promise((resolve, reject) => {
       const id = ++this.msgId;
       this.resolvers.set(id, { resolve, reject });
-      this.worker.postMessage({
-        type: 'generate',
-        id,
-        payload: {
-          key: unit.key,
-          text: unit.text,
-          voiceId: unit.voiceId,
-          audio: transferable.buffer,
-          exaggeration: exaggerationFor(unit),
-          priority
-        }
-      }, [transferable.buffer]);
+      this.worker.postMessage(
+        {
+          type: 'generate',
+          id,
+          payload: {
+            key: unit.key,
+            text: unit.text,
+            voiceId: unit.voiceId,
+            audio: transferable.buffer,
+            exaggeration: exaggerationFor(unit),
+            priority,
+          },
+        },
+        [transferable.buffer],
+      );
     });
 
     const context = getAudioContext();

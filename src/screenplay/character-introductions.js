@@ -85,7 +85,8 @@ const PAGE_NOISE_REGEX = /\((?:CONTINUED|MORE|CONT'?D)\)/gi;
  * parser classifies `KIRA (V.O.) sighs offscreen.` as action, which is the right
  * call — there is no dialogue under it — but it must not become KIRA's portrait.
  */
-const CUE_EXTENSION_REGEX = /^(?:V\.?O\.?|O\.?S\.?|O\.?C\.?|CONT'?D\.?|CONTINUED|MORE|BEAT|PRE-?LAP|SUBTITLE|FILTERED|INTO PHONE|ON PHONE)$/i;
+const CUE_EXTENSION_REGEX =
+  /^(?:V\.?O\.?|O\.?S\.?|O\.?C\.?|CONT'?D\.?|CONTINUED|MORE|BEAT|PRE-?LAP|SUBTITLE|FILTERED|INTO PHONE|ON PHONE)$/i;
 
 /** The cue shape from `fountain-parser.js`, so `J.J.` and `J. J.` index alike. */
 const INITIALS_REGEX = /^(?:[A-Z]\.\s*){2,}(?:[A-Z][A-Z0-9_' -]*\.?)?$/;
@@ -104,7 +105,7 @@ const ABBREVIATION_TAIL = /(?:^|\s)(?:[A-Z]|DR|MR|MRS|MS|PROF|CAPT|LT|SGT|GEN|CO
 const AGE_PATTERNS = [
   /^(?:AGED?\s+)?(?:(?:EARLY|MID|LATE)[-\s]?)?\d{1,3}\s*'?S\b/,
   /^(?:AGED?\s+)?(?:(?:EARLY|MID|LATE)[-\s]?)?(?:TEENS|TWENTIES|THIRTIES|FORTIES|FIFTIES|SIXTIES|SEVENTIES|EIGHTIES|NINETIES)\b/,
-  /^(?:AGED?\s+)?\d{1,3}$/
+  /^(?:AGED?\s+)?\d{1,3}$/,
 ];
 
 /**
@@ -253,7 +254,7 @@ function buildActionParagraphs(elements) {
   }
 
   for (const paragraph of paragraphs) {
-    paragraph.text = paragraph.text.replace(PAGE_NOISE_REGEX, match => ' '.repeat(match.length));
+    paragraph.text = paragraph.text.replace(PAGE_NOISE_REGEX, (match) => ' '.repeat(match.length));
   }
   return paragraphs;
 }
@@ -368,7 +369,7 @@ function readDescription(text, spanEnd, nameEndsSentence, allowAppositive) {
       text: truncate(body, MAX_DESCRIPTION_CHARS),
       age: extractAge(body.split(',')[0]),
       form: 'parenthetical',
-      scanFrom: parsed.end
+      scanFrom: parsed.end,
     };
   }
 
@@ -391,7 +392,7 @@ function readDescription(text, spanEnd, nameEndsSentence, allowAppositive) {
       text: description,
       age,
       form: 'appositive',
-      scanFrom: sentenceEnd === -1 ? text.length : sentenceEnd
+      scanFrom: sentenceEnd === -1 ? text.length : sentenceEnd,
     };
   }
 
@@ -438,15 +439,13 @@ export function findCharacterIntroductions({ elements = [], characters = [] } = 
     if (!text.includes('(') && !text.includes(',')) continue;
 
     const tokens = [];
-    const tokenPattern = /\S+/g;
-    let match;
-    while ((match = tokenPattern.exec(text)) !== null) {
+    for (const match of text.matchAll(/\S+/g)) {
       tokens.push({
         raw: match[0],
         norm: normalizeToken(match[0]),
         start: match.index,
         end: match.index + match[0].length,
-        caps: isCapsToken(match[0])
+        caps: isCapsToken(match[0]),
       });
     }
 
@@ -464,9 +463,11 @@ export function findCharacterIntroductions({ elements = [], characters = [] } = 
         let hit = null;
         const longest = Math.min(maxNameTokens, runEnd - at);
         for (let length = longest; length >= 1; length--) {
-          const key = tokens.slice(at, at + length).map(token => token.norm).join(' ');
-          const name = index.get(key)
-            || (length === 1 ? index.get(key.replace(/\s+/g, '')) : null);
+          const key = tokens
+            .slice(at, at + length)
+            .map((token) => token.norm)
+            .join(' ');
+          const name = index.get(key) || (length === 1 ? index.get(key.replace(/\s+/g, '')) : null);
           if (name) {
             hit = { name, length };
             break;
@@ -482,22 +483,17 @@ export function findCharacterIntroductions({ elements = [], characters = [] } = 
         // punctuation is where the name stopped and the description started.
         let spanEnd = at + hit.length;
         while (
-          spanEnd < runEnd
-          && spanEnd - at < MAX_SPAN_TOKENS
-          && isNameContinuation(tokens[spanEnd - 1].raw)
-          && isNameContinuation(tokens[spanEnd].raw)
-          && !index.has(tokens[spanEnd].norm)
+          spanEnd < runEnd &&
+          spanEnd - at < MAX_SPAN_TOKENS &&
+          isNameContinuation(tokens[spanEnd - 1].raw) &&
+          isNameContinuation(tokens[spanEnd].raw) &&
+          !index.has(tokens[spanEnd].norm)
         ) {
           spanEnd++;
         }
 
         const lastToken = tokens[spanEnd - 1];
-        const described = readDescription(
-          text,
-          nameEndOf(lastToken),
-          endsSentence(lastToken.raw),
-          allowAppositive
-        );
+        const described = readDescription(text, nameEndOf(lastToken), endsSentence(lastToken.raw), allowAppositive);
 
         if (described) {
           const existing = results.get(hit.name);
@@ -510,7 +506,7 @@ export function findCharacterIntroductions({ elements = [], characters = [] } = 
               age: described.age,
               sourceText: sentenceAround(text, tokens[at].start, described.scanFrom),
               elementId: elementIdAt(paragraph, tokens[at].start),
-              form: described.form
+              form: described.form,
             });
           }
         }

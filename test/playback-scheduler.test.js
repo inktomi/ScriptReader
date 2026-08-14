@@ -1,17 +1,30 @@
-import test from 'node:test';
 import assert from 'node:assert/strict';
+import test from 'node:test';
 
 class AudioParamStub {
-  constructor(value = 0) { this.value = value; }
-  setTargetAtTime(value) { this.value = value; }
-  setValueAtTime(value) { this.value = value; }
-  linearRampToValueAtTime(value) { this.value = value; }
+  constructor(value = 0) {
+    this.value = value;
+  }
+  setTargetAtTime(value) {
+    this.value = value;
+  }
+  setValueAtTime(value) {
+    this.value = value;
+  }
+  linearRampToValueAtTime(value) {
+    this.value = value;
+  }
   cancelScheduledValues() {}
 }
 
 class AudioNodeStub {
-  constructor() { this.connections = []; }
-  connect(node) { this.connections.push(node); return node; }
+  constructor() {
+    this.connections = [];
+  }
+  connect(node) {
+    this.connections.push(node);
+    return node;
+  }
   disconnect() {}
 }
 
@@ -38,7 +51,9 @@ class AudioContextStub {
     return node;
   }
 
-  createAnalyser() { return new AudioNodeStub(); }
+  createAnalyser() {
+    return new AudioNodeStub();
+  }
 
   createStereoPanner() {
     const node = new AudioNodeStub();

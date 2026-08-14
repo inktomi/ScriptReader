@@ -50,11 +50,7 @@ export class LatestOperation {
     this.cancel(reason);
   }
 
-  async run(work, {
-    onCommit,
-    onError,
-    onFinally
-  } = {}) {
+  async run(work, { onCommit, onError, onFinally } = {}) {
     if (this.#closed) return { status: 'closed' };
 
     this.cancel(createAbortError('A newer operation replaced this one.'));
@@ -63,13 +59,9 @@ export class LatestOperation {
     const active = { controller, generation };
     this.#active = active;
 
-    const isCurrent = () => (
-      !this.#closed
-      && this.#active === active
-      && this.#generation === generation
-      && !controller.signal.aborted
-    );
-    const commit = effect => {
+    const isCurrent = () =>
+      !this.#closed && this.#active === active && this.#generation === generation && !controller.signal.aborted;
+    const commit = (effect) => {
       if (!isCurrent()) return false;
       effect();
       return true;

@@ -1,5 +1,5 @@
-import { KokoroTTS } from 'kokoro-js';
 import { env } from '@huggingface/transformers';
+import { KokoroTTS } from 'kokoro-js';
 import { createOpfsModelCache } from './opfs-model-cache.js';
 
 export const OPFS_KOKORO_NAMESPACE = 'kokoro-onnx-weights';
@@ -34,11 +34,11 @@ env.allowLocalModels = false;
 const HF_HOSTS = ['huggingface.co', 'hf.co', 'cdn-lfs.huggingface.co'];
 const nativeFetch = self.fetch.bind(self);
 self.fetch = (input, init) => {
-  const url = typeof input === 'string' ? input : (input instanceof URL ? input.href : input?.url);
+  const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input?.url;
   let isHF = false;
   try {
-    isHF = !!url && HF_HOSTS.some(h => new URL(url, self.location.href).hostname.endsWith(h));
-  } catch (e) {
+    isHF = !!url && HF_HOSTS.some((h) => new URL(url, self.location.href).hostname.endsWith(h));
+  } catch (_e) {
     isHF = false;
   }
   return isHF ? nativeFetch(input, { ...init, referrerPolicy: 'no-referrer' }) : nativeFetch(input, init);
@@ -71,7 +71,7 @@ self.onmessage = (e) => {
         key: payload.key,
         payload,
         priority: typeof payload.priority === 'number' ? payload.priority : 1000,
-        seq: seqCounter++
+        seq: seqCounter++,
       });
       pump();
       break;
@@ -143,7 +143,7 @@ async function handleInit(id, payload) {
       tts = await KokoroTTS.from_pretrained(modelId, {
         dtype: attempt.dtype,
         device: attempt.device,
-        progress_callback
+        progress_callback,
       });
 
       availableVoices = tts.voices ? new Set(Object.keys(tts.voices)) : null;
@@ -154,7 +154,7 @@ async function handleInit(id, payload) {
       self.postMessage({
         type: 'init_complete',
         id,
-        payload: { success: true, device: attempt.device, dtype: attempt.dtype }
+        payload: { success: true, device: attempt.device, dtype: attempt.dtype },
       });
       return;
     } catch (error) {
@@ -166,7 +166,7 @@ async function handleInit(id, payload) {
   self.postMessage({
     type: 'error',
     id,
-    error: (lastError && lastError.message) || 'Kokoro initialization failed'
+    error: (lastError && lastError.message) || 'Kokoro initialization failed',
   });
 }
 
@@ -177,8 +177,7 @@ function takeNextTask() {
   for (let i = 1; i < queue.length; i++) {
     const candidate = queue[i];
     const best = queue[bestIndex];
-    if (candidate.priority < best.priority ||
-        (candidate.priority === best.priority && candidate.seq < best.seq)) {
+    if (candidate.priority < best.priority || (candidate.priority === best.priority && candidate.seq < best.seq)) {
       bestIndex = i;
     }
   }
@@ -191,8 +190,8 @@ async function pump() {
   isProcessing = true;
 
   try {
-    let task;
-    while ((task = takeNextTask()) !== null) {
+    let task = takeNextTask();
+    while (task !== null) {
       const { id, payload } = task;
 
       try {
@@ -205,22 +204,26 @@ async function pump() {
         const rawAudio = await tts.generate(text, { voice, speed });
         const samples = rawAudio.audio;
 
-        self.postMessage({
-          type: 'generate_complete',
-          id,
-          payload: {
-            key: payload.key,
-            audio: samples,
-            sampling_rate: rawAudio.sampling_rate || 24000
-          }
-        }, [samples.buffer]);
+        self.postMessage(
+          {
+            type: 'generate_complete',
+            id,
+            payload: {
+              key: payload.key,
+              audio: samples,
+              sampling_rate: rawAudio.sampling_rate || 24000,
+            },
+          },
+          [samples.buffer],
+        );
       } catch (error) {
         self.postMessage({
           type: 'error',
           id,
-          error: (error && error.message) || 'Unknown worker error'
+          error: (error && error.message) || 'Unknown worker error',
         });
       }
+      task = takeNextTask();
     }
   } finally {
     isProcessing = false;

@@ -8,7 +8,8 @@ export const SAMPLE_SCRIPTS = [
     id: 'neon-heist',
     title: 'The Neon Heist',
     genre: 'Cyberpunk Action Thriller',
-    synopsis: 'Two rogue operatives attempt to extract an encrypted neuro-core from the 80th floor of the OmniCorp tower in Neo-Chicago.',
+    synopsis:
+      'Two rogue operatives attempt to extract an encrypted neuro-core from the 80th floor of the OmniCorp tower in Neo-Chicago.',
     characterCount: 4,
     fountainText: `Title: The Neon Heist
 Author: ScriptReader Studio
@@ -106,7 +107,7 @@ EXT. SKYLINE - CONTINUOUS
 
 The top ten floors of OmniCorp go dark. Valentine and Kira leap into the open night air as their grapple lines fire upward.
 
-FADE OUT.`
+FADE OUT.`,
   },
   {
     id: 'midnight-manor',
@@ -181,13 +182,14 @@ The truth will not remain buried tonight, Lord Pemberton. Not while I hold the m
 
 Barker places a tarnished brass key onto the table. It shines in the firelight.
 
-FADE OUT.`
+FADE OUT.`,
   },
   {
     id: 'station-zero',
     title: 'Station Zero',
     genre: 'Psychological Sci-Fi',
-    synopsis: 'The crew of a deep-space observation post realizes that the entity they brought aboard is adapting to their voices.',
+    synopsis:
+      'The crew of a deep-space observation post realizes that the entity they brought aboard is adapting to their voices.',
     characterCount: 4,
     fountainText: `Title: Station Zero
 Author: ScriptReader Studio
@@ -244,13 +246,14 @@ The lights SNAP OFF. Pitch blackness.
 
 A single green sensor light blinks in the dark.
 
-FADE TO BLACK.`
+FADE TO BLACK.`,
   },
   {
     id: 'crossfire-hearing',
     title: 'Crossfire',
     genre: 'Legal Drama',
-    synopsis: 'A subcommittee hearing goes off the rails. Written to exercise interruptions, simultaneous speech, and authored pacing all in one scene.',
+    synopsis:
+      'A subcommittee hearing goes off the rails. Written to exercise interruptions, simultaneous speech, and authored pacing all in one scene.',
     characterCount: 4,
     fountainText: `Title: Crossfire
 Author: ScriptReader Samples
@@ -322,6 +325,6 @@ Fifteen minutes.
 
 She does not move.
 
-FADE OUT.`
-  }
+FADE OUT.`,
+  },
 ];

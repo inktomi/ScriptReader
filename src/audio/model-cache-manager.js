@@ -12,21 +12,43 @@ export const DEFAULT_MODEL_ID = 'onnx-community/Kokoro-82M-v1.0-ONNX';
 
 export const ALL_KOKORO_VOICE_IDS = [
   // Female Voices
-  'af_heart', 'af_bella', 'af_nicole', 'af_sarah', 'af_sky', 'af_river',
-  'bf_emma', 'bf_isabella', 'bf_lily', 'af_alloy', 'af_aoede', 'af_jessica',
-  'af_kore', 'af_nova', 'bf_alice',
+  'af_heart',
+  'af_bella',
+  'af_nicole',
+  'af_sarah',
+  'af_sky',
+  'af_river',
+  'bf_emma',
+  'bf_isabella',
+  'bf_lily',
+  'af_alloy',
+  'af_aoede',
+  'af_jessica',
+  'af_kore',
+  'af_nova',
+  'bf_alice',
   // Male Voices
-  'am_adam', 'am_onyx', 'am_fenrir', 'am_echo', 'am_liam', 'am_michael',
-  'am_puck', 'am_santa', 'bm_george', 'bm_lewis', 'bm_fable', 'bm_daniel',
-  'am_eric'
+  'am_adam',
+  'am_onyx',
+  'am_fenrir',
+  'am_echo',
+  'am_liam',
+  'am_michael',
+  'am_puck',
+  'am_santa',
+  'bm_george',
+  'bm_lewis',
+  'bm_fable',
+  'bm_daniel',
+  'am_eric',
 ];
 
 export class ModelCacheManager {
   static _cacheOperation = Promise.resolve();
 
   static _withCacheLock(operation) {
-    const next = this._cacheOperation.then(operation, operation);
-    this._cacheOperation = next.catch(() => {});
+    const next = ModelCacheManager._cacheOperation.then(operation, operation);
+    ModelCacheManager._cacheOperation = next.catch(() => {});
     return next;
   }
   /**
@@ -52,7 +74,7 @@ export class ModelCacheManager {
     if (typeof navigator !== 'undefined' && navigator.storage && navigator.storage.persisted) {
       try {
         return await navigator.storage.persisted();
-      } catch (e) {
+      } catch (_e) {
         return false;
       }
     }
@@ -67,7 +89,7 @@ export class ModelCacheManager {
     const k = 1024;
     const sizes = ['B', 'KB', 'MB', 'GB'];
     const i = Math.floor(Math.log(bytes) / Math.log(k));
-    return parseFloat((bytes / Math.pow(k, i)).toFixed(1)) + ' ' + sizes[i];
+    return `${parseFloat((bytes / k ** i).toFixed(1))} ${sizes[i]}`;
   }
 
   /**
@@ -85,7 +107,7 @@ export class ModelCacheManager {
       if (declared) return parseInt(declared, 10) || 0;
       const blob = await response.clone().blob();
       return blob.size;
-    } catch (e) {
+    } catch (_e) {
       return 0;
     }
   }
@@ -99,7 +121,7 @@ export class ModelCacheManager {
    */
   static async clearMatchingEntries(matches, cacheName = TRANSFORMERS_CACHE_NAME) {
     if (typeof caches === 'undefined') return false;
-    return this._withCacheLock(async () => {
+    return ModelCacheManager._withCacheLock(async () => {
       try {
         const cache = await caches.open(cacheName);
         const keys = await cache.keys();
@@ -124,13 +146,13 @@ export class ModelCacheManager {
     if (typeof navigator !== 'undefined' && navigator.storage && navigator.storage.estimate) {
       try {
         const estimate = await navigator.storage.estimate();
-        const persisted = await this.isStoragePersisted();
+        const persisted = await ModelCacheManager.isStoragePersisted();
         return {
           usage: estimate.usage || 0,
           quota: estimate.quota || 0,
-          usageFormatted: this.formatBytes(estimate.usage || 0),
-          quotaFormatted: this.formatBytes(estimate.quota || 0),
-          persisted
+          usageFormatted: ModelCacheManager.formatBytes(estimate.usage || 0),
+          quotaFormatted: ModelCacheManager.formatBytes(estimate.quota || 0),
+          persisted,
         };
       } catch (e) {
         console.warn('Storage estimate notice:', e);
@@ -141,7 +163,7 @@ export class ModelCacheManager {
       quota: 0,
       usageFormatted: '0 MB',
       quotaFormatted: 'Unknown',
-      persisted: false
+      persisted: false,
     };
   }
 
@@ -164,7 +186,7 @@ export class ModelCacheManager {
         formattedSize: '0 MB',
         isFullyCached: false,
         isStoragePersisted: false,
-        offlineReady: false
+        offlineReady: false,
       };
     }
 
@@ -172,7 +194,7 @@ export class ModelCacheManager {
       // 1. Check Transformers.js cache for model files
       const tfCache = await caches.open(TRANSFORMERS_CACHE_NAME);
       const tfKeys = await tfCache.keys();
-      
+
       // Only an actual weights blob counts. config.json + tokenizer.json are a
       // few KB and land first, so treating them as evidence made an interrupted
       // download report "cached" on the next visit — and the UI then claimed it
@@ -184,7 +206,7 @@ export class ModelCacheManager {
         const url = req.url;
         if (url.includes(modelId) || url.includes('Kokoro-82M')) {
           cachedModelFiles++;
-          const entryBytes = await this.measureCacheEntry(tfCache, req);
+          const entryBytes = await ModelCacheManager.measureCacheEntry(tfCache, req);
           totalCachedBytes += entryBytes;
           if (url.includes('.onnx') && entryBytes >= MIN_WEIGHTS_BYTES) {
             hasWeights = true;
@@ -197,7 +219,7 @@ export class ModelCacheManager {
       // 2. Check Kokoro Voices cache
       const voiceCache = await caches.open(KOKORO_VOICES_CACHE_NAME);
       const voiceKeys = await voiceCache.keys();
-      const cachedVoiceUrls = new Set(voiceKeys.map(k => k.url));
+      const cachedVoiceUrls = new Set(voiceKeys.map((k) => k.url));
 
       for (const voiceId of ALL_KOKORO_VOICE_IDS) {
         const expectedUrl = `https://huggingface.co/${modelId}/resolve/main/voices/${voiceId}.bin`;
@@ -213,16 +235,15 @@ export class ModelCacheManager {
                 totalCachedBytes += 102400; // approx ~100KB per voice
               }
             }
-          } catch (e) {}
+          } catch (_e) {}
         }
       }
-
     } catch (err) {
       console.warn('Error querying model cache status:', err);
     }
 
     const isFullyCached = isModelCached && cachedVoiceCount >= ALL_KOKORO_VOICE_IDS.length;
-    const isStoragePersisted = await this.isStoragePersisted();
+    const isStoragePersisted = await ModelCacheManager.isStoragePersisted();
 
     return {
       isModelCached,
@@ -230,10 +251,10 @@ export class ModelCacheManager {
       cachedVoiceCount,
       totalVoices: ALL_KOKORO_VOICE_IDS.length,
       totalCachedBytes,
-      formattedSize: this.formatBytes(totalCachedBytes),
+      formattedSize: ModelCacheManager.formatBytes(totalCachedBytes),
       isFullyCached,
       isStoragePersisted,
-      offlineReady: isModelCached
+      offlineReady: isModelCached,
     };
   }
 
@@ -273,7 +294,7 @@ export class ModelCacheManager {
    * Preload and cache all 28 Kokoro voice files in the background with progress reporting
    */
   static async preloadAllVoices(modelId = DEFAULT_MODEL_ID, onProgress = () => {}) {
-    return this._withCacheLock(() => this._preloadAllVoicesUnlocked(modelId, onProgress));
+    return ModelCacheManager._withCacheLock(() => ModelCacheManager._preloadAllVoicesUnlocked(modelId, onProgress));
   }
 
   static async _preloadAllVoicesUnlocked(modelId = DEFAULT_MODEL_ID, onProgress = () => {}) {
@@ -284,9 +305,9 @@ export class ModelCacheManager {
 
     // Check which ones are already cached
     const cache = await caches.open(KOKORO_VOICES_CACHE_NAME);
-    const existingKeys = new Set((await cache.keys()).map(k => k.url));
+    const existingKeys = new Set((await cache.keys()).map((k) => k.url));
 
-    const toFetch = ALL_KOKORO_VOICE_IDS.filter(id => {
+    const toFetch = ALL_KOKORO_VOICE_IDS.filter((id) => {
       const url = `https://huggingface.co/${modelId}/resolve/main/voices/${id}.bin`;
       if (existingKeys.has(url)) {
         completed++;
@@ -300,7 +321,7 @@ export class ModelCacheManager {
       completed,
       total,
       percent: Math.round((completed / total) * 100),
-      message: `Cached ${completed}/${total} neural voices...`
+      message: `Cached ${completed}/${total} neural voices...`,
     });
 
     if (toFetch.length === 0) {
@@ -316,7 +337,7 @@ export class ModelCacheManager {
       while (queue.length > 0) {
         const voiceId = queue.shift();
         if (!voiceId) break;
-        const succeeded = await this.preloadVoice(voiceId, modelId);
+        const succeeded = await ModelCacheManager.preloadVoice(voiceId, modelId);
         if (succeeded) completed++;
         else failed.push(voiceId);
         onProgress({
@@ -326,7 +347,7 @@ export class ModelCacheManager {
           percent: Math.round((completed / total) * 100),
           message: succeeded
             ? `Caching neural voice: ${voiceId} (${completed}/${total})`
-            : `Could not cache neural voice: ${voiceId}`
+            : `Could not cache neural voice: ${voiceId}`,
         });
       }
     };
@@ -346,7 +367,7 @@ export class ModelCacheManager {
       completed: total,
       total,
       percent: 100,
-      message: `All ${total} neural character voices cached locally!`
+      message: `All ${total} neural character voices cached locally!`,
     });
   }
 
@@ -354,16 +375,18 @@ export class ModelCacheManager {
    * Proactively preload and cache ALL model assets (ONNX model weights, tokenizer, and 28 voices)
    */
   static async preloadAllModelAssets(modelId = DEFAULT_MODEL_ID, onProgress = () => {}) {
-    return this._withCacheLock(() => this._preloadAllModelAssetsUnlocked(modelId, onProgress));
+    return ModelCacheManager._withCacheLock(() =>
+      ModelCacheManager._preloadAllModelAssetsUnlocked(modelId, onProgress),
+    );
   }
 
   static async _preloadAllModelAssetsUnlocked(modelId = DEFAULT_MODEL_ID, onProgress = () => {}) {
-    await this.requestPersistentStorage();
+    await ModelCacheManager.requestPersistentStorage();
 
     onProgress({
       phase: 'init',
       percent: 5,
-      message: 'Initializing local model cache...'
+      message: 'Initializing local model cache...',
     });
 
     // 1. Load KokoroTTS model via worker (this triggers @huggingface/transformers to download and cache config, tokenizer, onnx)
@@ -395,9 +418,8 @@ export class ModelCacheManager {
               file: (payload && payload.file) || 'weights',
               loaded,
               total,
-              message: total > 0
-                ? `Caching model weights: ${Math.round(fraction * 100)}%`
-                : 'Fetching model metadata...'
+              message:
+                total > 0 ? `Caching model weights: ${Math.round(fraction * 100)}%` : 'Fetching model metadata...',
             });
           } else if (type === 'init_complete') {
             resolve();
@@ -409,7 +431,7 @@ export class ModelCacheManager {
         worker.postMessage({
           type: 'init',
           id: 1,
-          payload: { modelId, device: 'auto' }
+          payload: { modelId, device: 'auto' },
         });
       });
     } finally {
@@ -423,10 +445,10 @@ export class ModelCacheManager {
     onProgress({
       phase: 'voices',
       percent: 80,
-      message: 'Caching all 28 character voice embeddings...'
+      message: 'Caching all 28 character voice embeddings...',
     });
 
-    await this._preloadAllVoicesUnlocked(modelId, (vProg) => {
+    await ModelCacheManager._preloadAllVoicesUnlocked(modelId, (vProg) => {
       // * 20, not * 0.2 — the latter rounded to 0 and pinned this at a flat 80%.
       const overall = 80 + Math.round((vProg.completed / vProg.total) * 20); // 80% -> 100%
       onProgress({
@@ -434,22 +456,22 @@ export class ModelCacheManager {
         percent: overall,
         completed: vProg.completed,
         total: vProg.total,
-        message: vProg.message
+        message: vProg.message,
       });
     });
 
     onProgress({
       phase: 'complete',
       percent: 100,
-      message: 'Kokoro-82M model and all 28 voices fully cached locally!'
+      message: 'Kokoro-82M model and all 28 voices fully cached locally!',
     });
 
-    const status = await this.getModelCacheStatus(modelId);
+    const status = await ModelCacheManager.getModelCacheStatus(modelId);
     if (!status.isFullyCached) {
       throw new Error(
         status.cachedVoiceCount < status.totalVoices
           ? `Only ${status.cachedVoiceCount}/${status.totalVoices} neural voices were cached.`
-          : 'The model weights could not be retained in browser cache storage.'
+          : 'The model weights could not be retained in browser cache storage.',
       );
     }
     return status;
@@ -459,7 +481,7 @@ export class ModelCacheManager {
    * Delete cached model weights and voice files from CacheStorage
    */
   static async clearModelCache(modelId = DEFAULT_MODEL_ID) {
-    return this._withCacheLock(() => this._clearModelCacheUnlocked(modelId));
+    return ModelCacheManager._withCacheLock(() => ModelCacheManager._clearModelCacheUnlocked(modelId));
   }
 
   static async _clearModelCacheUnlocked(modelId = DEFAULT_MODEL_ID) {

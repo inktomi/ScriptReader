@@ -87,8 +87,11 @@ export function expandSharedDialogueCues(parsed) {
     if (!name) continue;
     const parts = splitJointName(name);
     if (parts.length < 2 || parts.length > MAX_SHARED_SPEAKERS) continue;
-    if (!parts.every(part => soloNames.has(part.toUpperCase()))) continue;
-    expansions.set(character.name, parts.map(part => soloNames.get(part.toUpperCase())));
+    if (!parts.every((part) => soloNames.has(part.toUpperCase()))) continue;
+    expansions.set(
+      character.name,
+      parts.map((part) => soloNames.get(part.toUpperCase())),
+    );
   }
 
   if (expansions.size === 0) return parsed;
@@ -129,21 +132,22 @@ export function expandSharedDialogueCues(parsed) {
         // Cloned rather than shared: `annotateScriptFlow` re-reads the delivery of
         // a line that gets cut off, and one speaker's re-read must not arrive on
         // the other's element.
-        nuance: element.nuance && typeof element.nuance === 'object'
-          ? { ...element.nuance }
-          : element.nuance,
-        overlap: part > 0
-          ? { mode: 'simultaneous', withPrevious: true, offsetMs: null, source: 'shared-cue' }
-          : fragmentIndex > 0
-            ? { mode: 'continuation', withPrevious: true, offsetMs: 0, source: 'shared-cue' }
-            : element.overlap
+        nuance: element.nuance && typeof element.nuance === 'object' ? { ...element.nuance } : element.nuance,
+        overlap:
+          part > 0
+            ? { mode: 'simultaneous', withPrevious: true, offsetMs: null, source: 'shared-cue' }
+            : fragmentIndex > 0
+              ? { mode: 'continuation', withPrevious: true, offsetMs: 0, source: 'shared-cue' }
+              : element.overlap,
       });
     });
   });
 
   // Both parsers emit ids that are also array positions, and the teleprompter,
   // the scene drawer and the scheduler all address elements by position.
-  rebuilt.forEach((element, index) => { element.id = `line-${index}`; });
+  rebuilt.forEach((element, index) => {
+    element.id = `line-${index}`;
+  });
 
   // `scene.lineIndex` is an index into `elements` — it is how the scene drawer
   // jumps. Inserting elements moves every scene after the first shared cue.
@@ -153,7 +157,7 @@ export function expandSharedDialogueCues(parsed) {
     }
   }
 
-  const byName = new Map(characters.map(character => [character.name, character]));
+  const byName = new Map(characters.map((character) => [character.name, character]));
   for (const [jointName, parts] of expansions) {
     const joint = byName.get(jointName);
     byName.delete(jointName);
