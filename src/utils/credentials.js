@@ -17,6 +17,9 @@
  */
 
 const OPENAI_KEY = 'scriptreader_openai_key_v1';
+const RUNPOD_KEY = 'scriptreader_runpod_key_v1';
+const RUNPOD_ENDPOINT_KEY = 'scriptreader_runpod_endpoint_v1';
+const DEFAULT_RUNPOD_ENDPOINT = 'lp3hrmg85v80jm';
 const ENGINE_SETTINGS_KEY = 'scriptreader_engine_settings_v1';
 
 /**
@@ -145,5 +148,99 @@ export function describeValidationReason(reason) {
     case 'rate_limited': return 'OpenAI is rate limiting this key right now. Try again shortly.';
     case 'network': return 'Could not reach OpenAI. Check your connection.';
     default: return 'Could not verify this key.';
+  }
+}
+
+export { DEFAULT_RUNPOD_ENDPOINT };
+
+export function loadRunPodKey() {
+  try {
+    return localStorage.getItem(RUNPOD_KEY) || '';
+  } catch {
+    return '';
+  }
+}
+
+export function saveRunPodKey(key) {
+  try {
+    const trimmed = (key || '').trim();
+    if (!trimmed) {
+      localStorage.removeItem(RUNPOD_KEY);
+      return true;
+    }
+    localStorage.setItem(RUNPOD_KEY, trimmed);
+    return true;
+  } catch (err) {
+    console.warn('Could not store RunPod API key:', err);
+    return false;
+  }
+}
+
+export function clearRunPodKey() {
+  try {
+    localStorage.removeItem(RUNPOD_KEY);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+export function hasRunPodKey() {
+  return loadRunPodKey().length > 0;
+}
+
+export function loadRunPodEndpointId() {
+  try {
+    return localStorage.getItem(RUNPOD_ENDPOINT_KEY) || DEFAULT_RUNPOD_ENDPOINT;
+  } catch {
+    return DEFAULT_RUNPOD_ENDPOINT;
+  }
+}
+
+export function saveRunPodEndpointId(endpointId) {
+  try {
+    const trimmed = (endpointId || '').trim();
+    if (!trimmed) {
+      localStorage.removeItem(RUNPOD_ENDPOINT_KEY);
+      return true;
+    }
+    localStorage.setItem(RUNPOD_ENDPOINT_KEY, trimmed);
+    return true;
+  } catch (err) {
+    console.warn('Could not store RunPod endpoint ID:', err);
+    return false;
+  }
+}
+
+export async function validateRunPodConnection({ key, endpointId, signal } = {}) {
+  const apiKey = (key || loadRunPodKey()).trim();
+  const ep = (endpointId || loadRunPodEndpointId()).trim() || DEFAULT_RUNPOD_ENDPOINT;
+  if (!apiKey) return { ok: false, reason: 'empty_key' };
+
+  try {
+    const res = await fetch(`https://api.runpod.ai/v2/${ep}/health`, {
+      headers: { authorization: `Bearer ${apiKey}` },
+      signal
+    });
+    if (res.ok) {
+      const data = await res.json();
+      return { ok: true, data };
+    }
+    if (res.status === 401 || res.status === 403) return { ok: false, reason: 'invalid_key' };
+    if (res.status === 404) return { ok: false, reason: 'invalid_endpoint' };
+    return { ok: false, reason: `http_${res.status}` };
+  } catch (err) {
+    if (err.name === 'AbortError') throw err;
+    return { ok: false, reason: 'network' };
+  }
+}
+
+export function describeRunPodValidationReason(reason) {
+  switch (reason) {
+    case 'empty_key': return 'Enter your RunPod API key to continue.';
+    case 'invalid_key': return 'RunPod rejected this API key.';
+    case 'invalid_endpoint': return 'Could not find this Serverless Endpoint ID on RunPod.';
+    case 'network': return 'Could not reach RunPod. Check your internet connection.';
+    default: return 'Could not verify RunPod connection.';
   }
 }

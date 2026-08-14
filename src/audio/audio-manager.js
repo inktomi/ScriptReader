@@ -14,6 +14,7 @@ import { getAudioContext, resumeAudioContext, suspendAudioContext } from './audi
 import { ENGINE_IDS } from './engine-contract.js';
 import { OpenAiTtsEngine } from './openai-engine.js';
 import { ChatterboxStudioEngine, getChatterboxCacheStatus } from './chatterbox-engine.js';
+import { RunPodServerlessEngine } from './runpod-engine.js';
 import { MAX_RENDER_CACHE_SECONDS } from './chatterbox-render-store.js';
 import { loadEngineSettings, saveEngineSettings } from '../utils/credentials.js';
 
@@ -24,6 +25,7 @@ import { loadEngineSettings, saveEngineSettings } from '../utils/credentials.js'
 export const ENGINE_TYPES = {
   KOKORO_NEURAL: ENGINE_IDS.KOKORO,
   CHATTERBOX: ENGINE_IDS.CHATTERBOX,
+  RUNPOD: ENGINE_IDS.RUNPOD,
   OPENAI: ENGINE_IDS.OPENAI,
   WEB_SPEECH: ENGINE_IDS.WEB_SPEECH
 };
@@ -97,6 +99,7 @@ export class ScreenplayAudioManager {
     this._engines = new Map([
       [ENGINE_IDS.KOKORO, new KokoroNeuralEngine()],
       [ENGINE_IDS.CHATTERBOX, new ChatterboxStudioEngine()],
+      [ENGINE_IDS.RUNPOD, new RunPodServerlessEngine()],
       [ENGINE_IDS.OPENAI, new OpenAiTtsEngine()]
     ]);
 

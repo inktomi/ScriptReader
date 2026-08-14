@@ -16,12 +16,16 @@ dist-ssr
 .vscode/*
 !.vscode/extensions.json
 .idea
+.claude/
 .DS_Store
 *.suo
 *.ntvs*
 *.njsproj
 *.sln
 *.sw?
+
+# User media / scratch
+*.pdf
 
 # MemPalace per-project files (issue #185)
 mempalace.yaml

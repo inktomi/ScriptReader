@@ -7,6 +7,14 @@ import {
   loadOpenAIKey,
   saveOpenAIKey,
   clearOpenAIKey,
+  loadRunPodKey,
+  saveRunPodKey,
+  clearRunPodKey,
+  loadRunPodEndpointId,
+  saveRunPodEndpointId,
+  validateRunPodConnection,
+  describeRunPodValidationReason,
+  DEFAULT_RUNPOD_ENDPOINT,
   maskKey,
   hasCloudConsent,
   grantCloudConsent,
@@ -71,6 +79,10 @@ export function createEngineSettingsModal({ audioManager, onClose, onEngineChang
 
   const isCloud = () => selectedEngine === ENGINE_IDS.OPENAI;
   const isStudio = () => selectedEngine === ENGINE_IDS.CHATTERBOX;
+  const isRunPod = () => selectedEngine === ENGINE_IDS.RUNPOD;
+  let validatingRunPod = false;
+  let runpodValidationMessage = '';
+  let runpodValidationOk = null;
   // Straight off the class rather than through `audioManager.modelCacheManager`:
   // formatting a byte count needs no manager instance, and reaching for one at
   // construction time would make this modal unrenderable without a full manager.
@@ -98,6 +110,9 @@ export function createEngineSettingsModal({ audioManager, onClose, onEngineChang
 
     const storedKey = loadOpenAIKey();
     const keyReady = storedKey.length > 0;
+    const storedRunPodKey = loadRunPodKey();
+    const storedRunPodEndpoint = loadRunPodEndpointId() || DEFAULT_RUNPOD_ENDPOINT;
+    const runpodKeyReady = storedRunPodKey.length > 0;
 
     modal.innerHTML = `
       <div class="modal-card" style="max-width: 640px;">
@@ -268,7 +283,75 @@ export function createEngineSettingsModal({ audioManager, onClose, onEngineChang
             </div>
           ` : ''}
 
-          ${validationMessage && !isCloud() ? `
+          <label class="engine-option" data-engine="${ENGINE_IDS.RUNPOD}" style="
+            display: block; padding: 14px; border-radius: 10px; cursor: pointer;
+            border: 1px solid ${isRunPod() ? 'rgba(56,189,248,0.55)' : 'var(--border-color, rgba(255,255,255,0.12))'};
+            background: ${isRunPod() ? 'rgba(56,189,248,0.08)' : 'transparent'};">
+            <div style="display: flex; align-items: center; gap: 10px;">
+              <input type="radio" name="engine" value="${ENGINE_IDS.RUNPOD}"
+                ${isRunPod() ? 'checked' : ''} style="accent-color: #38BDF8;">
+              <span style="font-weight: 700; color: #FFFFFF;">RunPod Serverless GPU</span>
+              <span class="badge-voice" style="background: rgba(56,189,248,0.15); color: #38BDF8;">Cloud L40S · Fast</span>
+            </div>
+            <div style="font-size: 0.8rem; color: var(--text-secondary); margin-top: 6px; line-height: 1.5;">
+              High-speed neural voice cloning on dedicated NVIDIA L40S/RTX 4090 GPUs.
+              Renders a full 90+ page script in ~30–45 seconds with unquantized full-precision Chatterbox and Kokoro voices.
+              Scales down to $0 when idle.
+            </div>
+          </label>
+
+          ${isRunPod() ? `
+            <div style="border-top: 1px solid rgba(255,255,255,0.08); padding-top: 16px; display: flex; flex-direction: column; gap: 12px;">
+              <div>
+                <label style="font-size: 0.78rem; font-weight: 700; color: var(--text-muted);
+                              text-transform: uppercase; letter-spacing: 0.06em;">
+                  RunPod API Key
+                </label>
+                <div style="display: flex; gap: 8px; margin-top: 6px;">
+                  <input type="password" id="runpod-key-input"
+                    class="voice-select" style="flex: 1; font-family: var(--font-mono); font-size: 0.8rem;"
+                    placeholder="rpa_..."
+                    autocomplete="off" spellcheck="false"
+                    value="${escapeHtml(storedRunPodKey)}">
+                  <button id="btn-reveal-runpod-key" class="btn btn-secondary" style="padding: 6px 10px;" title="Show key">
+                    ${getIconSvg('eye', 15)}
+                  </button>
+                  <button id="btn-test-runpod-key" class="btn btn-secondary" style="white-space: nowrap;">
+                    ${validatingRunPod ? 'Testing…' : 'Test connection'}
+                  </button>
+                </div>
+                ${runpodKeyReady && !runpodValidationMessage ? `
+                  <div style="font-size: 0.75rem; color: var(--text-muted); margin-top: 6px;">
+                    Stored: <code>${escapeHtml(maskKey(storedRunPodKey))}</code>
+                  </div>` : ''}
+              </div>
+
+              <div>
+                <label style="font-size: 0.78rem; font-weight: 700; color: var(--text-muted);
+                              text-transform: uppercase; letter-spacing: 0.06em;">
+                  Serverless Endpoint ID
+                </label>
+                <div style="margin-top: 6px;">
+                  <input type="text" id="runpod-endpoint-input"
+                    class="voice-select" style="width: 100%; font-family: var(--font-mono); font-size: 0.8rem;"
+                    placeholder="lp3hrmg85v80jm"
+                    value="${escapeHtml(storedRunPodEndpoint)}">
+                </div>
+              </div>
+
+              ${runpodValidationMessage ? `
+                <div style="font-size: 0.78rem; margin-top: 6px; color: ${runpodValidationOk ? '#10B981' : '#F87171'};">
+                  ${escapeHtml(runpodValidationMessage)}
+                </div>` : ''}
+
+              ${runpodKeyReady ? `
+                <button id="btn-forget-runpod-key" class="btn btn-secondary" style="align-self: flex-start; font-size: 0.75rem; padding: 5px 10px;">
+                  Forget RunPod key
+                </button>` : ''}
+            </div>
+          ` : ''}
+
+          ${validationMessage && !isCloud() && !isRunPod() ? `
             <div class="engine-settings-message ${validationOk ? 'is-success' : 'is-error'}" role="alert">
               ${escapeHtml(validationMessage)}
             </div>
@@ -280,7 +363,7 @@ export function createEngineSettingsModal({ audioManager, onClose, onEngineChang
             ${installingStudio ? 'Cancel install' : 'Cancel'}
           </button>
           <button id="btn-engine-apply" class="btn btn-primary"
-            ${(isCloud() && (!consented || !keyReady)) || installingStudio || (isStudio() && !studioStatusReady) ? 'disabled style="opacity:0.5;cursor:not-allowed;"' : ''}>
+            ${(isCloud() && (!consented || !keyReady)) || (isRunPod() && !runpodKeyReady) || installingStudio || (isStudio() && !studioStatusReady) ? 'disabled style="opacity:0.5;cursor:not-allowed;"' : ''}>
             ${applyLabel()}
           </button>
         </div>
@@ -488,6 +571,64 @@ export function createEngineSettingsModal({ audioManager, onClose, onEngineChang
         clearOpenAIKey();
         validationMessage = '';
         validationOk = null;
+        render();
+      });
+    }
+
+    const runpodKeyInput = modal.querySelector('#runpod-key-input');
+    if (runpodKeyInput) {
+      runpodKeyInput.addEventListener('input', (e) => {
+        saveRunPodKey(e.target.value);
+        runpodValidationMessage = '';
+        runpodValidationOk = null;
+        const apply = modal.querySelector('#btn-engine-apply');
+        if (apply) {
+          const ready = e.target.value.trim().length > 0;
+          apply.disabled = !ready;
+          apply.style.opacity = ready ? '' : '0.5';
+          apply.style.cursor = ready ? '' : 'not-allowed';
+        }
+      });
+    }
+
+    const runpodEndpointInput = modal.querySelector('#runpod-endpoint-input');
+    if (runpodEndpointInput) {
+      runpodEndpointInput.addEventListener('input', (e) => {
+        saveRunPodEndpointId(e.target.value);
+        runpodValidationMessage = '';
+        runpodValidationOk = null;
+      });
+    }
+
+    const revealRunpodKey = modal.querySelector('#btn-reveal-runpod-key');
+    if (revealRunpodKey && runpodKeyInput) {
+      revealRunpodKey.addEventListener('click', () => {
+        runpodKeyInput.type = runpodKeyInput.type === 'password' ? 'text' : 'password';
+      });
+    }
+
+    const testRunpodKey = modal.querySelector('#btn-test-runpod-key');
+    if (testRunpodKey) {
+      testRunpodKey.addEventListener('click', async () => {
+        validatingRunPod = true;
+        runpodValidationMessage = '';
+        render();
+        const result = await validateRunPodConnection();
+        validatingRunPod = false;
+        runpodValidationOk = result.ok;
+        runpodValidationMessage = result.ok
+          ? 'Connected to RunPod Serverless GPU endpoint.'
+          : describeRunPodValidationReason(result.reason);
+        render();
+      });
+    }
+
+    const forgetRunpodKey = modal.querySelector('#btn-forget-runpod-key');
+    if (forgetRunpodKey) {
+      forgetRunpodKey.addEventListener('click', () => {
+        clearRunPodKey();
+        runpodValidationMessage = '';
+        runpodValidationOk = null;
         render();
       });
     }

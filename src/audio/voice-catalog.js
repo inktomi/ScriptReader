@@ -570,6 +570,10 @@ export const MISSING_CHATTERBOX_VOICE = Object.freeze({
 export function getVoicesForEngine(engineId) {
   if (engineId === ENGINE_IDS.OPENAI) return OPENAI_VOICE_CATALOG;
   if (engineId === ENGINE_IDS.CHATTERBOX) return listChatterboxVoices();
+  if (engineId === ENGINE_IDS.RUNPOD) {
+    const studioVoices = listChatterboxVoices();
+    return studioVoices.length > 0 ? [...studioVoices, ...VOICE_CATALOG] : VOICE_CATALOG;
+  }
   return VOICE_CATALOG;
 }
 
@@ -596,7 +600,7 @@ export const CROSS_ENGINE_VOICE_MAP = Object.freeze({
 export function mapVoiceAcrossEngines(voiceId, targetEngineId, usedVoices = new Set()) {
   const pool = getVoicesForEngine(targetEngineId);
 
-  if (targetEngineId === ENGINE_IDS.CHATTERBOX) {
+  if (targetEngineId === ENGINE_IDS.CHATTERBOX || targetEngineId === ENGINE_IDS.RUNPOD) {
     const unused = pool.find(voice => !usedVoices.has(voice.id));
     return unused?.id || pool[0]?.id || '';
   }
