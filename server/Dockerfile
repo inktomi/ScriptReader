@@ -17,7 +17,8 @@ WORKDIR /app
 
 # Install Python requirements
 COPY requirements.txt .
-RUN pip install --no-cache-dir --break-system-packages -r requirements.txt
+RUN pip install --no-cache-dir --break-system-packages -r requirements.txt && \
+    pip uninstall -y torchvision || true
 
 # Register all nvidia pip libraries with system dynamic linker
 RUN find /usr/local/lib/python3.12/dist-packages/nvidia -type d -name "lib" > /etc/ld.so.conf.d/nvidia-pip.conf && ldconfig
