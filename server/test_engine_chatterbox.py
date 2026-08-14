@@ -113,6 +113,17 @@ class ChatterboxPipelineTests(unittest.TestCase):
         )
         np.testing.assert_allclose(audio, np.array([0.1, -0.1, 0.2], dtype=np.float32))
 
+    def test_generate_returns_empty_for_unspeakable_or_empty_text(self):
+        engine = ChatterboxEngine.__new__(ChatterboxEngine)
+        engine.sample_rate = 24000
+        engine.speakers_cache = {}
+        engine._ensure_loaded = lambda: None
+
+        for unspeakable in ("", "   ", "...", "--", "( )", "!?", "- - -"):
+            audio = engine.generate(unspeakable, voice_id="voice@2")
+            self.assertEqual(len(audio), 0)
+            self.assertEqual(audio.dtype, np.float32)
+
 
 if __name__ == "__main__":
     unittest.main()

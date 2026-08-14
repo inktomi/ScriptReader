@@ -99,7 +99,7 @@ export class WebSpeechEngine {
 
     this.stop();
 
-    const spokenText = nuance.cleanSpeech || text;
+    const spokenText = nuance?.cleanSpeech !== undefined ? nuance.cleanSpeech : text || '';
     if (!spokenText.trim()) {
       if (onEnd) onEnd();
       return;

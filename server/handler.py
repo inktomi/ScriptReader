@@ -54,7 +54,7 @@ def process_single_unit(item: dict) -> dict:
             )
             sr = 24000
 
-        if audio is None or len(audio) == 0 or np.all(audio == 0):
+        if audio is None or len(audio) == 0 or np.all(audio == 0) or np.all(np.abs(audio) <= 0.0001):
             return {
                 "id": normalized["id"],
                 "error": "Synthesis produced empty or silent audio",

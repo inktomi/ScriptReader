@@ -214,7 +214,7 @@ class ChatterboxEngine:
         speed: float = 1.0
     ) -> np.ndarray:
         self._ensure_loaded()
-        if not text or not text.strip():
+        if not text or not text.strip() or not any(c.isalnum() for c in text):
             return np.zeros(0, dtype=np.float32)
 
         if reference_audio_bytes and voice_id not in self.speakers_cache:

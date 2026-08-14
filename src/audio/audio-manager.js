@@ -2126,7 +2126,7 @@ export class ScreenplayAudioManager {
         this._webSpeechTimer = setTimeout(step, gap);
       };
 
-      if (!nuance.cleanSpeech && !element.text) {
+      if (!nuance.cleanSpeech || !nuance.cleanSpeech.trim()) {
         advance();
         return;
       }

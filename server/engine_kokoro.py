@@ -21,7 +21,7 @@ class KokoroEngine:
         return self.pipelines[lang_code]
 
     def generate(self, text: str, voice: str = "af_heart", speed: float = 1.0) -> np.ndarray:
-        if not text or not text.strip():
+        if not text or not text.strip() or not any(c.isalnum() for c in text):
             return np.zeros(0, dtype=np.float32)
 
         # British voices start with 'b' (e.g. 'bf_emma', 'bm_george') -> use lang_code 'b'

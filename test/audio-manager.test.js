@@ -1000,3 +1000,35 @@ test('Play gates on runway readiness under RunPod when unrendered', async () => 
   assert.equal(prewarmCalled, true, 'play() must trigger prewarm and wait when canPlay is false');
   assert.equal(manager.playbackState, PLAYBACK_STATES.IDLE);
 });
+
+test('RunPod and Studio prewarm cleanly skip unspeakable parentheticals without failing the render pass', async () => {
+  const manager = new ScreenplayAudioManager();
+  const requested = [];
+  const engine = fakeEngine({
+    isReady: true,
+    capabilities: { id: ENGINE_IDS.RUNPOD, label: 'RunPod GPU (Cloud L40S)', metered: false },
+    async init() {},
+    request(unit) {
+      requested.push(unit.text);
+      return Promise.resolve({ duration: 2 });
+    },
+  });
+
+  manager.engineId = ENGINE_IDS.RUNPOD;
+  manager.engine = engine;
+  manager.scriptElements = [
+    { type: 'SCENE_HEADING', text: 'INT. OFFICE - DAY' },
+    { type: 'DIALOGUE', character: 'SARAH', text: '(beat)' },
+    { type: 'DIALOGUE', character: 'SARAH', text: 'I have good news.' },
+    { type: 'DIALOGUE', character: 'MARK', text: '...' },
+    { type: 'DIALOGUE', character: 'MARK', text: '(sighs)' },
+    { type: 'DIALOGUE', character: 'MARK', text: 'Tell me everything.' },
+  ];
+
+  await manager.prewarm();
+
+  assert.deepEqual(requested, ['Interior: Office, day.', 'I have good news.', 'Tell me everything.']);
+  assert.equal(manager.renderStatus.error, null);
+  assert.equal(manager.renderStatus.completed, 3);
+  assert.equal(manager.renderStatus.total, 3);
+});

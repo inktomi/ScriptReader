@@ -1,4 +1,4 @@
-import { analyzeLineNuance } from '../screenplay/emotion-analyzer.js';
+import { analyzeLineNuance, cleanSpeechForSynthesis } from '../screenplay/emotion-analyzer.js';
 import { DEFAULT_PACE, interruptTrimSec, OVERLAP_TIMING, resolvePacing } from '../screenplay/overlap-pacing.js';
 import { ENGINE_IDS, makeCacheKey } from './engine-contract.js';
 import { composeInstructions } from './instruction-composer.js';
@@ -332,7 +332,11 @@ export function buildLineUnits({
       speakerType: element.type === 'DIALOGUE' ? 'CHARACTER' : element.type,
     });
 
-  const spoken = nuance.cleanSpeech || element.text || '';
+  const spoken =
+    nuance?.cleanSpeech !== undefined
+      ? nuance.cleanSpeech
+      : cleanSpeechForSynthesis(element.text, element.type === 'DIALOGUE' ? 'CHARACTER' : element.type);
+  if (!spoken) return [];
   const chunks = chunkSpeech(spoken, caps.maxChunkChars);
   if (chunks.length === 0) return [];
 
@@ -457,7 +461,9 @@ export function buildPreviewUnits({
 }) {
   const caps = capsFor(engine);
   const resolvedNuance = nuance || analyzeLineNuance({ text, speakerType: 'CHARACTER' });
-  const spoken = resolvedNuance.cleanSpeech || text || '';
+  const spoken =
+    resolvedNuance?.cleanSpeech !== undefined ? resolvedNuance.cleanSpeech : cleanSpeechForSynthesis(text, 'CHARACTER');
+  if (!spoken) return [];
   const chunks = chunkSpeech(spoken, caps.maxChunkChars);
   if (chunks.length === 0) return [];
 

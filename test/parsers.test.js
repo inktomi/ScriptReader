@@ -510,3 +510,52 @@ test('interrupt trim and fade scale together with playback speed', () => {
   assert.equal(slow.trimTailSec / fast.trimTailSec, 4);
   assert.equal(slow.interruptFadeSec / fast.interruptFadeSec, 4);
 });
+
+test('buildLineUnits returns an empty array for lines without speakable dialogue or action', () => {
+  const engine = {
+    capabilities: {
+      id: 'chatterbox',
+      supportsSpeed: false,
+      supportsInstructions: false,
+      maxChunkChars: 125,
+    },
+    resolveVoiceId: (profile) => profile.id,
+    resolveVoiceCacheId: (profile) => profile.id,
+  };
+  const voiceProfile = { id: 'test-voice', defaultPitch: 1, defaultSpeed: 1 };
+
+  const unspeakableTexts = [
+    '(beat)',
+    '(pause)',
+    '(sighs)',
+    '(laughing)',
+    '...',
+    '--',
+    '---',
+    '—',
+    '[[pace: rapid]]',
+    '(CONTINUED)',
+    "(cont'd)",
+    '   ',
+    '',
+    '!?',
+  ];
+
+  for (const text of unspeakableTexts) {
+    const units = buildLineUnits({
+      element: { type: 'DIALOGUE', character: 'ALICE', text },
+      voiceProfile,
+      engine,
+    });
+    assert.equal(units.length, 0, `Expected 0 units for unspeakable text: ${JSON.stringify(text)}`);
+  }
+
+  // Lines with actual dialogue alongside parentheticals should still generate valid units
+  const spokenUnits = buildLineUnits({
+    element: { type: 'DIALOGUE', character: 'ALICE', text: '(beat) Hello world!' },
+    voiceProfile,
+    engine,
+  });
+  assert.equal(spokenUnits.length, 1);
+  assert.equal(spokenUnits[0].text, 'Hello world!');
+});
