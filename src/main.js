@@ -491,7 +491,9 @@ async function initApp() {
             ? 'Cloud voices on — dialogue is sent to OpenAI to be spoken.'
             : (engineId === ENGINE_TYPES.CHATTERBOX
               ? 'Studio Local on — Chatterbox voices run privately on this device.'
-              : 'Local Kokoro voices on — nothing leaves this device.')
+              : (engineId === ENGINE_TYPES.RUNPOD
+                ? 'RunPod GPU on — high-speed neural rendering on NVIDIA L40S.'
+                : 'Local Kokoro voices on — nothing leaves this device.'))
         );
         if (afterEngineChanged) {
           afterEngineChanged(engineId);

@@ -12,7 +12,7 @@ import {
 } from '../audio/voice-catalog.js';
 import { ENGINE_IDS } from '../audio/engine-contract.js';
 import { KOKORO_GRADES, gradeLabel, gradeColor } from '../audio/voice-grades.js';
-import { hasChatterboxVoiceSample, saveChatterboxVoice } from '../audio/chatterbox-voice-store.js';
+import { hasChatterboxVoiceSample, saveChatterboxVoice, listChatterboxVoices } from '../audio/chatterbox-voice-store.js';
 import { createVoiceSampleCatalogModal } from './voice-sample-catalog-modal.js';
 
 export function createVoiceConfigModal({
@@ -79,7 +79,7 @@ export function createVoiceConfigModal({
   /** This character's voice under the active engine, falling back to the legacy field. */
   function voiceIdOf(assignment) {
     const candidate = (assignment.voiceIds && assignment.voiceIds[engineId]) || assignment.voiceId;
-    if (isStudio && !enginePool.some(voice => voice.id === candidate)) return enginePool[0]?.id || '';
+    if ((isStudio || isRunPod) && !enginePool.some(voice => voice.id === candidate)) return enginePool[0]?.id || '';
     return candidate;
   }
 
@@ -91,7 +91,7 @@ export function createVoiceConfigModal({
   function qualityBadge(voiceId, forEngineId = engineId) {
     if (forEngineId === ENGINE_IDS.CHATTERBOX) return voiceId ? 'Studio reference' : 'Reference needed';
     if (forEngineId === ENGINE_IDS.RUNPOD) {
-      if (voiceId && !voiceId.startsWith('af_') && !voiceId.startsWith('am_') && !voiceId.startsWith('bf_') && !voiceId.startsWith('bm_')) {
+      if (voiceId && !voiceId.startsWith('af_') && !voiceId.startsWith('am_') && !voiceId.startsWith('bf_') && !voiceId.startsWith('bm_') && !voiceId.startsWith('zf_') && !voiceId.startsWith('zm_')) {
         return 'Studio reference';
       }
       const grade = KOKORO_GRADES[voiceId];
@@ -309,9 +309,12 @@ export function createVoiceConfigModal({
             <section class="studio-voice-library" aria-labelledby="studio-voice-title">
               <div>
                 <span class="eyebrow">Private voice library</span>
-                <strong id="studio-voice-title">${enginePool.length
-                  ? `${enginePool.length} voice${enginePool.length === 1 ? '' : 's'} available`
-                  : 'Add your first reference voice'}</strong>
+                <strong id="studio-voice-title">${(() => {
+                  const refCount = listChatterboxVoices().length;
+                  return refCount
+                    ? `${refCount} reference voice${refCount === 1 ? '' : 's'} available`
+                    : 'Add your first reference voice';
+                })()}</strong>
                 <small>Use a clean 5–10 second recording with one speaker and little background noise. Stored only in this browser.</small>
               </div>
               <div class="studio-voice-actions">
@@ -463,7 +466,7 @@ export function createVoiceConfigModal({
                   ${isPlaying && (auditionPhase === 'rendering' || auditionPhase === 'preparing') ? `
                     <div class="audition-progress-hint" style="display: flex; align-items: center; gap: 8px; padding: 6px 10px; background: rgba(245, 158, 11, 0.1); border: 1px solid rgba(245, 158, 11, 0.25); border-radius: 6px; margin: 8px 0 4px; font-size: 0.76rem; color: #F59E0B;">
                       <span class="pulse-icon">${getIconSvg('sparkles', 14)}</span>
-                      <span>${auditionPhase === 'preparing' ? 'Loading neural voice model into memory…' : 'Generating custom performance with Studio Local…'}</span>
+                      <span>${auditionPhase === 'preparing' ? (isRunPod ? 'Connecting to RunPod GPU…' : 'Loading neural voice model into memory…') : (isRunPod ? 'Synthesizing with RunPod GPU…' : 'Generating custom performance with Studio Local…')}</span>
                     </div>
                   ` : ''}
 

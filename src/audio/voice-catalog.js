@@ -600,9 +600,14 @@ export const CROSS_ENGINE_VOICE_MAP = Object.freeze({
 export function mapVoiceAcrossEngines(voiceId, targetEngineId, usedVoices = new Set()) {
   const pool = getVoicesForEngine(targetEngineId);
 
-  if (targetEngineId === ENGINE_IDS.CHATTERBOX || targetEngineId === ENGINE_IDS.RUNPOD) {
+  if (targetEngineId === ENGINE_IDS.CHATTERBOX) {
     const unused = pool.find(voice => !usedVoices.has(voice.id));
     return unused?.id || pool[0]?.id || '';
+  }
+
+  // Preserve the identical voice if the target pool natively includes it (e.g. Kokoro <-> RunPod)
+  if (pool.some(v => v.id === voiceId) && !usedVoices.has(voiceId)) {
+    return voiceId;
   }
 
   const mapped = targetEngineId === ENGINE_IDS.OPENAI
@@ -620,7 +625,7 @@ export function mapVoiceAcrossEngines(voiceId, targetEngineId, usedVoices = new 
   if (sameSex.length > 0) return sameSex[0].id;
 
   const anyUnused = pool.find(v => !usedVoices.has(v.id));
-  return anyUnused ? anyUnused.id : pool[0].id;
+  return anyUnused ? anyUnused.id : (pool[0]?.id || '');
 }
 
 /** Voices good enough to hand out without being asked for. */

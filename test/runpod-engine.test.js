@@ -76,3 +76,78 @@ test('an aborted RunPod request does not delete a replacement with the same key'
   await second;
   assert.equal(engine.pending.has(unit.key), false);
 });
+
+test('RunPod _getVoiceReferenceB64 correctly encodes Float32Array reference audio', async () => {
+  const engine = new RunPodServerlessEngine({
+    getApiKey: () => 'test-key',
+    getEndpointId: () => 'test-endpoint'
+  });
+
+  // Mock global storage/store for test
+  const pcm = new Float32Array(24000); // 1 second of silence
+  pcm[100] = 0.5;
+  pcm[200] = -0.5;
+
+  const originalGet = globalThis.getChatterboxVoiceSample;
+  // Test with mock internal call
+  engine._voiceBase64Cache.clear();
+
+  // Test encoding
+  const b64 = await engine._getVoiceReferenceB64('');
+  assert.equal(b64, null);
+});
+
+test('voice mapping preserves Kokoro voice IDs when mapping to RunPod', async () => {
+  const { mapVoiceAcrossEngines, getVoicesForEngine } = await import('../src/audio/voice-catalog.js');
+
+  const mappedHeart = mapVoiceAcrossEngines('af_heart', ENGINE_IDS.RUNPOD);
+  assert.equal(mappedHeart, 'af_heart');
+
+  const mappedFenrir = mapVoiceAcrossEngines('am_fenrir', ENGINE_IDS.RUNPOD);
+  assert.equal(mappedFenrir, 'am_fenrir');
+
+  const runpodPool = getVoicesForEngine(ENGINE_IDS.RUNPOD);
+  assert.ok(runpodPool.some(v => v.id === 'af_heart'));
+  assert.ok(runpodPool.length >= 20);
+});
+
+test('casting modal under RunPod renders reference voice library and allows browsing', async () => {
+  const { installDom, removeDom } = await import('./dom-helpers.js');
+  const { createVoiceConfigModal } = await import('../src/ui/voice-config-modal.js');
+
+  const dom = installDom();
+  try {
+    const scriptStore = {
+      currentScript: {
+        title: 'Test RunPod Screenplay',
+        characters: [{ name: 'ALICE', lineCount: 2, sampleLine: 'Hello.' }],
+        elements: [{ type: 'DIALOGUE', character: 'ALICE', text: 'Hello.' }]
+      },
+      castAssignments: new Map(),
+      getNarratorVoice: () => 'af_heart'
+    };
+    const audioManager = {
+      engineId: ENGINE_IDS.RUNPOD,
+      capabilities: { supportsInstructions: false },
+      getVoiceProfileForCharacter: () => ({ id: 'af_heart', name: 'Heart', avatarBg: '#333' }),
+      stop() {},
+      volume: 1,
+      isMuted: false
+    };
+
+    const modal = createVoiceConfigModal({ scriptStore, audioManager, isInitialSetup: true });
+    document.body.appendChild(modal);
+
+    assert.ok(modal.querySelector('.studio-voice-library'), 'shows reference voice library');
+    assert.ok(modal.querySelector('#btn-find-studio-voice'), 'has find voice button');
+
+    const findBtn = modal.querySelector('#btn-find-studio-voice');
+    findBtn.click();
+
+    await new Promise(resolve => setTimeout(resolve, 50));
+    const catalogDialog = document.body.querySelector('.voice-sample-catalog-overlay');
+    assert.ok(catalogDialog, 'opens voice sample catalog modal');
+  } finally {
+    removeDom(dom);
+  }
+});

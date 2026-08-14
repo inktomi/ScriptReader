@@ -199,8 +199,8 @@ export class RunPodServerlessEngine {
     }
     try {
       const sample = await getChatterboxVoiceSample(voiceId);
-      if (sample && sample.data && sample.data.length > 0) {
-        const b64 = float32ToWavBase64(sample.data, sample.sampleRate || 24000);
+      if (sample && sample.length > 0) {
+        const b64 = float32ToWavBase64(sample, 24000);
         this._voiceBase64Cache.set(voiceId, b64);
         return b64;
       }
@@ -215,10 +215,13 @@ export class RunPodServerlessEngine {
     const endpointId = this.getEndpointId().trim() || DEFAULT_RUNPOD_ENDPOINT;
     const refB64 = await this._getVoiceReferenceB64(unit.voiceId);
 
-    const isKokoro = String(unit.voiceId || '').startsWith('af_') ||
-                     String(unit.voiceId || '').startsWith('am_') ||
-                     String(unit.voiceId || '').startsWith('bf_') ||
-                     String(unit.voiceId || '').startsWith('bm_');
+    const voiceIdStr = String(unit.voiceId || '');
+    const isKokoro = voiceIdStr.startsWith('af_') ||
+                     voiceIdStr.startsWith('am_') ||
+                     voiceIdStr.startsWith('bf_') ||
+                     voiceIdStr.startsWith('bm_') ||
+                     voiceIdStr.startsWith('zf_') ||
+                     voiceIdStr.startsWith('zm_');
 
     const payload = {
       input: {
