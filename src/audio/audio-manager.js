@@ -16,7 +16,7 @@ import { OpenAiTtsEngine } from './openai-engine.js';
 import { ChatterboxStudioEngine, getChatterboxCacheStatus } from './chatterbox-engine.js';
 import { RunPodServerlessEngine } from './runpod-engine.js';
 import { MAX_RENDER_CACHE_SECONDS } from './chatterbox-render-store.js';
-import { loadEngineSettings, saveEngineSettings } from '../utils/credentials.js';
+import { loadEngineSettings, saveEngineSettings, hasRunPodKey } from '../utils/credentials.js';
 
 /**
  * Retained so existing imports keep resolving; `ENGINE_IDS` in engine-contract.js
@@ -164,10 +164,12 @@ export class ScreenplayAudioManager {
     // engine-native voices even when playback itself has not moved.
     this.prewarmGeneration = 0;
     this._preparedStudioKeys = new Set();
+    const isStudioEngine = this.engineId === ENGINE_IDS.CHATTERBOX || this.engineId === ENGINE_IDS.RUNPOD;
     this.renderStatus = {
-      visible: this.engineId === ENGINE_IDS.CHATTERBOX,
+      visible: isStudioEngine,
       active: false,
-      canPlay: this.engineId !== ENGINE_IDS.CHATTERBOX,
+      canPlay: !isStudioEngine,
+      engineLabel: this.engine?.capabilities?.label || 'Studio',
       completed: 0,
       total: 0,
       percent: 0,
@@ -262,6 +264,24 @@ export class ScreenplayAudioManager {
       this.engine.init().catch(err => {
         console.warn('Kokoro background preload notice:', err);
       });
+      return;
+    }
+
+    if (this.engineId === ENGINE_IDS.RUNPOD) {
+      if (hasRunPodKey() || this.engine.getApiKey?.()?.trim()) {
+        const engine = this.engine;
+        const generation = this.playGeneration;
+        engine.init()
+          .then(() => {
+            if (generation === this.playGeneration &&
+                this.engineId === ENGINE_IDS.RUNPOD && this.engine === engine && engine.isReady) {
+              this.prewarm();
+            }
+          })
+          .catch(err => {
+            console.warn('RunPod background preload notice:', err);
+          });
+      }
       return;
     }
 
@@ -381,6 +401,19 @@ export class ScreenplayAudioManager {
     saveEngineSettings({ engineId });
 
     this.emit('engineChange', { engineId, capabilities: this.engine.capabilities });
+
+    if (this.engineId === ENGINE_IDS.RUNPOD) {
+      if (!this.engine.isReady && (hasRunPodKey() || this.engine.getApiKey?.()?.trim())) {
+        this.engine.init()
+          .then(() => {
+            if (this.engineId === ENGINE_IDS.RUNPOD) this.prewarm();
+          })
+          .catch(err => {
+            console.warn('RunPod setEngine init notice:', err);
+          });
+      }
+    }
+
     this.prewarm();
   }
 
@@ -772,17 +805,20 @@ export class ScreenplayAudioManager {
   _invalidateUnits() {
     this.unitCache.clear();
     this.prewarmGeneration++;
-    if (this.engineId === ENGINE_IDS.CHATTERBOX) {
+    const isStudioEngine = this.engineId === ENGINE_IDS.CHATTERBOX || this.engineId === ENGINE_IDS.RUNPOD;
+    if (isStudioEngine) {
+      const label = this.engine?.capabilities?.label || 'Studio';
       this._setRenderStatus({
         visible: true,
         active: this.scriptElements.length > 0,
         canPlay: false,
+        engineLabel: label,
         completed: 0,
         total: 0,
         percent: 0,
         etaSeconds: null,
         error: null,
-        message: this.scriptElements.length > 0 ? 'Preparing Studio Local audio' : ''
+        message: this.scriptElements.length > 0 ? `Preparing ${label} audio` : ''
       });
     } else if (this.renderStatus?.visible) {
       this._setRenderStatus({ visible: false, active: false, canPlay: true, error: null, message: '' });
@@ -1277,7 +1313,7 @@ export class ScreenplayAudioManager {
     const engine = this.engine;
     const unitGeneration = this.prewarmGeneration;
 
-    if (this.engineId === ENGINE_IDS.CHATTERBOX) {
+    if (this.engineId === ENGINE_IDS.CHATTERBOX || this.engineId === ENGINE_IDS.RUNPOD) {
       const active = this._studioPrewarmTask;
       if (active && active.engine === engine && active.unitGeneration === unitGeneration) {
         return active.promise;
@@ -1304,24 +1340,32 @@ export class ScreenplayAudioManager {
       STUDIO_UNKNOWN_RENDER_RATE,
       false
     );
+    const label = engine.capabilities?.label || 'Studio';
     if (this._ownsStudioPrewarm(engine, unitGeneration)) {
       this._setRenderStatus({
         visible: true,
         active: true,
         canPlay: initialRunway.canPlay,
+        engineLabel: label,
         error: null
       });
     }
 
     try {
       if (!engine.isReady) {
-        // Selecting Studio Local is explicit consent to install it, but a saved
-        // selection can outlive browser storage eviction. Re-check the installed
-        // files before starting a background load so merely opening a script can
-        // never silently trigger another 1.4 GB download.
-        const status = await this.getChatterboxCacheStatus();
-        if (!status.installed || !this._ownsStudioPrewarm(engine, unitGeneration)) return false;
-        await engine.init();
+        if (this.engineId === ENGINE_IDS.CHATTERBOX) {
+          // Selecting Studio Local is explicit consent to install it, but a saved
+          // selection can outlive browser storage eviction. Re-check the installed
+          // files before starting a background load so merely opening a script can
+          // never silently trigger another 1.4 GB download.
+          const status = await this.getChatterboxCacheStatus();
+          if (!status.installed || !this._ownsStudioPrewarm(engine, unitGeneration)) return false;
+          await engine.init();
+        } else if (this.engineId === ENGINE_IDS.RUNPOD) {
+          const key = engine.getApiKey?.()?.trim();
+          if (!key || !this._ownsStudioPrewarm(engine, unitGeneration)) return false;
+          await engine.init();
+        }
       }
 
       if (!engine.isReady || !this._ownsStudioPrewarm(engine, unitGeneration)) return false;
@@ -1343,14 +1387,15 @@ export class ScreenplayAudioManager {
       await this._queueStudioPrewarm(engine, unitGeneration);
       return true;
     } catch (err) {
-      console.warn('Studio Local background pre-render notice:', err);
+      console.warn(`${label} background pre-render notice:`, err);
       if (this._ownsStudioPrewarm(engine, unitGeneration)) {
         this._setRenderStatus({
           visible: true,
           active: false,
           canPlay: false,
-          error: err?.message || 'Studio audio could not be rendered.',
-          message: err?.message || 'Studio audio could not be rendered.'
+          engineLabel: label,
+          error: err?.message || `${label} audio could not be rendered.`,
+          message: err?.message || `${label} audio could not be rendered.`
         });
       }
       return false;
@@ -1363,7 +1408,8 @@ export class ScreenplayAudioManager {
 
   _ownsStudioPrewarm(engine, unitGeneration) {
     return unitGeneration === this.prewarmGeneration &&
-      this.engineId === ENGINE_IDS.CHATTERBOX && this.engine === engine;
+      (this.engineId === ENGINE_IDS.CHATTERBOX || this.engineId === ENGINE_IDS.RUNPOD) &&
+      this.engine === engine;
   }
 
   _setRenderStatus(status) {
@@ -1471,6 +1517,7 @@ export class ScreenplayAudioManager {
     let canPlay = false;
     const startedAt = Date.now();
 
+    const label = engine.capabilities?.label || 'Studio';
     const publish = (active, error = null) => {
       const renderRate = measuredWallSeconds > 0
         ? measuredAudioSeconds / measuredWallSeconds
@@ -1483,6 +1530,7 @@ export class ScreenplayAudioManager {
         visible: true,
         active,
         canPlay,
+        engineLabel: label,
         completed,
         total: units.length,
         percent: totalSeconds > 0 ? Math.min(100, Math.round((completedSeconds / totalSeconds) * 100)) : 100,
@@ -1491,7 +1539,7 @@ export class ScreenplayAudioManager {
         runwaySeconds: runway.contiguousSeconds,
         requiredSeconds: runway.requiredSeconds,
         error,
-        message: error || (active ? 'Pre-rendering Studio Local audio' : 'Studio Local audio ready')
+        message: error || (active ? `Pre-rendering ${label} audio` : `${label} audio ready`)
       });
     };
 
@@ -1576,7 +1624,8 @@ export class ScreenplayAudioManager {
     // silently re-arms prewarm instead of resuming.
     const isPausedResume = this.playbackState === PLAYBACK_STATES.PAUSED &&
       !this.usingWebSpeechFallback && this.engine.isReady;
-    if (!isPausedResume && this.engineId === ENGINE_IDS.CHATTERBOX && !this.renderStatus.canPlay) {
+    const isStudioEngine = this.engineId === ENGINE_IDS.CHATTERBOX || this.engineId === ENGINE_IDS.RUNPOD;
+    if (!isPausedResume && isStudioEngine && !this.renderStatus.canPlay) {
       this.prewarm();
       return;
     }
@@ -1695,7 +1744,9 @@ export class ScreenplayAudioManager {
     this.playGeneration++;
     if (!preservePrewarm) {
       this.prewarmGeneration++;
-      if (this.engineId === ENGINE_IDS.CHATTERBOX && this.scriptElements.length > 0) {
+      const isStudioEngine = this.engineId === ENGINE_IDS.CHATTERBOX || this.engineId === ENGINE_IDS.RUNPOD;
+      if (isStudioEngine && this.scriptElements.length > 0) {
+        const label = this.engine?.capabilities?.label || 'Studio';
         // `_setRenderStatus` is a shallow merge, so a percent left over from the
         // completed run would sit next to canPlay:false — a bar reading 100%
         // above a Play button that refuses to start.
@@ -1703,10 +1754,11 @@ export class ScreenplayAudioManager {
           visible: true,
           active: false,
           canPlay: false,
+          engineLabel: label,
           completed: 0,
           percent: 0,
           error: null,
-          message: 'Studio Local pre-render paused'
+          message: `${label} pre-render paused`
         });
       }
     }

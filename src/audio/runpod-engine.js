@@ -106,6 +106,11 @@ export class RunPodServerlessEngine {
     return voiceProfile?.chatterboxId || voiceProfile?.id || voiceProfile?.kokoroId || 'af_heart';
   }
 
+  resolveVoiceCacheId(profile) {
+    const id = this.resolveVoiceId(profile);
+    return profile?.renderRevision ? `${id}@${profile.renderRevision}` : `${id}@v2`;
+  }
+
   onProgress(callback) {
     this.progressListeners.add(callback);
     return () => this.progressListeners.delete(callback);
@@ -210,6 +215,45 @@ export class RunPodServerlessEngine {
     return null;
   }
 
+  _bufferFromPcm(pcm, sampleRate = 24000) {
+    const context = getAudioContext();
+    if (!context) throw new Error('Web Audio is unavailable in this browser.');
+    const samples = decodePcm16(pcm);
+    const buffer = context.createBuffer(1, samples.length, sampleRate);
+    buffer.copyToChannel(samples, 0);
+    return buffer;
+  }
+
+  async _loadOrSynthesize(unit, signal) {
+    if (signal?.aborted) throw new DOMException('aborted', 'AbortError');
+    if (this.renderStore) {
+      try {
+        const stored = await this.renderStore.get(unit.key);
+        if (stored && stored.audio) {
+          return this._bufferFromPcm(stored.audio, stored.sampleRate);
+        }
+      } catch (err) {
+        console.warn('RunPod render store read notice:', err);
+      }
+    }
+    if (signal?.aborted) throw new DOMException('aborted', 'AbortError');
+
+    const buffer = await this._synthesize(unit, signal);
+    if (this.renderStore && buffer) {
+      try {
+        const channelData = typeof buffer.getChannelData === 'function'
+          ? buffer.getChannelData(0)
+          : (buffer.channelData?.[0] || null);
+        if (channelData) {
+          await this.renderStore.put(unit.key, channelData, buffer.sampleRate || 24000);
+        }
+      } catch (err) {
+        console.warn('RunPod render store write notice:', err);
+      }
+    }
+    return buffer;
+  }
+
   async _synthesize(unit, signal) {
     const key = this.getApiKey().trim();
     const endpointId = this.getEndpointId().trim() || DEFAULT_RUNPOD_ENDPOINT;
@@ -264,12 +308,14 @@ export class RunPodServerlessEngine {
 
         if (data.status === 'COMPLETED' && data.output?.audio_base64) {
           audioB64 = data.output.audio_base64;
-        } else if (data.id && data.status === 'IN_QUEUE') {
-          // Poll for completion if queued
+        } else if (data.id && (data.status === 'IN_QUEUE' || data.status === 'IN_PROGRESS')) {
+          // Poll for completion if queued or in progress
           const jobId = data.id;
           audioB64 = await this._pollJob(endpointId, jobId, key, signal);
+        } else if (data.status === 'FAILED') {
+          throw new Error(data.error || 'RunPod worker task failed');
         } else {
-          throw new Error(data.error || 'RunPod returned unexpected response');
+          throw new Error(data.error || `RunPod returned unexpected response (${data.status || 'unknown'})`);
         }
 
         if (!audioB64) throw new Error('No audio returned from RunPod');
@@ -298,21 +344,29 @@ export class RunPodServerlessEngine {
     const statusUrl = `https://api.runpod.ai/v2/${endpointId}/status/${jobId}`;
     for (let i = 0; i < 40; i++) {
       if (signal.aborted) throw new DOMException('aborted', 'AbortError');
-      await sleep(1500, signal);
+      if (i > 0) {
+        await sleep(1500, signal);
+      }
 
       const res = await fetch(statusUrl, {
         headers: { Authorization: `Bearer ${apiKey}` },
         signal
       });
 
-      if (!res.ok) continue;
+      if (!res.ok) {
+        if (RETRYABLE_STATUS.has(res.status)) continue;
+        throw new Error(`RunPod status check failed with HTTP ${res.status}`);
+      }
       const data = await res.json();
 
       if (data.status === 'COMPLETED') {
+        if (data.output?.error) {
+          throw new Error(data.output.error);
+        }
         return data.output?.audio_base64 || '';
       }
-      if (data.status === 'FAILED') {
-        throw new Error(data.error || 'RunPod worker task failed');
+      if (data.status === 'FAILED' || data.status === 'CANCELLED' || data.status === 'TIMED_OUT') {
+        throw new Error(data.error || `RunPod worker task ${data.status.toLowerCase()}`);
       }
     }
     throw new Error('RunPod job polling timed out');
@@ -326,7 +380,7 @@ export class RunPodServerlessEngine {
       if (!item) break;
 
       this.activeWorkers++;
-      this._synthesize(item.unit, item.controller.signal)
+      this._loadOrSynthesize(item.unit, item.controller.signal)
         .then(buffer => {
           this._cacheBuffer(item.unit.key, buffer);
           item.resolve(buffer);

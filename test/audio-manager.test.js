@@ -846,3 +846,55 @@ test('flushing pending requests drops lookahead across all engines in a hybrid c
   assert.equal(chatterboxDropped.length, 2);
   assert.equal(kokoroDropped.length, 2);
 });
+
+test('RunPod pre-renders in the background ASAP before Play when configured with an API key', async () => {
+  const manager = new ScreenplayAudioManager();
+  const requested = [];
+  const engine = fakeEngine({
+    isReady: false,
+    capabilities: { id: ENGINE_IDS.RUNPOD, label: 'RunPod GPU (Cloud L40S)', metered: false },
+    getApiKey: () => 'valid-runpod-key',
+    async init() { this.isReady = true; },
+    request(unit) {
+      requested.push(unit.key);
+      return Promise.resolve({ duration: 2.5 });
+    }
+  });
+
+  manager.engineId = ENGINE_IDS.RUNPOD;
+  manager.engine = engine;
+  manager._engines.set(ENGINE_IDS.RUNPOD, engine);
+  manager.scriptElements = [{ type: 'DIALOGUE', character: 'HERO', text: 'To be or not to be.' }];
+  manager._unitsForLine = line => line === 0
+    ? [{ key: 'runpod-unit-1', estimatedDuration: 2.5, leadPause: 0 }]
+    : null;
+
+  await manager.prewarm();
+
+  assert.equal(engine.isReady, true);
+  assert.deepEqual(requested, ['runpod-unit-1']);
+  assert.equal(manager.renderStatus.visible, true);
+  assert.equal(manager.renderStatus.engineLabel, 'RunPod GPU (Cloud L40S)');
+  assert.equal(manager.renderStatus.completed, 1);
+  assert.equal(manager.playbackState, PLAYBACK_STATES.IDLE);
+});
+
+test('Play gates on runway readiness under RunPod when unrendered', async () => {
+  const manager = new ScreenplayAudioManager();
+  let prewarmCalled = false;
+  const engine = fakeEngine({
+    isReady: true,
+    capabilities: { id: ENGINE_IDS.RUNPOD, label: 'RunPod GPU (Cloud L40S)', metered: false }
+  });
+
+  manager.engineId = ENGINE_IDS.RUNPOD;
+  manager.engine = engine;
+  manager.scriptElements = [{ type: 'DIALOGUE', character: 'HERO', text: 'Line one' }];
+  manager.renderStatus = { visible: true, active: true, canPlay: false };
+  manager.prewarm = () => { prewarmCalled = true; };
+
+  await manager.play();
+
+  assert.equal(prewarmCalled, true, 'play() must trigger prewarm and wait when canPlay is false');
+  assert.equal(manager.playbackState, PLAYBACK_STATES.IDLE);
+});

@@ -233,11 +233,12 @@ export function createTransportBar({
     }
 
     const percent = Math.max(0, Math.min(100, Number(latestRenderStatus.percent) || 0));
+    const engineLabel = latestRenderStatus.engineLabel || 'Studio Local';
     renderFill.style.width = `${percent}%`;
     renderTrack.setAttribute('aria-valuenow', String(percent));
     renderLabel.textContent = latestRenderStatus.error
-      ? 'Studio Local pre-render stopped'
-      : `Studio Local pre-rendered · ${percent}%`;
+      ? `${engineLabel} pre-render stopped`
+      : `${engineLabel} pre-rendered · ${percent}%`;
 
     if (latestRenderStatus.error) {
       renderDetail.textContent = latestRenderStatus.error;
@@ -265,7 +266,7 @@ export function createTransportBar({
     setPlayDisabled(latestRenderStatus.visible && !latestRenderStatus.canPlay &&
       latestPlaybackState === PLAYBACK_STATES.IDLE);
     btnPlay.title = btnPlay.disabled
-      ? 'Studio Local is rendering enough audio for uninterrupted playback'
+      ? `${engineLabel} is rendering enough audio for uninterrupted playback`
       : 'Play / Pause (Spacebar)';
   }
 
