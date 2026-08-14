@@ -859,7 +859,7 @@ export function createVoiceConfigModal({
             assignment.pitchOffset || 0,
             assignment.speedMultiplier || 1.0,
             direction,
-            null,
+            engineId,
             onStateChange
           );
         } catch (e) {

@@ -135,6 +135,7 @@ export class RunPodServerlessEngine {
       this.phase = 'error';
       const error = new Error('RunPod API key is missing. Add your key in Engine Settings.');
       error.code = 'no_key';
+      this.lastError = error;
       this._notifyProgress('error', error.message, error);
       throw error;
     }
@@ -154,10 +155,12 @@ export class RunPodServerlessEngine {
 
       this.isReady = true;
       this.isLoading = false;
+      this.lastError = null;
       this._notifyProgress('ready', 'RunPod GPU connected');
     } catch (err) {
       this.isReady = false;
       this.isLoading = false;
+      this.lastError = err;
       this._notifyProgress('error', err.message, err);
       throw err;
     }
@@ -257,7 +260,6 @@ export class RunPodServerlessEngine {
   async _synthesize(unit, signal) {
     const key = this.getApiKey().trim();
     const endpointId = this.getEndpointId().trim() || DEFAULT_RUNPOD_ENDPOINT;
-    const refB64 = await this._getVoiceReferenceB64(unit.voiceId);
 
     const voiceIdStr = String(unit.voiceId || '');
     const isKokoro = voiceIdStr.startsWith('af_') ||
@@ -266,6 +268,11 @@ export class RunPodServerlessEngine {
                      voiceIdStr.startsWith('bm_') ||
                      voiceIdStr.startsWith('zf_') ||
                      voiceIdStr.startsWith('zm_');
+
+    const refB64 = isKokoro ? null : await this._getVoiceReferenceB64(unit.voiceId);
+    if (!isKokoro && !refB64) {
+      throw new Error('This Studio voice is missing its reference recording. Add it again in casting.');
+    }
 
     const payload = {
       input: {
@@ -306,8 +313,15 @@ export class RunPodServerlessEngine {
         const data = await res.json();
         let audioB64 = '';
 
-        if (data.status === 'COMPLETED' && data.output?.audio_base64) {
-          audioB64 = data.output.audio_base64;
+        if (data.status === 'COMPLETED') {
+          if (data.output?.error) {
+            throw new Error(data.output.error);
+          }
+          if (data.output?.audio_base64) {
+            audioB64 = data.output.audio_base64;
+          } else {
+            throw new Error('No audio returned from RunPod');
+          }
         } else if (data.id && (data.status === 'IN_QUEUE' || data.status === 'IN_PROGRESS')) {
           // Poll for completion if queued or in progress
           const jobId = data.id;

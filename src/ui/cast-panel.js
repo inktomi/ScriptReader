@@ -30,8 +30,11 @@ export function createCastPanel({
       ? getVoiceById(storedNarratorVoiceId, narratorEngineId)
       : audioManager.getVoiceProfileForCharacter('NARRATOR', narratorEngineId);
     const narratorVoiceId = narratorProfile.id;
-    const voiceIdOf = (assignment) =>
-      (assignment.voiceIds && assignment.voiceIds[engineId]) || assignment.voiceId;
+    const voiceIdOf = (assignment) => {
+      const candidate = (assignment?.voiceIds && assignment.voiceIds[engineId]) || assignment?.voiceId;
+      if (!enginePool.some(voice => voice.id === candidate)) return enginePool[0]?.id || '';
+      return candidate;
+    };
 
     // Build options for voice select
     const voiceOptionsHtml = (selectedId, pool = enginePool) => {
@@ -286,7 +289,7 @@ export function createCastPanel({
         auditionPhase = 'rendering';
         render();
 
-        const assignment = scriptStore.castAssignments.get(charKey);
+        const assignment = scriptStore.castAssignments.get(charKey) || makeDefaultAssignment();
         const charObj = characters.find(c => c.name.toUpperCase().trim() === charKey);
         const sampleText = charObj ? charObj.sampleLine : null;
         
@@ -306,7 +309,7 @@ export function createCastPanel({
             assignment.pitchOffset || 0,
             assignment.speedMultiplier || 1.0,
             assignment.direction || '',
-            null,
+            engineId,
             onStateChange
           );
         } catch (e) {

@@ -8,7 +8,7 @@ export function installDom() {
   globalThis.document = dom.window.document;
   globalThis.localStorage = dom.window.localStorage;
   globalThis.Event = dom.window.Event;
-  globalThis.File = dom.window.File;
+  if (dom.window.File) globalThis.File = dom.window.File;
   globalThis.CSS = dom.window.CSS || { escape: value => String(value) };
   if (!globalThis.CSS.escape) globalThis.CSS.escape = value => String(value);
   return dom;

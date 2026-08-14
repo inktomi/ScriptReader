@@ -268,3 +268,199 @@ test('casting modal under RunPod renders reference voice library and allows brow
     removeDom(dom);
   }
 });
+
+test('RunPod _synthesize propagates worker error when status is COMPLETED with output.error', async () => {
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (url) => {
+    if (url.includes('/runsync')) {
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({
+          status: 'COMPLETED',
+          output: { error: 'CUDA out of memory in Kokoro forward pass' }
+        })
+      };
+    }
+    return { ok: false, status: 404 };
+  };
+
+  try {
+    const engine = new RunPodServerlessEngine({
+      getApiKey: () => 'test-key',
+      getEndpointId: () => 'test-endpoint'
+    });
+    engine.isReady = true;
+
+    await assert.rejects(
+      engine._synthesize({ text: 'Hello', voiceId: 'af_heart' }, new AbortController().signal),
+      error => error.message.includes('CUDA out of memory')
+    );
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('RunPod _synthesize skips reference lookup for Kokoro voices and errors on missing Studio reference', async () => {
+  const { installDom, removeDom } = await import('./dom-helpers.js');
+  const dom = installDom();
+  try {
+    let refLookups = 0;
+    const engine = new RunPodServerlessEngine({
+      getApiKey: () => 'test-key',
+      getEndpointId: () => 'test-endpoint'
+    });
+    engine.isReady = true;
+    engine._getVoiceReferenceB64 = async (voiceId) => {
+      refLookups++;
+      return null;
+    };
+
+    // 1. Missing Studio reference voice errors out immediately
+    await assert.rejects(
+      engine._synthesize({ text: 'Hello', voiceId: 'custom-voice-ref' }, new AbortController().signal),
+      error => error.message.includes('missing its reference recording')
+    );
+    assert.equal(refLookups, 1);
+
+    // 2. Kokoro voice does NOT query reference audio
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = async (url) => {
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({
+          status: 'COMPLETED',
+          output: { audio_base64: 'UklGRigAAABXQVZFZm10IBAAAAABAAEARKwAAIhYAQACABAAZGF0YQAAAAA=' }
+        })
+      };
+    };
+
+    try {
+      // Mock decodeAudioData on audio context
+      const origAudioContext = globalThis.AudioContext;
+      globalThis.window.AudioContext = class {
+        async decodeAudioData() {
+          return { duration: 1.0, getChannelData: () => new Float32Array(24000), sampleRate: 24000 };
+        }
+      };
+
+      try {
+        const buffer = await engine._synthesize({ text: 'Hello', voiceId: 'af_heart' }, new AbortController().signal);
+        assert.ok(buffer);
+        // refLookups count should still be 1 (never incremented for af_heart)
+        assert.equal(refLookups, 1);
+      } finally {
+        globalThis.window.AudioContext = origAudioContext;
+      }
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  } finally {
+    removeDom(dom);
+  }
+});
+
+test('auditioning character and narrator in casting modal under RunPod invokes previewVoice with engineId', async () => {
+  const { installDom, removeDom } = await import('./dom-helpers.js');
+  const { createVoiceConfigModal } = await import('../src/ui/voice-config-modal.js');
+
+  const dom = installDom();
+  try {
+    const scriptStore = {
+      currentScript: {
+        title: 'RunPod Audition Script',
+        characters: [{ name: 'VALENTINE', lineCount: 4, sampleLine: 'Breach confirmed.' }],
+        elements: [{ type: 'DIALOGUE', character: 'VALENTINE', text: 'Breach confirmed.' }]
+      },
+      castAssignments: new Map([
+        ['VALENTINE', { voiceId: 'af_sarah', voiceIds: { [ENGINE_IDS.RUNPOD]: 'af_sarah' }, pitchOffset: 0, speedMultiplier: 1.0 }]
+      ]),
+      getNarratorVoice: () => 'bf_emma'
+    };
+
+    const previews = [];
+    const audioManager = {
+      engineId: ENGINE_IDS.RUNPOD,
+      capabilities: { supportsInstructions: false },
+      getVoiceProfileForCharacter: () => ({ id: 'bf_emma', name: 'Emma', avatarBg: '#333' }),
+      stop() {},
+      async previewVoice(voiceId, sampleText, pitchOffset, speedMultiplier, direction, targetEngineId, onStateChange) {
+        previews.push({ voiceId, sampleText, pitchOffset, speedMultiplier, direction, targetEngineId });
+        onStateChange?.('playing');
+      },
+      volume: 1,
+      isMuted: false
+    };
+
+    const modal = createVoiceConfigModal({ scriptStore, audioManager, isInitialSetup: false });
+    document.body.appendChild(modal);
+
+    // 1. Audition character
+    const charAuditionBtn = modal.querySelector('.btn-audition-char');
+    assert.ok(charAuditionBtn, 'character audition button rendered');
+    charAuditionBtn.click();
+
+    assert.equal(previews.length, 1);
+    assert.equal(previews[0].voiceId, 'af_sarah');
+    assert.equal(previews[0].targetEngineId, ENGINE_IDS.RUNPOD);
+    assert.equal(previews[0].sampleText, 'Breach confirmed.');
+
+    // 2. Audition narrator
+    const narratorAuditionBtn = modal.querySelector('.btn-audition-narrator');
+    assert.ok(narratorAuditionBtn, 'narrator audition button rendered');
+    narratorAuditionBtn.click();
+
+    assert.equal(previews.length, 2);
+    assert.equal(previews[1].voiceId, 'bf_emma');
+    assert.equal(previews[1].targetEngineId, ENGINE_IDS.RUNPOD);
+  } finally {
+    removeDom(dom);
+  }
+});
+
+test('cast panel character test under RunPod handles missing assignment cleanly', async () => {
+  const { installDom, removeDom } = await import('./dom-helpers.js');
+  const { createCastPanel } = await import('../src/ui/cast-panel.js');
+
+  const dom = installDom();
+  try {
+    const scriptStore = {
+      currentScript: {
+        title: 'RunPod Cast Panel Script',
+        characters: [{ name: 'KIRA', lineCount: 3, sampleLine: 'Copy that.' }],
+        elements: [{ type: 'DIALOGUE', character: 'KIRA', text: 'Copy that.' }]
+      },
+      castAssignments: new Map(), // empty assignments
+      getNarratorVoice: () => 'af_heart',
+      subscribe: () => () => {}
+    };
+
+    const previews = [];
+    const audioManager = {
+      engineId: ENGINE_IDS.RUNPOD,
+      capabilities: { supportsInstructions: false },
+      getVoiceProfileForCharacter: () => ({ id: 'af_heart', name: 'Heart', avatarBg: '#333' }),
+      stop() {},
+      async previewVoice(voiceId, sampleText, pitchOffset, speedMultiplier, direction, targetEngineId, onStateChange) {
+        previews.push({ voiceId, sampleText, pitchOffset, speedMultiplier, direction, targetEngineId });
+        onStateChange?.('playing');
+      },
+      volume: 1,
+      isMuted: false
+    };
+
+    const panel = createCastPanel({ scriptStore, audioManager, onOpenVoiceConfig: () => {} });
+    document.body.appendChild(panel.element);
+
+    const testBtn = panel.element.querySelector('.btn-test-voice');
+    assert.ok(testBtn, 'test voice button rendered');
+    testBtn.click();
+
+    assert.equal(previews.length, 1);
+    assert.equal(previews[0].targetEngineId, ENGINE_IDS.RUNPOD);
+    assert.equal(previews[0].sampleText, 'Copy that.');
+  } finally {
+    removeDom(dom);
+  }
+});
