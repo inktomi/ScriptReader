@@ -36,6 +36,3 @@ entities.json
 .env.local
 .env.*.local
 .envrc
-
-# Agent configuration
-.agents/
