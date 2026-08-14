@@ -99,6 +99,7 @@ async function initApp() {
   const header = createHeader({
     onChangeScript: () => showWelcome(),
     onOpenVoiceConfig: () => openVoiceConfigModal(false),
+    onToggleLibrary: () => toggleLibraryRail(),
     onShowLibrary: tab => showLibraryTab(tab),
     onToggleHelp: () => openHelpModal(),
     onOpenEngineSettings: () => openEngineSettingsModal(),
@@ -127,8 +128,7 @@ async function initApp() {
       scriptStore.setActiveLine(lineIndex);
     },
     onClose: () => {
-      const btn = header.element.querySelector('#btn-toggle-scenes');
-      if (btn) btn.classList.remove('btn-active');
+      setLibraryState(false);
     }
   });
 
@@ -171,10 +171,17 @@ async function initApp() {
   libraryRail.appendChild(castPanel.element);
   libraryRail.appendChild(sceneDrawer.element);
 
-  function showLibraryTab(tab = 'cast') {
+  let currentLibraryTab = 'cast';
+
+  function isLibraryOpen() {
+    return !libraryRail.classList.contains('is-collapsed');
+  }
+
+  function setLibraryState(isOpen, tab = currentLibraryTab) {
     if (currentView !== APP_VIEWS.PLAYER) return;
+    currentLibraryTab = tab;
     const showScenes = tab === 'scenes';
-    libraryRail.classList.remove('is-collapsed');
+    libraryRail.classList.toggle('is-collapsed', !isOpen);
     castPanel.element.hidden = showScenes;
     sceneDrawer.element.hidden = !showScenes;
     libraryRail.querySelectorAll('.library-tab').forEach(button => {
@@ -182,16 +189,34 @@ async function initApp() {
       button.classList.toggle('is-active', active);
       button.setAttribute('aria-selected', String(active));
     });
+    header.setLibraryActive(isOpen);
+  }
+
+  function showLibraryTab(tab = 'cast') {
+    setLibraryState(true, tab);
+  }
+
+  function toggleLibraryRail(tab = currentLibraryTab) {
+    if (currentView !== APP_VIEWS.PLAYER) return;
+    if (isLibraryOpen()) {
+      if (tab && tab !== currentLibraryTab) {
+        setLibraryState(true, tab);
+      } else {
+        setLibraryState(false);
+      }
+    } else {
+      setLibraryState(true, tab || 'cast');
+    }
   }
 
   libraryRail.querySelectorAll('.library-tab').forEach(button => {
     button.addEventListener('click', () => showLibraryTab(button.dataset.libraryTab));
   });
   libraryRail.querySelector('.library-close').addEventListener('click', () => {
-    libraryRail.classList.add('is-collapsed');
+    setLibraryState(false);
   });
   sceneDrawer.element.querySelector('.btn-close-scenes')?.addEventListener('click', () => {
-    libraryRail.classList.add('is-collapsed');
+    setLibraryState(false);
   });
 
   // Assemble App Layout
@@ -324,6 +349,7 @@ async function initApp() {
     activeVoiceModal?.remove();
     activeVoiceModal = null;
     syncLoadedScript();
+    header.setLibraryActive(isLibraryOpen());
     transportBar.updateRenderProgress(audioManager.renderStatus);
     playerShell.hidden = false;
   }
@@ -874,11 +900,11 @@ async function initApp() {
       e.preventDefault();
       audioManager.skipNext();
     } else if (e.key === 'c' || e.key === 'C') {
-      showLibraryTab('cast');
+      toggleLibraryRail('cast');
     } else if (e.key === 'v' || e.key === 'V') {
       openVoiceConfigModal(false);
     } else if (e.key === 's' || e.key === 'S') {
-      showLibraryTab('scenes');
+      toggleLibraryRail('scenes');
     }
   });
 

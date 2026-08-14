@@ -5,6 +5,7 @@ export function createHeader({
   onChangeScript,
   onOpenVoiceConfig,
   onShowLibrary,
+  onToggleLibrary,
   onToggleHelp,
   onOpenEngineSettings,
   currentEngine = ENGINE_TYPES.KOKORO_NEURAL
@@ -14,7 +15,7 @@ export function createHeader({
 
   header.innerHTML = `
     <div class="header-left">
-      <button id="btn-library" class="btn btn-quiet btn-library" type="button" title="Open library (C for cast, S for scenes)">
+      <button id="btn-library" class="btn btn-quiet btn-library btn-active" type="button" aria-expanded="true" title="Close library (C for cast, S for scenes)">
         ${getIconSvg('layers', 17)}
         <span>Library</span>
       </button>
@@ -50,7 +51,13 @@ export function createHeader({
 
   header.querySelector('#btn-change-script').addEventListener('click', onChangeScript);
   header.querySelector('#btn-voice-setup').addEventListener('click', onOpenVoiceConfig);
-  header.querySelector('#btn-library').addEventListener('click', () => onShowLibrary('cast'));
+  header.querySelector('#btn-library').addEventListener('click', () => {
+    if (onToggleLibrary) {
+      onToggleLibrary();
+    } else if (onShowLibrary) {
+      onShowLibrary('cast');
+    }
+  });
   header.querySelector('#engine-status-badge').addEventListener('click', onOpenEngineSettings);
   header.querySelector('#btn-help').addEventListener('click', onToggleHelp);
 
@@ -104,11 +111,22 @@ export function createHeader({
     if (isFullyCached || isModelCached) badgeText.textContent = 'Local · ready offline';
   }
 
+  function setLibraryActive(isOpen) {
+    const btn = header.querySelector('#btn-library');
+    if (!btn) return;
+    btn.classList.toggle('btn-active', isOpen);
+    btn.setAttribute('aria-expanded', String(isOpen));
+    btn.title = isOpen
+      ? 'Close library (C for cast, S for scenes)'
+      : 'Open library (C for cast, S for scenes)';
+  }
+
   setEngineBadge(currentEngine);
 
   return {
     element: header,
     setScript,
+    setLibraryActive,
     updateEngineCacheBadge,
     setEngineBadge,
     setSelectedSample: () => {}

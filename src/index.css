@@ -152,7 +152,8 @@ button:disabled {
   border: 1px solid transparent;
 }
 
-.btn-quiet:hover:not(:disabled) {
+.btn-quiet:hover:not(:disabled),
+.btn-quiet.btn-active {
   color: var(--text-primary);
   background: var(--bg-raised);
   border-color: var(--border);
