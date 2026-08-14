@@ -6,7 +6,7 @@ transformers==4.49.0
 onnxruntime-gpu==1.28.0
 nvidia-cuda-runtime==13.3.29
 nvidia-cublas==13.6.1.10
-nvidia-cudnn-cu12==9.1.0.70
+nvidia-cudnn-cu13==9.24.0.43
 nvidia-cufft==12.3.0.29
 nvidia-curand==10.4.3.29
 numpy==1.26.4
