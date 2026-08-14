@@ -566,7 +566,15 @@ export class RunPodServerlessEngine {
       }
       audioB64 = data.output?.audio_base64 || '';
     } else if (data.id && (data.status === 'IN_QUEUE' || data.status === 'IN_PROGRESS')) {
-      audioB64 = await this._pollJob(endpointId, data.id, key, signal);
+      try {
+        audioB64 = await this._pollJob(endpointId, data.id, key, signal);
+      } catch (pollErr) {
+        if (pollErr.message?.includes('has no reference recording') && !refB64) {
+          this._registeredVoiceIds.delete(voiceCacheId);
+          return this._synthesize(unit, signal);
+        }
+        throw pollErr;
+      }
     } else if (data.status === 'FAILED') {
       throw new Error(data.error || 'RunPod worker task failed');
     } else {
@@ -763,6 +771,8 @@ export class RunPodServerlessEngine {
       if (match.error) {
         if (match.error.includes('has no reference recording')) {
           try {
+            const voiceCacheId = item.unit.voiceCacheId || item.unit.voiceId;
+            this._registeredVoiceIds.delete(voiceCacheId);
             const buffer = await this._synthesize(item.unit, item.controller.signal);
             if (this.renderStore) {
               try {

@@ -1071,3 +1071,65 @@ test('RunPod batch automatically recovers and retries when a distributed worker 
     globalThis.AudioContext = origAudioContext;
   }
 });
+
+test('RunPod _synthesize automatically recovers when asynchronously polled job reports missing reference', async () => {
+  const originalFetch = globalThis.fetch;
+  const validAudioB64 = 'UklGRigAAABXQVZFZm10IBAAAAABAAEARKwAAIhYAQACABAAZGF0YQAAAAA=';
+  let calls = 0;
+
+  globalThis.fetch = async (url) => {
+    calls++;
+    const urlStr = String(url);
+    if (urlStr.includes('/runsync')) {
+      if (calls === 1) {
+        // Return queued job ID on first request (no refB64 sent)
+        return jsonResponse({
+          status: 'IN_QUEUE',
+          id: 'job-123',
+        });
+      }
+      // Second request (after retry with reference audio attached)
+      return jsonResponse({
+        status: 'COMPLETED',
+        output: { audio_base64: validAudioB64, sample_rate: 24000, duration: 1.0 },
+      });
+    }
+    if (urlStr.includes('/status/job-123')) {
+      // Polled worker reports missing reference
+      return jsonResponse({
+        status: 'COMPLETED',
+        output: { error: "Chatterbox voice 'studio-bob@1' has no reference recording" },
+      });
+    }
+    return jsonResponse({ status: 'FAILED' });
+  };
+
+  const origAudioContext = globalThis.AudioContext;
+  globalThis.AudioContext = class {
+    async decodeAudioData() {
+      return { duration: 1.0, getChannelData: () => new Float32Array([0.1, -0.1, 0.2]), sampleRate: 24000 };
+    }
+  };
+
+  try {
+    const engine = new RunPodServerlessEngine({
+      getApiKey: () => 'test-key',
+      getEndpointId: () => 'test-endpoint',
+    });
+    engine.isReady = true;
+    engine._registeredVoiceIds.add('studio-bob@1');
+    engine._getVoiceReferenceB64 = async () => 'SAMPLE_BOB_B64';
+
+    const buffer = await engine._synthesize({
+      key: 'u2',
+      text: 'Hello world',
+      voiceId: 'studio-bob',
+      voiceCacheId: 'studio-bob@1',
+    });
+
+    assert.ok(buffer, 'should resolve buffer after retry');
+  } finally {
+    globalThis.fetch = originalFetch;
+    globalThis.AudioContext = origAudioContext;
+  }
+});
