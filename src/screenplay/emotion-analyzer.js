@@ -563,15 +563,14 @@ export function cleanSpeechForSynthesis(text, speakerType = 'CHARACTER', { cutOf
   //    what makes the synthesiser hold the pitch up, so the line still sounds
   //    like it was going somewhere when it was taken away.
   spoken = spoken
-    .replace(/\s*\.\.\.\s*$/, cutOff ? '' : '.')
-    .replace(/\s*(--+|—|–)\s*$/, cutOff ? '' : '.')
+    .replace(/\s*(\.\.\.|--+|—|–)\s*(["'’”»›)\]}]*)$/, (_, __, quotes) => (cutOff ? '' : '.') + quotes)
     .replace(/\s*--\s*/g, ', ')
     .replace(/\s*—\s*/g, ', ')
     .replace(/\s*;\s*/g, ', ')
     .replace(/\s*\.\.\.\s*/g, ', ')
     .replace(/\s*,\s*,\s*/g, ', ')
     .replace(/\s+([,.!?])/g, '$1')
-    .replace(/,\s*$/, cutOff ? '' : '.')
+    .replace(/,\s*(["'’”»›)\]}]*)$/, (_, quotes) => (cutOff ? '' : '.') + quotes)
     .replace(/\s+/g, ' ')
     .trim();
 

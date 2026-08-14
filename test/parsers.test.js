@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { composeInstructions } from '../src/audio/instruction-composer.js';
 import { buildLineUnits, chunkSpeech } from '../src/audio/performance-director.js';
+import { cleanSpeechForSynthesis } from '../src/screenplay/emotion-analyzer.js';
 import { parseFountainScript } from '../src/screenplay/fountain-parser.js';
 import { isPdfDialogueContinuation, shouldSplitPdfDialogueAtParenthetical } from '../src/screenplay/pdf-layout.js';
 
@@ -585,4 +586,12 @@ test('chunkSpeech handles smart quotes and never produces non-alphanumeric orpha
   assert.deepEqual(chunkSpeech('”', 125), []);
   assert.deepEqual(chunkSpeech('“ ”', 125), []);
   assert.deepEqual(chunkSpeech('... -- !?', 125), []);
+});
+
+test('cleanSpeechForSynthesis normalizes terminal punctuation and ellipses within quotes', () => {
+  assert.equal(cleanSpeechForSynthesis('“Hello...”'), '“Hello.”');
+  assert.equal(cleanSpeechForSynthesis('"Hello..."'), '"Hello."');
+  assert.equal(cleanSpeechForSynthesis('“Hello—”'), '“Hello.”');
+  assert.equal(cleanSpeechForSynthesis('"Hello—"'), '"Hello."');
+  assert.equal(cleanSpeechForSynthesis('“Hello—”', 'CHARACTER', { cutOff: true }), '“Hello”');
 });
