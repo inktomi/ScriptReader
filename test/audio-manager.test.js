@@ -879,6 +879,21 @@ test('RunPod pre-renders in the background ASAP before Play when configured with
   assert.equal(manager.playbackState, PLAYBACK_STATES.IDLE);
 });
 
+test('replacing a RunPod script releases the previous script-owned memory', () => {
+  const manager = new ScreenplayAudioManager();
+  let releases = 0;
+  manager.engineId = ENGINE_IDS.RUNPOD;
+  manager.engine = fakeEngine({
+    capabilities: { id: ENGINE_IDS.RUNPOD, metered: true },
+    release() { releases++; }
+  });
+  manager.scriptElements = [{ type: 'ACTION', text: 'Previous script' }];
+
+  manager.setScript([{ type: 'ACTION', text: 'Next script' }]);
+
+  assert.equal(releases, 1);
+});
+
 test('Play gates on runway readiness under RunPod when unrendered', async () => {
   const manager = new ScreenplayAudioManager();
   let prewarmCalled = false;

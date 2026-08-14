@@ -423,7 +423,14 @@ export class ScreenplayAudioManager {
   }
 
   setScript(elements, characterMap = new Map(), startIndex = 0) {
+    const replacingRunPodScript = this.engineId === ENGINE_IDS.RUNPOD && this.scriptElements.length > 0;
     this.stop();
+    if (replacingRunPodScript) {
+      // The browser's durable render store remains available for resume, but
+      // requests, decoded buffers, and private reference encodings belong only
+      // to the script that created them.
+      this.engine.release?.();
+    }
     // The persistent store may have evicted records belonging to the previous
     // script. Re-probe through engine.request(); cache hits are cheap and this
     // prevents an in-memory key set from overstating what is still durable.

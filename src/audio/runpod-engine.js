@@ -1,13 +1,25 @@
 import { getAudioContext } from './audio-context.js';
 import { ENGINE_IDS } from './engine-contract.js';
-import { loadRunPodKey, loadRunPodEndpointId, hasRunPodKey, DEFAULT_RUNPOD_ENDPOINT } from '../utils/credentials.js';
+import {
+  loadRunPodKey,
+  loadRunPodEndpointId,
+  hasRunPodKey,
+  hasCloudConsent,
+  DEFAULT_RUNPOD_ENDPOINT
+} from '../utils/credentials.js';
 import { getChatterboxVoiceSample } from './chatterbox-voice-store.js';
 import { chatterboxRenderStore, decodePcm16 } from './chatterbox-render-store.js';
+import { readBoundedResponseJson } from '../utils/bounded-response.js';
 
 const MAX_CACHED_SECONDS = 1500;
 const CONCURRENCY = 6;
 const MAX_ATTEMPTS = 3;
-const RETRYABLE_STATUS = new Set([408, 409, 429, 500, 502, 503, 504]);
+const RETRYABLE_SUBMISSION_STATUS = new Set([429]);
+const RETRYABLE_POLL_STATUS = new Set([408, 409, 429, 500, 502, 503, 504]);
+const MAX_RUNPOD_RESPONSE_BYTES = 8 * 1024 * 1024;
+const MAX_AUDIO_BASE64_CHARS = 6 * 1024 * 1024;
+const MAX_AUDIO_SECONDS = 60;
+const MAX_REFERENCE_CACHE_ENTRIES = 32;
 
 function sleep(ms, signal) {
   return new Promise((resolve, reject) => {
@@ -82,10 +94,12 @@ export class RunPodServerlessEngine {
   constructor({
     getApiKey = loadRunPodKey,
     getEndpointId = loadRunPodEndpointId,
+    hasConsent = hasCloudConsent,
     renderStore = chatterboxRenderStore
   } = {}) {
     this.getApiKey = getApiKey;
     this.getEndpointId = getEndpointId;
+    this.hasConsent = hasConsent;
     this.renderStore = renderStore;
 
     this.isReady = false;
@@ -100,6 +114,7 @@ export class RunPodServerlessEngine {
     this.queue = []; // Array<{ unit, priority, resolve, reject, controller }>
     this.progressListeners = new Set();
     this._voiceBase64Cache = new Map();
+    this.generation = 0;
   }
 
   get capabilities() {
@@ -109,6 +124,9 @@ export class RunPodServerlessEngine {
       supportsSpeed: true,
       supportsInstructions: false,
       isLocal: false,
+      // RunPod intentionally renders the complete active script after the user
+      // grants cloud consent. Billing is bounded by that script-scoped render,
+      // not by waiting for individual Play presses.
       metered: false,
       nativeSampleRate: 24000,
       maxChunkChars: 350,
@@ -123,7 +141,11 @@ export class RunPodServerlessEngine {
 
   resolveVoiceCacheId(profile) {
     const id = this.resolveVoiceId(profile);
-    return profile?.renderRevision ? `${id}@${profile.renderRevision}` : `${id}@v2`;
+    const revision = profile?.renderRevision || 'v2';
+    const endpointId = this.getEndpointId().trim() || DEFAULT_RUNPOD_ENDPOINT;
+    // Durable browser renders belong to the endpoint/model configuration that
+    // produced them. A settings change must not replay endpoint A under B.
+    return `${id}@${revision}@runpod:${endpointId}`;
   }
 
   onProgress(callback) {
@@ -144,6 +166,15 @@ export class RunPodServerlessEngine {
   }
 
   async init() {
+    if (!this.hasConsent()) {
+      this.isReady = false;
+      this.phase = 'error';
+      const error = new Error('Cloud voice consent is required before screenplay text can be sent to RunPod.');
+      error.code = 'no_consent';
+      this.lastError = error;
+      this._notifyProgress('error', error.message, error);
+      throw error;
+    }
     const key = this.getApiKey().trim();
     if (!key) {
       this.isReady = false;
@@ -167,6 +198,10 @@ export class RunPodServerlessEngine {
       if (!res.ok) {
         throw new Error(`RunPod returned HTTP ${res.status}`);
       }
+      await readBoundedResponseJson(res, {
+        maxBytes: 64 * 1024,
+        tooLargeError: () => new Error('RunPod returned an oversized health response.')
+      });
 
       this.isReady = true;
       this.isLoading = false;
@@ -215,16 +250,19 @@ export class RunPodServerlessEngine {
     this._evictOldest();
   }
 
-  async _getVoiceReferenceB64(voiceId) {
+  async _getVoiceReferenceB64(voiceId, cacheId = voiceId) {
     if (!voiceId) return null;
-    if (this._voiceBase64Cache.has(voiceId)) {
-      return this._voiceBase64Cache.get(voiceId);
+    if (this._voiceBase64Cache.has(cacheId)) {
+      return this._voiceBase64Cache.get(cacheId);
     }
     try {
       const sample = await getChatterboxVoiceSample(voiceId);
       if (sample && sample.length > 0) {
         const b64 = float32ToWavBase64(sample, 24000);
-        this._voiceBase64Cache.set(voiceId, b64);
+        this._voiceBase64Cache.set(cacheId, b64);
+        while (this._voiceBase64Cache.size > MAX_REFERENCE_CACHE_ENTRIES) {
+          this._voiceBase64Cache.delete(this._voiceBase64Cache.keys().next().value);
+        }
         return b64;
       }
     } catch (err) {
@@ -247,6 +285,7 @@ export class RunPodServerlessEngine {
     if (this.renderStore) {
       try {
         const stored = await this.renderStore.get(unit.key);
+        if (signal?.aborted) throw new DOMException('aborted', 'AbortError');
         if (stored && stored.audio) {
           const buffer = this._bufferFromPcm(stored.audio, stored.sampleRate);
           if (buffer && !isAudioSilent(buffer)) {
@@ -260,6 +299,7 @@ export class RunPodServerlessEngine {
     if (signal?.aborted) throw new DOMException('aborted', 'AbortError');
 
     const buffer = await this._synthesize(unit, signal);
+    if (signal?.aborted) throw new DOMException('aborted', 'AbortError');
     if (!buffer || isAudioSilent(buffer)) {
       throw new Error('RunPod worker returned empty or silent audio.');
     }
@@ -271,8 +311,12 @@ export class RunPodServerlessEngine {
           : (buffer.channelData?.[0] || null);
         if (channelData) {
           await this.renderStore.put(unit.key, channelData, buffer.sampleRate || 24000);
+          if (signal?.aborted) throw new DOMException('aborted', 'AbortError');
         }
       } catch (err) {
+        if (signal?.aborted || err?.name === 'AbortError') {
+          throw new DOMException('aborted', 'AbortError');
+        }
         console.warn('RunPod render store write notice:', err);
       }
     }
@@ -280,6 +324,11 @@ export class RunPodServerlessEngine {
   }
 
   async _synthesize(unit, signal) {
+    if (!this.hasConsent()) {
+      const error = new Error('Cloud voice consent was revoked.');
+      error.code = 'no_consent';
+      throw error;
+    }
     const key = this.getApiKey().trim();
     const endpointId = this.getEndpointId().trim() || DEFAULT_RUNPOD_ENDPOINT;
 
@@ -291,7 +340,8 @@ export class RunPodServerlessEngine {
                      voiceIdStr.startsWith('zf_') ||
                      voiceIdStr.startsWith('zm_');
 
-    const refB64 = isKokoro ? null : await this._getVoiceReferenceB64(unit.voiceId);
+    const voiceCacheId = unit.voiceCacheId || unit.voiceId;
+    const refB64 = isKokoro ? null : await this._getVoiceReferenceB64(unit.voiceId, voiceCacheId);
     if (!isKokoro && !refB64) {
       throw new Error('This Studio voice is missing its reference recording. Add it again in casting.');
     }
@@ -301,20 +351,21 @@ export class RunPodServerlessEngine {
         engine: isKokoro ? 'kokoro' : 'chatterbox',
         text: unit.text,
         voice: unit.voiceId || 'af_heart',
-        voice_id: unit.voiceId,
+        // The worker cache is intentionally memory-only, but it lives for the
+        // whole active script render. Include the revision so replacing a
+        // stable browser voice ID cannot reuse its earlier speaker prompt.
+        voice_id: voiceCacheId,
         reference_audio_b64: refB64,
         speed: unit.synthSpeed ?? unit.speed ?? 1.0,
         exaggeration: unit.exaggeration ?? 0.5
       }
     };
 
-    let attempts = 0;
-    while (attempts < MAX_ATTEMPTS) {
-      attempts++;
+    let res = null;
+    for (let attempts = 1; attempts <= MAX_ATTEMPTS; attempts++) {
       if (signal.aborted) throw new DOMException('aborted', 'AbortError');
-
       try {
-        const res = await fetch(`https://api.runpod.ai/v2/${endpointId}/runsync`, {
+        res = await fetch(`https://api.runpod.ai/v2/${endpointId}/runsync`, {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
@@ -323,60 +374,64 @@ export class RunPodServerlessEngine {
           body: JSON.stringify(payload),
           signal
         });
-
-        if (!res.ok) {
-          if (RETRYABLE_STATUS.has(res.status) && attempts < MAX_ATTEMPTS) {
-            await sleep(500 * Math.pow(2, attempts), signal);
-            continue;
-          }
-          throw new Error(`RunPod HTTP ${res.status}`);
-        }
-
-        const data = await res.json();
-        let audioB64 = '';
-
-        if (data.status === 'COMPLETED') {
-          if (data.output?.error) {
-            throw new Error(data.output.error);
-          }
-          if (data.output?.audio_base64) {
-            audioB64 = data.output.audio_base64;
-          } else {
-            throw new Error('No audio returned from RunPod');
-          }
-        } else if (data.id && (data.status === 'IN_QUEUE' || data.status === 'IN_PROGRESS')) {
-          // Poll for completion if queued or in progress
-          const jobId = data.id;
-          audioB64 = await this._pollJob(endpointId, jobId, key, signal);
-        } else if (data.status === 'FAILED') {
-          throw new Error(data.error || 'RunPod worker task failed');
-        } else {
-          throw new Error(data.error || `RunPod returned unexpected response (${data.status || 'unknown'})`);
-        }
-
-        if (!audioB64) throw new Error('No audio returned from RunPod');
-
-        // Decode Base64 WAV into AudioBuffer
-        const binary = atob(audioB64);
-        const len = binary.length;
-        const bytes = new Uint8Array(len);
-        for (let i = 0; i < len; i++) {
-          bytes[i] = binary.charCodeAt(i);
-        }
-
-        const audioCtx = getAudioContext();
-        const buffer = await audioCtx.decodeAudioData(bytes.buffer.slice(0));
-        if (!buffer || buffer.duration <= 0.05 || isAudioSilent(buffer)) {
-          throw new Error('RunPod worker returned empty or silent audio.');
-        }
-        return buffer;
       } catch (err) {
         if (err.name === 'AbortError') throw err;
-        if (attempts >= MAX_ATTEMPTS) throw err;
-        await sleep(500 * Math.pow(2, attempts), signal);
+        // A network failure can arrive after the provider accepted the POST.
+        // Without a job id there is no safe way to distinguish that case, so do
+        // not create a second potentially billable job.
+        throw err;
       }
+
+      if (res.ok) break;
+      // 429 explicitly says the provider rejected this submission. Other HTTP
+      // failures can be emitted after work was accepted, so retrying them could
+      // create a second paid job without an identity for the first.
+      if (RETRYABLE_SUBMISSION_STATUS.has(res.status) && attempts < MAX_ATTEMPTS) {
+        try { await res.body?.cancel?.(); } catch (_) { /* preserve HTTP status */ }
+        await sleep(500 * Math.pow(2, attempts), signal);
+        continue;
+      }
+      throw new Error(`RunPod HTTP ${res.status}`);
     }
-    throw new Error('RunPod synthesis attempts exhausted');
+
+    const data = await readBoundedResponseJson(res, {
+      maxBytes: MAX_RUNPOD_RESPONSE_BYTES,
+      signal,
+      tooLargeError: () => new Error('RunPod returned too much audio data.')
+    });
+    let audioB64 = '';
+
+    if (data.status === 'COMPLETED') {
+      if (data.output?.error) throw new Error(data.output.error);
+      audioB64 = data.output?.audio_base64 || '';
+    } else if (data.id && (data.status === 'IN_QUEUE' || data.status === 'IN_PROGRESS')) {
+      audioB64 = await this._pollJob(endpointId, data.id, key, signal);
+    } else if (data.status === 'FAILED') {
+      throw new Error(data.error || 'RunPod worker task failed');
+    } else {
+      throw new Error(data.error || `RunPod returned unexpected response (${data.status || 'unknown'})`);
+    }
+
+    if (!audioB64) throw new Error('No audio returned from RunPod');
+    if (typeof audioB64 !== 'string' || audioB64.length > MAX_AUDIO_BASE64_CHARS) {
+      throw new Error('RunPod returned too much audio data.');
+    }
+
+    let binary;
+    try {
+      binary = atob(audioB64);
+    } catch (_) {
+      throw new Error('RunPod returned invalid Base64 audio.');
+    }
+    const bytes = new Uint8Array(binary.length);
+    for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+
+    const audioCtx = getAudioContext();
+    const buffer = await audioCtx.decodeAudioData(bytes.buffer.slice(0));
+    if (!buffer || buffer.duration <= 0.05 || buffer.duration > MAX_AUDIO_SECONDS || isAudioSilent(buffer)) {
+      throw new Error('RunPod worker returned invalid, empty, or silent audio.');
+    }
+    return buffer;
   }
 
   async _pollJob(endpointId, jobId, apiKey, signal) {
@@ -393,10 +448,17 @@ export class RunPodServerlessEngine {
       });
 
       if (!res.ok) {
-        if (RETRYABLE_STATUS.has(res.status)) continue;
+        if (RETRYABLE_POLL_STATUS.has(res.status)) {
+          try { await res.body?.cancel?.(); } catch (_) { /* preserve HTTP status */ }
+          continue;
+        }
         throw new Error(`RunPod status check failed with HTTP ${res.status}`);
       }
-      const data = await res.json();
+      const data = await readBoundedResponseJson(res, {
+        maxBytes: MAX_RUNPOD_RESPONSE_BYTES,
+        signal,
+        tooLargeError: () => new Error('RunPod returned too much audio data.')
+      });
 
       if (data.status === 'COMPLETED') {
         if (data.output?.error) {
@@ -421,6 +483,9 @@ export class RunPodServerlessEngine {
       this.activeWorkers++;
       this._loadOrSynthesize(item.unit, item.controller.signal)
         .then(buffer => {
+          if (item.controller.signal.aborted || item.generation !== this.generation) {
+            throw new DOMException('aborted', 'AbortError');
+          }
           this._cacheBuffer(item.unit.key, buffer);
           item.resolve(buffer);
         })
@@ -472,7 +537,8 @@ export class RunPodServerlessEngine {
       controller,
       promise,
       resolve: resolvePromise,
-      reject: rejectPromise
+      reject: rejectPromise,
+      generation: this.generation
     };
 
     this.pending.set(unit.key, pendingEntry);
@@ -505,5 +571,18 @@ export class RunPodServerlessEngine {
   clearCache() {
     this.audioCache.clear();
     this.cachedSeconds = 0;
+  }
+
+  /** Release only script-owned memory; durable browser resume data stays local. */
+  release() {
+    this.generation++;
+    this.dropPendingExcept([]);
+    this.clearCache();
+    this._voiceBase64Cache.clear();
+    this.isReady = false;
+    this.isLoading = false;
+    this.phase = 'idle';
+    this.statusMessage = 'Not connected';
+    this.lastError = null;
   }
 }

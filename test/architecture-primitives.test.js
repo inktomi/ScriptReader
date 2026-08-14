@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { readBoundedResponseBlob } from '../src/utils/bounded-response.js';
+import { readBoundedResponseBlob, readBoundedResponseJson } from '../src/utils/bounded-response.js';
 import { createFocusPreservingRenderer } from '../src/utils/focus-preserving-render.js';
 import { LatestOperation } from '../src/utils/latest-operation.js';
 import { runStagedMutation } from '../src/utils/staged-mutation.js';
@@ -163,6 +163,16 @@ test('bounded reader refuses a non-streaming body without buffering it', async (
     /cannot safely read/
   );
   assert.equal(blobCalls, 0);
+});
+
+test('bounded JSON reader parses only after the streamed body fits the limit', async () => {
+  const response = new Response(JSON.stringify({ status: 'COMPLETED', count: 2 }), {
+    headers: { 'content-type': 'application/json' }
+  });
+  assert.deepEqual(await readBoundedResponseJson(response, { maxBytes: 128 }), {
+    status: 'COMPLETED',
+    count: 2
+  });
 });
 
 test('focus-preserving renderer restores live values, selection, scroll, and a deterministic fallback', () => {

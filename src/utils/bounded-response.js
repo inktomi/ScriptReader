@@ -98,3 +98,24 @@ export async function readBoundedResponseBlob(response, {
     reader.releaseLock?.();
   }
 }
+
+/**
+ * JSON variant of the same streaming boundary. Parsing happens only after the
+ * complete body has been proven to fit inside `maxBytes`.
+ */
+export async function readBoundedResponseJson(response, options = {}) {
+  const blob = await readBoundedResponseBlob(response, {
+    ...options,
+    contentType: response?.headers?.get?.('content-type') || 'application/json'
+  });
+  let text;
+  try {
+    text = await blob.text();
+    return JSON.parse(text);
+  } catch (error) {
+    if (error instanceof SyntaxError) {
+      throw new Error('The server returned invalid JSON.');
+    }
+    throw error;
+  }
+}

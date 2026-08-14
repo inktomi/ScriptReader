@@ -133,6 +133,12 @@ speaker
   replaying a line does not pay the synthesis cost again. Changing a reference
   recording changes its render key, preventing an old cloned voice from leaking
   into the refreshed cast.
+* **RunPod is remote compute with browser-owned persistence.** After explicit
+  cloud consent, the dedicated worker pre-renders only the active script and is
+  torn down when that render ends. It keeps speaker prompts only in process
+  memory and never writes screenplay text, references, or audio to server-side
+  storage. Resume data and completed render chunks remain in the same bounded
+  browser stores used by the local workflow.
 
 ## Running Locally
 

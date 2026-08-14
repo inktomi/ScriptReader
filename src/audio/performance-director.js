@@ -413,6 +413,7 @@ export function buildLineUnits({
 
     text,
     voiceId,
+    voiceCacheId: cacheVoiceId,
     engineId: caps.id,
     synthSpeed: delivery.synthSpeed,
     instructions,
@@ -483,6 +484,7 @@ export function buildPreviewUnits({
 
     text: chunkText,
     voiceId,
+    voiceCacheId: cacheVoiceId,
     engineId: caps.id,
     synthSpeed: delivery.synthSpeed,
     instructions,

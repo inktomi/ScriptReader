@@ -25,6 +25,7 @@ RUN python download_weights.py
 # Copy application server files
 COPY engine_kokoro.py .
 COPY engine_chatterbox.py .
+COPY request_contract.py .
 COPY handler.py .
 
 EXPOSE 8000

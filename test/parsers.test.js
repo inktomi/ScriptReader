@@ -434,6 +434,8 @@ test('refreshing a Studio reference changes its render key without changing its 
 
   assert.equal(before.voiceId, 'studio-alice');
   assert.equal(after.voiceId, 'studio-alice');
+  assert.equal(before.voiceCacheId, 'studio-alice@1');
+  assert.equal(after.voiceCacheId, 'studio-alice@2');
   assert.notEqual(before.key, after.key);
 });
 

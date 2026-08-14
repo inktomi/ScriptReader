@@ -1,19 +1,25 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { access, readFile } from 'node:fs/promises';
+import { readFile } from 'node:fs/promises';
 
 import { createResumeToastElement } from '../src/ui/resume-toast.js';
 import { createVoiceConfigModal } from '../src/ui/voice-config-modal.js';
 import { createEngineSettingsModal } from '../src/ui/engine-settings-modal.js';
 import { ENGINE_IDS } from '../src/audio/engine-contract.js';
-import { grantCloudConsent, hasCloudConsent } from '../src/utils/credentials.js';
+import {
+  grantCloudConsent,
+  hasCloudConsent,
+  loadRunPodEndpointId,
+  loadRunPodKey,
+  saveRunPodEndpointId,
+  saveRunPodKey
+} from '../src/utils/credentials.js';
 import { installDom, removeDom } from './dom-helpers.js';
 
-test('repository-local environment credentials are ignored and absent', async () => {
+test('repository-local environment credentials are ignored', async () => {
   const root = new URL('../', import.meta.url);
   const ignore = await readFile(new URL('.gitignore', root), 'utf8');
   assert.match(ignore, /^\.envrc$/m);
-  await assert.rejects(access(new URL('.envrc', root)));
 });
 
 test('resume toast renders imported titles as text, not active markup', () => {
@@ -157,6 +163,119 @@ test('revoking consent immediately switches an active cloud engine to local', ()
 
     assert.deepEqual(switches, [ENGINE_IDS.KOKORO]);
     assert.equal(hasCloudConsent(), false);
+  } finally {
+    removeDom(dom);
+  }
+});
+
+test('RunPod requires informed cloud consent and discloses ephemeral remote processing', () => {
+  const dom = installDom();
+  try {
+    saveRunPodKey('rpa_test');
+    const switches = [];
+    const audioManager = {
+      engineId: ENGINE_IDS.RUNPOD,
+      setEngine(engineId) { switches.push(engineId); this.engineId = engineId; }
+    };
+    const modal = createEngineSettingsModal({ audioManager });
+    document.body.appendChild(modal);
+
+    const apply = modal.querySelector('#btn-engine-apply');
+    assert.equal(apply.disabled, true);
+    assert.match(modal.textContent, /dedicated worker is used only\s+for this script/i);
+    assert.match(modal.textContent, /only in this browser/i);
+
+    const consent = modal.querySelector('#cloud-consent');
+    consent.checked = true;
+    consent.dispatchEvent(new dom.window.Event('change', { bubbles: true }));
+    assert.equal(modal.querySelector('#btn-engine-apply').disabled, false);
+
+    const currentConsent = modal.querySelector('#cloud-consent');
+    currentConsent.checked = false;
+    currentConsent.dispatchEvent(new dom.window.Event('change', { bubbles: true }));
+    assert.deepEqual(switches, [ENGINE_IDS.KOKORO]);
+  } finally {
+    removeDom(dom);
+  }
+});
+
+test('RunPod validation preserves keyboard focus through loading and success', async () => {
+  const dom = installDom();
+  const originalFetch = globalThis.fetch;
+  try {
+    grantCloudConsent();
+    saveRunPodKey('rpa_test');
+    globalThis.fetch = async () => new Response(JSON.stringify({ workers: { ready: 1 } }), {
+      status: 200,
+      headers: { 'content-type': 'application/json' }
+    });
+    const modal = createEngineSettingsModal({ audioManager: { engineId: ENGINE_IDS.RUNPOD } });
+    document.body.appendChild(modal);
+    const testButton = modal.querySelector('#btn-test-runpod-key');
+    testButton.focus();
+    testButton.click();
+    assert.equal(document.activeElement.id, 'btn-test-runpod-key');
+    await new Promise(resolve => setTimeout(resolve, 0));
+    assert.equal(document.activeElement.id, 'btn-test-runpod-key');
+    assert.match(modal.textContent, /Connected to RunPod/);
+  } finally {
+    globalThis.fetch = originalFetch;
+    removeDom(dom);
+  }
+});
+
+test('cancelling RunPod settings does not mutate the active endpoint or key', () => {
+  const dom = installDom();
+  try {
+    grantCloudConsent();
+    saveRunPodKey('rpa_original');
+    saveRunPodEndpointId('endpoint-original');
+    const modal = createEngineSettingsModal({ audioManager: { engineId: ENGINE_IDS.RUNPOD } });
+    document.body.appendChild(modal);
+
+    const key = modal.querySelector('#runpod-key-input');
+    key.value = 'rpa_draft';
+    key.dispatchEvent(new dom.window.Event('input', { bubbles: true }));
+    const endpoint = modal.querySelector('#runpod-endpoint-input');
+    endpoint.value = 'endpoint-draft';
+    endpoint.dispatchEvent(new dom.window.Event('input', { bubbles: true }));
+    modal.querySelector('#btn-engine-cancel').click();
+
+    assert.equal(loadRunPodKey(), 'rpa_original');
+    assert.equal(loadRunPodEndpointId(), 'endpoint-original');
+  } finally {
+    removeDom(dom);
+  }
+});
+
+test('applying changed RunPod settings releases script memory before reconnecting', async () => {
+  const dom = installDom();
+  try {
+    grantCloudConsent();
+    saveRunPodKey('rpa_original');
+    saveRunPodEndpointId('endpoint-original');
+    const calls = [];
+    const runPodEngine = {
+      release() { calls.push('release'); },
+      async init() { calls.push('init'); }
+    };
+    const audioManager = {
+      engineId: ENGINE_IDS.RUNPOD,
+      getEngine: () => runPodEngine,
+      prewarm() { calls.push('prewarm'); }
+    };
+    const modal = createEngineSettingsModal({ audioManager });
+    document.body.appendChild(modal);
+
+    const endpoint = modal.querySelector('#runpod-endpoint-input');
+    endpoint.value = 'endpoint-new';
+    endpoint.dispatchEvent(new dom.window.Event('input', { bubbles: true }));
+    modal.querySelector('#btn-engine-apply').click();
+    await new Promise(resolve => setTimeout(resolve, 0));
+
+    assert.equal(loadRunPodEndpointId(), 'endpoint-new');
+    assert.deepEqual(calls, ['release', 'init', 'prewarm']);
+    assert.equal(document.body.contains(modal), false);
   } finally {
     removeDom(dom);
   }

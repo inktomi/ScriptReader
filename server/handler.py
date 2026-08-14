@@ -5,6 +5,13 @@ import soundfile as sf
 import numpy as np
 from engine_kokoro import KokoroEngine
 from engine_chatterbox import ChatterboxEngine
+from request_contract import (
+    InputError,
+    MAX_OUTPUT_SECONDS,
+    normalize_item,
+    read_bounded_json,
+    validate_batch,
+)
 
 # Global engine instances
 kokoro_engine = None
@@ -23,25 +30,16 @@ def get_chatterbox():
     return chatterbox_engine
 
 def process_single_unit(item: dict) -> dict:
-    text = item.get("text") or item.get("input") or ""
-    engine_type = (item.get("engine") or item.get("model") or "chatterbox").lower()
-    voice = item.get("voice") or item.get("voice_id") or "af_heart"
-    speed = float(item.get("speed", 1.0))
-    exaggeration = float(item.get("exaggeration", 0.5))
-    ref_b64 = item.get("reference_audio_b64")
-
-    if not text.strip():
-        return {
-            "audio_base64": "",
-            "sample_rate": 24000,
-            "duration": 0.0,
-            "error": "Empty text"
-        }
-
     try:
-        ref_bytes = base64.b64decode(ref_b64) if ref_b64 else None
+        normalized = normalize_item(item)
+        text = normalized["text"]
+        engine_type = normalized["engine"]
+        voice = normalized["voice"]
+        speed = normalized["speed"]
+        exaggeration = normalized["exaggeration"]
+        ref_bytes = normalized["reference_audio"]
 
-        if "kokoro" in engine_type:
+        if engine_type == "kokoro":
             audio = get_kokoro().generate(text=text, voice=voice, speed=speed)
             sr = 24000
         else:
@@ -57,12 +55,14 @@ def process_single_unit(item: dict) -> dict:
 
         if audio is None or len(audio) == 0 or np.all(audio == 0):
             return {
-                "id": item.get("id"),
+                "id": normalized["id"],
                 "error": "Synthesis produced empty or silent audio",
                 "audio_base64": "",
                 "sample_rate": 24000,
                 "duration": 0.0
             }
+        if len(audio) / sr > MAX_OUTPUT_SECONDS:
+            raise InputError(f"synthesis output exceeds {MAX_OUTPUT_SECONDS:g} seconds")
 
         # Encode to WAV 16-bit PCM
         buf = io.BytesIO()
@@ -70,7 +70,7 @@ def process_single_unit(item: dict) -> dict:
         audio_b64 = base64.b64encode(buf.getvalue()).decode("utf-8")
 
         return {
-            "id": item.get("id"),
+            "id": normalized["id"],
             "audio_base64": audio_b64,
             "sample_rate": sr,
             "duration": round(len(audio) / sr, 3)
@@ -78,7 +78,7 @@ def process_single_unit(item: dict) -> dict:
     except Exception as e:
         print(f"[Handler Error] Failed processing unit: {e}")
         return {
-            "id": item.get("id"),
+            "id": item.get("id") if isinstance(item, dict) else None,
             "error": str(e),
             "audio_base64": "",
             "sample_rate": 24000,
@@ -86,11 +86,19 @@ def process_single_unit(item: dict) -> dict:
         }
 
 def runpod_handler(job: dict):
+    if not isinstance(job, dict):
+        return {"error": "job must be an object"}
     job_input = job.get("input", {})
+    if not isinstance(job_input, dict):
+        return {"error": "input must be an object"}
 
     # 1. Batch Request (Full screenplay render pass)
-    if "batch" in job_input and isinstance(job_input["batch"], list):
-        results = [process_single_unit(item) for item in job_input["batch"]]
+    if "batch" in job_input:
+        try:
+            batch = validate_batch(job_input["batch"])
+        except InputError as error:
+            return {"error": str(error), "batch_results": [], "count": 0}
+        results = [process_single_unit(item) for item in batch]
         return {"batch_results": results, "count": len(results)}
 
     # 2. Single line streaming request
@@ -98,6 +106,7 @@ def runpod_handler(job: dict):
 
 # FastAPI HTTP support
 from fastapi import FastAPI, Request, Response
+from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 
 app = FastAPI(title="ScriptReader TTS Worker", version="1.0.0")
@@ -117,7 +126,10 @@ def health():
 @app.post("/v1/audio/speech")
 async def openai_speech(request: Request):
     """OpenAI TTS API compatible endpoint for direct ScriptReader streaming."""
-    data = await request.json()
+    try:
+        data = await read_bounded_json(request)
+    except InputError as error:
+        return JSONResponse({"error": str(error)}, status_code=413 if "too large" in str(error) else 400)
     result = process_single_unit(data)
     if result.get("audio_base64"):
         audio_bytes = base64.b64decode(result["audio_base64"])
@@ -127,8 +139,11 @@ async def openai_speech(request: Request):
 @app.post("/v1/audio/batch")
 async def batch_speech(request: Request):
     """Batch synthesis endpoint for fast multi-scene or full-screenplay rendering."""
-    data = await request.json()
-    batch = data.get("batch", [])
+    try:
+        data = await read_bounded_json(request)
+        batch = validate_batch(data.get("batch", []))
+    except InputError as error:
+        return JSONResponse({"error": str(error)}, status_code=413 if "too large" in str(error) or "exceeds" in str(error) else 400)
     results = [process_single_unit(item) for item in batch]
     return {"results": results, "count": len(results)}
 

@@ -16,6 +16,8 @@
  * is ever compromised.
  */
 
+import { readBoundedResponseJson } from './bounded-response.js';
+
 const OPENAI_KEY = 'scriptreader_openai_key_v1';
 const RUNPOD_KEY = 'scriptreader_runpod_key_v1';
 const RUNPOD_ENDPOINT_KEY = 'scriptreader_runpod_endpoint_v1';
@@ -26,7 +28,8 @@ const ENGINE_SETTINGS_KEY = 'scriptreader_engine_settings_v1';
  * Bump when the consent wording changes materially, so consent is re-sought
  * rather than inherited from a disclosure the user never actually read.
  */
-export const CLOUD_DISCLOSURE_VERSION = 1;
+export const CLOUD_DISCLOSURE_VERSION = 2;
+const MAX_HEALTH_RESPONSE_BYTES = 64 * 1024;
 
 export function loadOpenAIKey() {
   try {
@@ -223,7 +226,11 @@ export async function validateRunPodConnection({ key, endpointId, signal } = {})
       signal
     });
     if (res.ok) {
-      const data = await res.json();
+      const data = await readBoundedResponseJson(res, {
+        maxBytes: MAX_HEALTH_RESPONSE_BYTES,
+        signal,
+        tooLargeError: () => new Error('RunPod returned an oversized health response.')
+      });
       return { ok: true, data };
     }
     if (res.status === 401 || res.status === 403) return { ok: false, reason: 'invalid_key' };
