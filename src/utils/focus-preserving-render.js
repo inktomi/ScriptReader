@@ -3,6 +3,7 @@ const DEFAULT_FOCUSABLE = [
   'input:not([disabled])',
   'select:not([disabled])',
   'textarea:not([disabled])',
+  'summary',
   '[href]',
   '[tabindex]:not([tabindex="-1"])',
 ].join(',');
@@ -15,7 +16,25 @@ function identityOf(element) {
 }
 
 function isUsable(element) {
-  return !!element && element.disabled !== true;
+  return !!element && element.disabled !== true && element.hidden !== true && !element.closest?.('[hidden]');
+}
+
+function getSelectionInfo(element) {
+  if (!element) return { start: null, end: null, direction: 'none' };
+  try {
+    if (
+      element.tagName === 'TEXTAREA' ||
+      (element.tagName === 'INPUT' &&
+        ['text', 'search', 'url', 'tel', 'password', 'email', ''].includes(element.type?.toLowerCase() || ''))
+    ) {
+      return {
+        start: element.selectionStart,
+        end: element.selectionEnd,
+        direction: element.selectionDirection || 'none',
+      };
+    }
+  } catch (_) {}
+  return { start: null, end: null, direction: 'none' };
 }
 
 /**
@@ -34,23 +53,27 @@ export function createFocusPreservingRenderer(
 ) {
   const focusables = () => [...root.querySelectorAll(focusableSelector)];
   const findByIdentity = (identity) => focusables().find((element) => identityOf(element) === identity) || null;
+  const resolveElement = (selector) =>
+    selector === ':scope' || selector === '' || root.matches?.(selector) ? root : root.querySelector(selector);
 
   function capture() {
     const active = root.ownerDocument?.activeElement;
     const ordered = focusables();
+    const activeSelection = getSelectionInfo(active);
     return {
       values: valueSelectors.map((selector) => {
         const element = root.querySelector(selector);
+        const selection = getSelectionInfo(element);
         return {
           selector,
           value: element?.value,
-          selectionStart: element?.selectionStart,
-          selectionEnd: element?.selectionEnd,
-          selectionDirection: element?.selectionDirection,
+          selectionStart: selection.start,
+          selectionEnd: selection.end,
+          selectionDirection: selection.direction,
         };
       }),
       scroll: scrollSelectors.map((selector) => {
-        const element = root.querySelector(selector);
+        const element = resolveElement(selector);
         return { selector, top: element?.scrollTop || 0, left: element?.scrollLeft || 0 };
       }),
       focus: {
@@ -58,6 +81,9 @@ export function createFocusPreservingRenderer(
         identity: identityOf(active),
         index: ordered.indexOf(active),
         order: ordered.map(identityOf),
+        selectionStart: activeSelection.start,
+        selectionEnd: activeSelection.end,
+        selectionDirection: activeSelection.direction,
       },
     };
   }
@@ -76,7 +102,7 @@ export function createFocusPreservingRenderer(
       }
     }
     for (const position of snapshot.scroll) {
-      const element = root.querySelector(position.selector);
+      const element = resolveElement(position.selector);
       if (!element) continue;
       element.scrollTop = position.top;
       element.scrollLeft = position.left;
@@ -108,6 +134,19 @@ export function createFocusPreservingRenderer(
       target.focus({ preventScroll: true });
     } catch (_) {
       target.focus();
+    }
+    if (
+      snapshot.focus.selectionStart !== null &&
+      snapshot.focus.selectionStart !== undefined &&
+      typeof target.setSelectionRange === 'function'
+    ) {
+      try {
+        target.setSelectionRange(
+          snapshot.focus.selectionStart,
+          snapshot.focus.selectionEnd ?? snapshot.focus.selectionStart,
+          snapshot.focus.selectionDirection || 'none',
+        );
+      } catch (_) {}
     }
   }
 

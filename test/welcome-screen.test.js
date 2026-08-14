@@ -171,3 +171,223 @@ test('welcome screen exposes recent progress and the paste workflow', () => {
     removeDom(dom);
   }
 });
+
+test('casting screen preserves scroll position and focus when selecting a voice', () => {
+  const dom = installDom();
+  try {
+    const characters = [
+      { name: 'ALICE', lineCount: 10, sampleLine: 'Hello Alice here.' },
+      { name: 'BOB', lineCount: 8, sampleLine: 'Hello Bob here.' },
+      { name: 'CHARLIE', lineCount: 6, sampleLine: 'Charlie speaking.' },
+      { name: 'DIANA', lineCount: 4, sampleLine: 'Diana reporting in.' },
+    ];
+    const scriptStore = {
+      currentScript: {
+        title: 'Cast Test Screenplay',
+        characters,
+        elements: characters.map((c) => ({ type: 'DIALOGUE', character: c.name, text: c.sampleLine })),
+      },
+      castAssignments: new Map(),
+      getNarratorVoice: () => 'af_heart',
+      updateCast() {},
+    };
+    const audioManager = {
+      engineId: ENGINE_IDS.KOKORO,
+      capabilities: { supportsInstructions: true },
+      getVoiceProfileForCharacter: () => ({ id: 'af_heart', name: 'Heart', avatarBg: '#333' }),
+      stop() {},
+      setNarratorVoice() {},
+      setVoiceAssignment() {},
+      prewarmAudition() {},
+      async previewVoice(_voiceId, _text, _pitch, _speed, _direction, _engine, onStateChange) {
+        onStateChange?.('preparing');
+        onStateChange?.('rendering');
+        onStateChange?.('playing');
+        onStateChange?.('idle');
+      },
+    };
+
+    const casting = createVoiceConfigModal({
+      scriptStore,
+      audioManager,
+      isInitialSetup: true,
+    });
+    document.body.appendChild(casting);
+
+    // Switch to detailed mode
+    casting.querySelector('#casting-path-custom').click();
+
+    const scrollContainer = casting.querySelector('.voice-config-body');
+    assert.ok(scrollContainer, 'scroll container should exist');
+
+    // Simulate scrolling down to Charlie
+    scrollContainer.scrollTop = 420;
+
+    const charlieSelect = casting.querySelector('.modal-char-select[data-char="CHARLIE"]');
+    assert.ok(charlieSelect, 'CHARLIE select dropdown should exist');
+
+    charlieSelect.focus();
+    assert.equal(document.activeElement, charlieSelect);
+
+    // Change Charlie's voice
+    charlieSelect.value = 'am_adam';
+    charlieSelect.dispatchEvent(new dom.window.Event('change', { bubbles: true }));
+
+    // Verify scroll position is preserved
+    const updatedScrollContainer = casting.querySelector('.voice-config-body');
+    assert.equal(updatedScrollContainer.scrollTop, 420);
+
+    // Verify focus is preserved on Charlie's select dropdown
+    const updatedCharlieSelect = casting.querySelector('.modal-char-select[data-char="CHARLIE"]');
+    assert.equal(document.activeElement, updatedCharlieSelect);
+    assert.notEqual(document.activeElement, document.body);
+  } finally {
+    removeDom(dom);
+  }
+});
+
+test('casting modal preserves scroll position, focus, and open details across tone presets and auditions', async () => {
+  const dom = installDom();
+  try {
+    const characters = [
+      { name: 'ALICE', lineCount: 10, sampleLine: 'Hello Alice here.' },
+      { name: 'BOB', lineCount: 8, sampleLine: 'Hello Bob here.' },
+    ];
+    let auditionCalls = 0;
+    const scriptStore = {
+      currentScript: {
+        title: 'Cast Audition Test',
+        characters,
+        elements: characters.map((c) => ({ type: 'DIALOGUE', character: c.name, text: c.sampleLine })),
+      },
+      castAssignments: new Map(),
+      getNarratorVoice: () => 'af_heart',
+      updateCast() {},
+    };
+    const audioManager = {
+      engineId: ENGINE_IDS.KOKORO,
+      capabilities: { supportsInstructions: true },
+      getVoiceProfileForCharacter: () => ({ id: 'af_heart', name: 'Heart', avatarBg: '#333' }),
+      stop() {},
+      setNarratorVoice() {},
+      setVoiceAssignment() {},
+      prewarmAudition() {},
+      async previewVoice(_voiceId, _text, _pitch, _speed, _direction, _engine, onStateChange) {
+        auditionCalls++;
+        onStateChange?.('rendering');
+        onStateChange?.('playing');
+      },
+    };
+
+    const casting = createVoiceConfigModal({
+      scriptStore,
+      audioManager,
+      isInitialSetup: false,
+    });
+    document.body.appendChild(casting);
+
+    const scrollContainer = casting.querySelector('.voice-config-body');
+    scrollContainer.scrollTop = 250;
+
+    // Open advanced details on BOB
+    const bobCard = casting.querySelector('.voice-card[data-char="BOB"]');
+    const bobDetails = bobCard.querySelector('.voice-advanced');
+    bobDetails.open = true;
+    bobDetails.dispatchEvent(new dom.window.Event('toggle', { bubbles: true }));
+
+    // Click tone preset "Dramatic"
+    const dramaticChip = bobCard.querySelector('.btn-tone-chip[data-preset="dramatic"]');
+    dramaticChip.focus();
+    dramaticChip.click();
+
+    // Verify scroll is preserved, details stay open, and focus stays on dramatic chip
+    const updatedScroll = casting.querySelector('.voice-config-body');
+    assert.equal(updatedScroll.scrollTop, 250);
+    const updatedBobDetails = casting.querySelector('.voice-card[data-char="BOB"] .voice-advanced');
+    assert.equal(updatedBobDetails.open, true);
+    const updatedDramaticChip = casting.querySelector(
+      '.voice-card[data-char="BOB"] .btn-tone-chip[data-preset="dramatic"]',
+    );
+    assert.equal(document.activeElement, updatedDramaticChip);
+
+    // Audition BOB
+    const auditionBtn = casting.querySelector('.voice-card[data-char="BOB"] .btn-audition-char');
+    auditionBtn.focus();
+    auditionBtn.click();
+    await Promise.resolve();
+
+    assert.equal(auditionCalls, 1);
+    assert.equal(casting.querySelector('.voice-config-body').scrollTop, 250);
+    const updatedAuditionBtn = casting.querySelector('.voice-card[data-char="BOB"] .btn-audition-char');
+    assert.equal(document.activeElement, updatedAuditionBtn);
+  } finally {
+    removeDom(dom);
+  }
+});
+
+test('casting modal preserves live direction text and handles slider focus without selection errors', () => {
+  const dom = installDom();
+  try {
+    const characters = [{ name: 'ALICE', lineCount: 5, sampleLine: 'Hello from Alice.' }];
+    const scriptStore = {
+      currentScript: {
+        title: 'Direction Input Test',
+        characters,
+        elements: [{ type: 'DIALOGUE', character: 'ALICE', text: 'Hello from Alice.' }],
+      },
+      castAssignments: new Map(),
+      getNarratorVoice: () => 'af_heart',
+      updateCast() {},
+    };
+    const audioManager = {
+      engineId: ENGINE_IDS.KOKORO,
+      capabilities: { supportsInstructions: true },
+      getVoiceProfileForCharacter: () => ({ id: 'af_heart', name: 'Heart', avatarBg: '#333' }),
+      stop() {},
+      setNarratorVoice() {},
+      setVoiceAssignment() {},
+      prewarmAudition() {},
+    };
+
+    const casting = createVoiceConfigModal({
+      scriptStore,
+      audioManager,
+      isInitialSetup: false,
+    });
+    document.body.appendChild(casting);
+
+    // Open advanced controls
+    const aliceCard = casting.querySelector('.voice-card[data-char="ALICE"]');
+    const details = aliceCard.querySelector('.voice-advanced');
+    details.open = true;
+    details.dispatchEvent(new dom.window.Event('toggle', { bubbles: true }));
+
+    // User types direction without blurring
+    const directionInput = aliceCard.querySelector('.modal-direction-input');
+    directionInput.value = 'Warm and friendly, slightly breathless.';
+    directionInput.focus();
+
+    // Re-render triggered by voice select change
+    const select = casting.querySelector('.modal-char-select[data-char="ALICE"]');
+    select.value = 'af_bella';
+    select.dispatchEvent(new dom.window.Event('change', { bubbles: true }));
+
+    // Direction must survive
+    const updatedDirection = casting.querySelector('.modal-direction-input[data-char="ALICE"]');
+    assert.equal(updatedDirection.value, 'Warm and friendly, slightly breathless.');
+    assert.equal(document.activeElement, updatedDirection);
+
+    // Focus range slider and trigger another render
+    const slider = casting.querySelector('.modal-pitch-slider[data-char="ALICE"]');
+    slider.focus();
+    assert.equal(document.activeElement, slider);
+
+    select.value = 'af_sarah';
+    select.dispatchEvent(new dom.window.Event('change', { bubbles: true }));
+
+    const updatedSlider = casting.querySelector('.modal-pitch-slider[data-char="ALICE"]');
+    assert.equal(document.activeElement, updatedSlider);
+  } finally {
+    removeDom(dom);
+  }
+});
