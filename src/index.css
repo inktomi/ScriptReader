@@ -181,6 +181,26 @@ button:disabled {
   border-color: var(--border);
 }
 
+.btn-sm {
+  min-height: 28px;
+  padding: 4px 10px;
+  font-size: 0.72rem;
+  border-radius: 6px;
+  gap: 5px;
+}
+
+.btn-studio-glow {
+  color: var(--brass);
+  background: var(--brass-soft);
+  border-color: rgba(198, 164, 102, 0.3);
+}
+
+.btn-studio-glow:hover:not(:disabled) {
+  color: #fff;
+  background: rgba(198, 164, 102, 0.24);
+  border-color: var(--brass);
+}
+
 .text-button {
   padding: 0;
   color: var(--brass);
@@ -898,6 +918,7 @@ button:disabled {
 }
 
 .voice-card.is-previewing,
+.character-card.is-previewing,
 .character-card.speaking {
   border-color: var(--brass) !important;
   background: var(--brass-soft) !important;
@@ -920,7 +941,7 @@ button:disabled {
   color: var(--text-primary) !important;
   font-size: 0.68rem;
   font-weight: 800;
-  background: #343027 !important;
+  background: #343027;
   border: 1px solid #4d4639;
   border-radius: 7px;
 }
@@ -1353,14 +1374,81 @@ button:disabled {
   font-weight: 800;
 }
 
-.cast-scroll-area {
+.cast-panel-header {
+  flex: 0 0 auto;
+  padding: 12px 14px 11px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  background: var(--bg-surface);
+  border-bottom: 1px solid var(--border);
+}
+
+.cast-panel-title-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.cast-panel-heading {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  color: var(--text-primary);
+  font-size: 0.8rem;
+  font-weight: 800;
+  letter-spacing: 0.02em;
+}
+
+.cast-panel-heading svg {
+  color: var(--brass);
+  flex: 0 0 auto;
+}
+
+.cast-panel-desc {
+  margin: 0;
+  color: var(--text-muted);
+  font-size: 0.7rem;
+  line-height: 1.4;
+}
+
+.cast-scroll-area,
+.cast-list {
   min-height: 0;
-  padding: 11px;
+  padding: 12px 13px;
   flex: 1;
   display: flex;
   flex-direction: column;
-  gap: 9px;
-  overflow: auto;
+  gap: 10px;
+  overflow-y: auto;
+  overflow-x: hidden;
+}
+
+.cast-section-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 6px 2px 2px;
+}
+
+.cast-section-title {
+  color: var(--text-muted);
+  font-size: 0.68rem;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.cast-section-count {
+  font-family: var(--font-mono);
+  font-size: 0.65rem;
+  font-weight: 700;
+  color: var(--text-secondary);
+  background: var(--bg-raised);
+  border: 1px solid var(--border);
+  padding: 1px 6px;
+  border-radius: 4px;
 }
 
 .library-panel .character-card {

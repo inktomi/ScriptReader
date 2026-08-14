@@ -2,6 +2,7 @@ import { ENGINE_IDS } from '../audio/engine-contract.js';
 import { formatPitchOffset } from '../audio/performance-director.js';
 import { getVoiceById, getVoicesForEngine, makeDefaultAssignment } from '../audio/voice-catalog.js';
 import { escapeHtml } from '../utils/escape-html.js';
+import { createFocusPreservingRenderer } from '../utils/focus-preserving-render.js';
 import { getIconSvg } from '../utils/icons.js';
 
 export function createCastPanel({ scriptStore, audioManager, onOpenVoiceConfig }) {
@@ -12,37 +13,43 @@ export function createCastPanel({ scriptStore, audioManager, onOpenVoiceConfig }
   let auditionPhase = 'idle';
   let auditionGen = 0;
 
+  const focusRenderer = createFocusPreservingRenderer(panel, {
+    scrollSelectors: ['.cast-scroll-area'],
+    keepFocusInside: () => panel.isConnected,
+  });
+
   function render() {
-    const script = scriptStore.currentScript;
-    const characters = script ? script.characters : [];
-    const engineId = audioManager.engineId;
-    const isStudio = engineId === ENGINE_IDS.CHATTERBOX;
-    const isHybrid = isStudio && audioManager.hybridCasting;
-    const narratorEngineId = isHybrid ? ENGINE_IDS.KOKORO : engineId;
-    const enginePool = getVoicesForEngine(engineId);
-    const narratorPool = getVoicesForEngine(narratorEngineId);
-    const storedNarratorVoiceId = scriptStore.getNarratorVoice(narratorEngineId);
-    const narratorProfile = narratorPool.some((v) => v.id === storedNarratorVoiceId)
-      ? getVoiceById(storedNarratorVoiceId, narratorEngineId)
-      : audioManager.getVoiceProfileForCharacter('NARRATOR', narratorEngineId);
-    const narratorVoiceId = narratorProfile.id;
-    const voiceIdOf = (assignment) => {
-      const candidate = (assignment?.voiceIds && assignment.voiceIds[engineId]) || assignment?.voiceId;
-      if (!enginePool.some((voice) => voice.id === candidate)) return enginePool[0]?.id || '';
-      return candidate;
-    };
+    focusRenderer.render(() => {
+      const script = scriptStore.currentScript;
+      const characters = script ? script.characters : [];
+      const engineId = audioManager.engineId;
+      const isStudio = engineId === ENGINE_IDS.CHATTERBOX;
+      const isHybrid = isStudio && audioManager.hybridCasting;
+      const narratorEngineId = isHybrid ? ENGINE_IDS.KOKORO : engineId;
+      const enginePool = getVoicesForEngine(engineId);
+      const narratorPool = getVoicesForEngine(narratorEngineId);
+      const storedNarratorVoiceId = scriptStore.getNarratorVoice(narratorEngineId);
+      const narratorProfile = narratorPool.some((v) => v.id === storedNarratorVoiceId)
+        ? getVoiceById(storedNarratorVoiceId, narratorEngineId)
+        : audioManager.getVoiceProfileForCharacter('NARRATOR', narratorEngineId);
+      const narratorVoiceId = narratorProfile.id;
+      const voiceIdOf = (assignment) => {
+        const candidate = (assignment?.voiceIds && assignment.voiceIds[engineId]) || assignment?.voiceId;
+        if (!enginePool.some((voice) => voice.id === candidate)) return enginePool[0]?.id || '';
+        return candidate;
+      };
 
-    // Build options for voice select
-    const voiceOptionsHtml = (selectedId, pool = enginePool) => {
-      // Group voices by sex / category
-      const femaleVoices = pool.filter((v) => v.sex === 'Female');
-      const maleVoices = pool.filter((v) => v.sex === 'Male');
-      const neutralVoices = pool.filter((v) => v.sex === 'Neutral');
+      // Build options for voice select
+      const voiceOptionsHtml = (selectedId, pool = enginePool) => {
+        // Group voices by sex / category
+        const femaleVoices = pool.filter((v) => v.sex === 'Female');
+        const maleVoices = pool.filter((v) => v.sex === 'Male');
+        const neutralVoices = pool.filter((v) => v.sex === 'Neutral');
 
-      const buildGroup = (label, voices) =>
-        voices.length === 0
-          ? ''
-          : `
+        const buildGroup = (label, voices) =>
+          voices.length === 0
+            ? ''
+            : `
         <optgroup label="${label}">
           ${voices
             .map(
@@ -56,35 +63,36 @@ export function createCastPanel({ scriptStore, audioManager, onOpenVoiceConfig }
         </optgroup>
       `;
 
-      return (
-        buildGroup('Female voices', femaleVoices) +
-        buildGroup('Male voices', maleVoices) +
-        buildGroup('Neutral voices', neutralVoices)
-      );
-    };
+        return (
+          buildGroup('Female voices', femaleVoices) +
+          buildGroup('Male voices', maleVoices) +
+          buildGroup('Neutral voices', neutralVoices)
+        );
+      };
 
-    // Calculate total dialogue lines
-    const totalDialogueLines = characters.reduce((acc, c) => acc + c.lineCount, 0) || 1;
+      // Calculate total dialogue lines
+      const totalDialogueLines = characters.reduce((acc, c) => acc + c.lineCount, 0) || 1;
 
-    panel.innerHTML = `
+      panel.innerHTML = `
       <div class="cast-panel-header">
-        <div class="cast-panel-title">
-          <div style="display: flex; align-items: center; gap: 8px;">
-            ${getIconSvg('users', 18)}
-            <h2>Voice Cast</h2>
+        <div class="cast-panel-title-row">
+          <div class="cast-panel-heading">
+            ${getIconSvg('users', 16)}
+            <span>Voice Cast</span>
           </div>
-          <button id="btn-cast-modal-open" class="btn btn-secondary btn-sm btn-studio-glow" title="Open Cast Studio">
-            ${getIconSvg('sparkles', 14)} Cast Studio
+          <button id="btn-cast-modal-open" class="btn btn-secondary btn-sm btn-studio-glow" type="button" title="Open Cast Studio" aria-label="Open Cast Studio">
+            ${getIconSvg('sparkles', 13)}
+            <span>Cast Studio</span>
           </button>
         </div>
-        <div class="cast-panel-desc">
+        <p class="cast-panel-desc">
           Assign voices and fine-tune delivery for each character.
-        </div>
+        </p>
       </div>
 
-      <div class="cast-list">
+      <div class="cast-scroll-area cast-list">
         <!-- NARRATOR CARD -->
-        <div class="character-card narrator-card ${auditioningChar === 'NARRATOR' ? 'is-previewing' : ''}">
+        <div class="character-card narrator-card ${auditioningChar === 'NARRATOR' ? 'is-previewing' : ''}" data-char="NARRATOR">
           <div class="char-header">
             <div class="char-avatar" style="background: linear-gradient(135deg, #F59E0B, #B45309);">
               ${getIconSvg('mic', 16)}
@@ -100,11 +108,13 @@ export function createCastPanel({ scriptStore, audioManager, onOpenVoiceConfig }
 
           <div class="char-controls">
             <div class="voice-select-row">
-              <select class="voice-select narrator-voice-select">
+              <select class="voice-select narrator-voice-select" data-focus-key="narrator-voice-select" aria-label="Narrator voice">
                 ${voiceOptionsHtml(narratorVoiceId, narratorPool)}
               </select>
-              <button class="btn btn-secondary btn-test-narrator ${auditioningChar === 'NARRATOR' ? (auditionPhase === 'playing' ? 'btn-active' : 'is-loading') : ''}"
+              <button type="button" class="btn btn-secondary btn-test-narrator ${auditioningChar === 'NARRATOR' ? (auditionPhase === 'playing' ? 'btn-active' : 'is-loading') : ''}"
+                      data-focus-key="narrator-test-btn"
                       style="padding: 6px 10px;"
+                      aria-label="${auditioningChar === 'NARRATOR' ? (auditionPhase === 'rendering' ? 'Synthesizing narrator voice' : 'Stop narrator audition') : 'Test narrator voice'}"
                       title="${auditioningChar === 'NARRATOR' ? (auditionPhase === 'rendering' ? 'Synthesizing…' : 'Stop') : 'Test Narrator Voice'}">
                 ${
                   auditioningChar === 'NARRATOR'
@@ -121,8 +131,9 @@ export function createCastPanel({ scriptStore, audioManager, onOpenVoiceConfig }
         </div>
 
         <!-- CHARACTER CARDS -->
-        <div style="font-size: 0.75rem; font-weight: 700; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.08em; margin-top: 8px;">
-          Speaking Cast (${characters.length})
+        <div class="cast-section-header">
+          <span class="cast-section-title">Speaking Cast</span>
+          <span class="cast-section-count">${characters.length}</span>
         </div>
 
         ${characters
@@ -168,12 +179,14 @@ export function createCastPanel({ scriptStore, audioManager, onOpenVoiceConfig }
 
               <div class="char-controls">
                 <div class="voice-select-row">
-                  <select class="voice-select char-voice-select" data-char="${charAttr}">
+                  <select class="voice-select char-voice-select" data-char="${charAttr}" data-focus-key="char-voice-${charAttr}" aria-label="Voice for ${charAttr}">
                     ${voiceOptionsHtml(voiceIdOf(assignment))}
                   </select>
-                  <button class="btn btn-secondary btn-test-voice ${isPlaying ? (auditionPhase === 'playing' ? 'btn-active' : 'is-loading') : ''}"
+                  <button type="button" class="btn btn-secondary btn-test-voice ${isPlaying ? (auditionPhase === 'playing' ? 'btn-active' : 'is-loading') : ''}"
                           data-char="${charAttr}"
+                          data-focus-key="char-test-${charAttr}"
                           style="padding: 6px 10px;"
+                          aria-label="${isPlaying ? (auditionPhase === 'rendering' ? `Synthesizing voice for ${charAttr}` : `Stop voice audition for ${charAttr}`) : `Test assigned voice for ${charAttr}`}"
                           title="${isPlaying ? (auditionPhase === 'rendering' ? 'Synthesizing…' : 'Stop') : 'Test Assigned Voice'}">
                     ${
                       isPlaying
@@ -190,13 +203,13 @@ export function createCastPanel({ scriptStore, audioManager, onOpenVoiceConfig }
                 <!-- Pitch & Speed Fine-tuning -->
                 <div class="slider-group">
                   <span class="slider-label">Pitch:</span>
-                  <input type="range" class="slider-input char-pitch-slider" data-char="${charAttr}" min="-50" max="50" value="${assignment.pitchOffset || 0}">
+                  <input type="range" class="slider-input char-pitch-slider" data-char="${charAttr}" data-focus-key="char-pitch-${charAttr}" min="-50" max="50" value="${assignment.pitchOffset || 0}" aria-label="Pitch for ${charAttr}" aria-valuetext="${formatPitchOffset(assignment.pitchOffset)}">
                   <span class="slider-val char-pitch-val">${formatPitchOffset(assignment.pitchOffset)}</span>
                 </div>
 
                 <div class="slider-group">
                   <span class="slider-label">Speed:</span>
-                  <input type="range" class="slider-input char-speed-slider" data-char="${charAttr}" min="50" max="150" value="${Math.round((assignment.speedMultiplier || 1.0) * 100)}">
+                  <input type="range" class="slider-input char-speed-slider" data-char="${charAttr}" data-focus-key="char-speed-${charAttr}" min="50" max="150" value="${Math.round((assignment.speedMultiplier || 1.0) * 100)}" aria-label="Speed for ${charAttr}" aria-valuetext="${(assignment.speedMultiplier || 1.0).toFixed(1)}x">
                   <span class="slider-val char-speed-val">${(assignment.speedMultiplier || 1.0).toFixed(1)}x</span>
                 </div>
               </div>
@@ -207,185 +220,173 @@ export function createCastPanel({ scriptStore, audioManager, onOpenVoiceConfig }
       </div>
     `;
 
-    // Attach listeners
-    const btnOpenStudio = panel.querySelector('#btn-cast-modal-open');
-    if (btnOpenStudio && onOpenVoiceConfig) {
-      btnOpenStudio.addEventListener('click', onOpenVoiceConfig);
-    }
+      // Attach listeners
+      const btnOpenStudio = panel.querySelector('#btn-cast-modal-open');
+      if (btnOpenStudio && onOpenVoiceConfig) {
+        btnOpenStudio.addEventListener('click', onOpenVoiceConfig);
+      }
 
-    // Narrator select
-    const narratorSelect = panel.querySelector('.narrator-voice-select');
-    if (narratorSelect) {
-      narratorSelect.addEventListener('change', (e) => {
-        scriptStore.updateNarratorVoice(e.target.value, narratorEngineId);
-        audioManager.setNarratorVoice(e.target.value);
-      });
-    }
+      // Narrator select
+      const narratorSelect = panel.querySelector('.narrator-voice-select');
+      if (narratorSelect) {
+        narratorSelect.addEventListener('change', (e) => {
+          scriptStore.updateNarratorVoice(e.target.value, narratorEngineId);
+          audioManager.setNarratorVoice(e.target.value);
+        });
+      }
 
-    // Narrator test button
-    const narratorTestBtn = panel.querySelector('.btn-test-narrator');
-    if (narratorTestBtn) {
-      narratorTestBtn.addEventListener('click', async () => {
-        if (auditioningChar === 'NARRATOR') {
-          auditionGen++;
-          audioManager.stop({ preservePrewarm: true });
-          auditioningChar = null;
-          auditionPhase = 'idle';
-          render();
-          return;
-        }
-
-        const gen = ++auditionGen;
-        auditioningChar = 'NARRATOR';
-        auditionPhase = 'rendering';
-        render();
-
-        const onStateChange = (phase) => {
-          if (gen !== auditionGen) return;
-          auditionPhase = phase;
-          if (phase === 'idle' || phase === 'error') {
-            auditioningChar = null;
-          }
-          render();
-        };
-
-        try {
-          await audioManager.previewVoice(
-            narratorVoiceId,
-            'EXT. OMNICORP SPIRE - NIGHT. Torrential rain lashes against the glass as the city sleeps below.',
-            0,
-            1.0,
-            '',
-            narratorEngineId,
-            onStateChange,
-          );
-        } catch (e) {
-          console.warn('Narrator test error:', e);
-        } finally {
-          if (gen === auditionGen) {
+      // Narrator test button
+      const narratorTestBtn = panel.querySelector('.btn-test-narrator');
+      if (narratorTestBtn) {
+        narratorTestBtn.addEventListener('click', async () => {
+          if (auditioningChar === 'NARRATOR') {
+            auditionGen++;
+            audioManager.stop({ preservePrewarm: true });
             auditioningChar = null;
             auditionPhase = 'idle';
             render();
+            return;
           }
-        }
-      });
-    }
 
-    // Character voice selects
-    panel.querySelectorAll('.char-voice-select').forEach((select) => {
-      select.addEventListener('change', (e) => {
-        const charName = select.dataset.char;
-        const charKey = charName.toUpperCase().trim();
-        // Recorded against the active engine so the character's casting on the
-        // other engine is not overwritten by a choice made here.
-        scriptStore.updateCharacterVoice(charName, { voiceId: e.target.value, engineId });
-        const assignment = scriptStore.castAssignments.get(charKey);
-        audioManager.setVoiceAssignment(charName, assignment);
-        const charObj = characters.find((c) => c.name.toUpperCase().trim() === charKey);
-        audioManager.prewarmAudition?.(e.target.value, charObj ? charObj.sampleLine : null, assignment, engineId);
-        render(); // update avatar & badge
-      });
-    });
-
-    // Character test buttons
-    panel.querySelectorAll('.btn-test-voice').forEach((btn) => {
-      btn.addEventListener('click', async () => {
-        const charName = btn.dataset.char;
-        const charKey = charName.toUpperCase().trim();
-
-        if (auditioningChar === charKey) {
-          auditionGen++;
+          const gen = ++auditionGen;
           audioManager.stop({ preservePrewarm: true });
-          auditioningChar = null;
-          auditionPhase = 'idle';
+          auditioningChar = 'NARRATOR';
+          auditionPhase = 'rendering';
           render();
-          return;
-        }
 
-        const gen = ++auditionGen;
-        auditioningChar = charKey;
-        auditionPhase = 'rendering';
-        render();
+          const onStateChange = (phase) => {
+            if (gen !== auditionGen) return;
+            auditionPhase = phase;
+            if (phase === 'idle' || phase === 'error') {
+              auditioningChar = null;
+            }
+            render();
+          };
 
-        const assignment = scriptStore.castAssignments.get(charKey) || makeDefaultAssignment();
-        const charObj = characters.find((c) => c.name.toUpperCase().trim() === charKey);
-        const sampleText = charObj ? charObj.sampleLine : null;
-
-        const onStateChange = (phase) => {
-          if (gen !== auditionGen) return;
-          auditionPhase = phase;
-          if (phase === 'idle' || phase === 'error') {
-            auditioningChar = null;
+          try {
+            await audioManager.previewVoice(
+              narratorVoiceId,
+              'EXT. OMNICORP SPIRE - NIGHT. Torrential rain lashes against the glass as the city sleeps below.',
+              0,
+              1.0,
+              '',
+              narratorEngineId,
+              onStateChange,
+            );
+          } catch (e) {
+            console.warn('Narrator test error:', e);
+          } finally {
+            if (gen === auditionGen) {
+              auditioningChar = null;
+              auditionPhase = 'idle';
+              render();
+            }
           }
-          render();
-        };
+        });
+      }
 
-        try {
-          await audioManager.previewVoice(
-            voiceIdOf(assignment),
-            sampleText,
-            assignment.pitchOffset || 0,
-            assignment.speedMultiplier || 1.0,
-            assignment.direction || '',
-            engineId,
-            onStateChange,
-          );
-        } catch (e) {
-          console.warn('Character test error:', e);
-        } finally {
-          if (gen === auditionGen) {
+      // Character voice selects
+      panel.querySelectorAll('.char-voice-select').forEach((select) => {
+        select.addEventListener('change', (e) => {
+          const charName = select.dataset.char;
+          const charKey = charName.toUpperCase().trim();
+          // Recorded against the active engine so the character's casting on the
+          // other engine is not overwritten by a choice made here.
+          scriptStore.updateCharacterVoice(charName, { voiceId: e.target.value, engineId, deferRender: true });
+          const assignment = scriptStore.castAssignments.get(charKey);
+          audioManager.setVoiceAssignment(charName, assignment);
+          const charObj = characters.find((c) => c.name.toUpperCase().trim() === charKey);
+          audioManager.prewarmAudition?.(e.target.value, charObj ? charObj.sampleLine : null, assignment, engineId);
+          render(); // update avatar & badge
+        });
+      });
+
+      // Character test buttons
+      panel.querySelectorAll('.btn-test-voice').forEach((btn) => {
+        btn.addEventListener('click', async () => {
+          const charName = btn.dataset.char;
+          const charKey = charName.toUpperCase().trim();
+
+          if (auditioningChar === charKey) {
+            auditionGen++;
+            audioManager.stop({ preservePrewarm: true });
             auditioningChar = null;
             auditionPhase = 'idle';
             render();
+            return;
           }
-        }
-      });
-    });
 
-    // Pitch sliders
-    panel.querySelectorAll('.char-pitch-slider').forEach((slider) => {
-      slider.addEventListener('input', (e) => {
-        const charName = slider.dataset.char;
-        const val = parseInt(e.target.value, 10);
-        const card = slider.closest('.character-card');
-        if (card) {
-          card.querySelector('.char-pitch-val').textContent = formatPitchOffset(val);
-        }
-        scriptStore.updateCharacterVoice(charName, { pitchOffset: val, deferRender: true });
-        audioManager.setVoiceAssignment(charName, scriptStore.castAssignments.get(charName.toUpperCase().trim()));
-      });
-    });
-
-    // Speed sliders
-    panel.querySelectorAll('.char-speed-slider').forEach((slider) => {
-      slider.addEventListener('input', (e) => {
-        const charName = slider.dataset.char;
-        const val = parseInt(e.target.value, 10) / 100;
-        const card = slider.closest('.character-card');
-        if (card) {
-          card.querySelector('.char-speed-val').textContent = `${val.toFixed(1)}x`;
-        }
-        scriptStore.updateCharacterVoice(charName, { speedMultiplier: val, deferRender: true });
-        audioManager.setVoiceAssignment(charName, scriptStore.castAssignments.get(charName.toUpperCase().trim()));
-      });
-    });
-
-    // Auto-cast button
-    const autoCastBtn = panel.querySelector('#btn-autocast');
-    if (autoCastBtn) {
-      autoCastBtn.addEventListener('click', () => {
-        if (script) {
-          scriptStore.autoCastCurrentScript(engineId);
-          audioManager.setNarratorVoice(scriptStore.getNarratorVoice(engineId));
-          audioManager.setScript(
-            scriptStore.currentScript.elements,
-            scriptStore.castAssignments,
-            scriptStore.activeLineIndex,
-          );
+          const gen = ++auditionGen;
+          audioManager.stop({ preservePrewarm: true });
+          auditioningChar = charKey;
+          auditionPhase = 'rendering';
           render();
-        }
+
+          const assignment = scriptStore.castAssignments.get(charKey) || makeDefaultAssignment();
+          const charObj = characters.find((c) => c.name.toUpperCase().trim() === charKey);
+          const sampleText = charObj ? charObj.sampleLine : null;
+
+          const onStateChange = (phase) => {
+            if (gen !== auditionGen) return;
+            auditionPhase = phase;
+            if (phase === 'idle' || phase === 'error') {
+              auditioningChar = null;
+            }
+            render();
+          };
+
+          try {
+            await audioManager.previewVoice(
+              voiceIdOf(assignment),
+              sampleText,
+              assignment.pitchOffset || 0,
+              assignment.speedMultiplier || 1.0,
+              assignment.direction || '',
+              engineId,
+              onStateChange,
+            );
+          } catch (e) {
+            console.warn('Character test error:', e);
+          } finally {
+            if (gen === auditionGen) {
+              auditioningChar = null;
+              auditionPhase = 'idle';
+              render();
+            }
+          }
+        });
       });
-    }
+
+      // Pitch sliders
+      panel.querySelectorAll('.char-pitch-slider').forEach((slider) => {
+        slider.addEventListener('input', (e) => {
+          const charName = slider.dataset.char;
+          const val = parseInt(e.target.value, 10);
+          const card = slider.closest('.character-card');
+          if (card) {
+            card.querySelector('.char-pitch-val').textContent = formatPitchOffset(val);
+            slider.setAttribute('aria-valuetext', formatPitchOffset(val));
+          }
+          scriptStore.updateCharacterVoice(charName, { pitchOffset: val, deferRender: true });
+          audioManager.setVoiceAssignment(charName, scriptStore.castAssignments.get(charName.toUpperCase().trim()));
+        });
+      });
+
+      // Speed sliders
+      panel.querySelectorAll('.char-speed-slider').forEach((slider) => {
+        slider.addEventListener('input', (e) => {
+          const charName = slider.dataset.char;
+          const val = parseInt(e.target.value, 10) / 100;
+          const card = slider.closest('.character-card');
+          if (card) {
+            card.querySelector('.char-speed-val').textContent = `${val.toFixed(1)}x`;
+            slider.setAttribute('aria-valuetext', `${val.toFixed(1)}x`);
+          }
+          scriptStore.updateCharacterVoice(charName, { speedMultiplier: val, deferRender: true });
+          audioManager.setVoiceAssignment(charName, scriptStore.castAssignments.get(charName.toUpperCase().trim()));
+        });
+      });
+    });
   }
 
   // Highlight everyone currently speaking — during an overlap that is more than

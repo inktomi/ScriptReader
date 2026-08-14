@@ -407,6 +407,130 @@ test('the cast rail shows the description and escapes it', () => {
   }
 });
 
+test('cast panel renders clean header hierarchy and scroll area container', () => {
+  const dom = installDom();
+  try {
+    let openedStudio = false;
+    const scriptStore = castRailStore({
+      name: 'VALENTINE',
+      lineCount: 12,
+      sampleLine: 'Let us move.',
+    });
+
+    const panel = createCastPanel({
+      scriptStore,
+      audioManager: castRailAudio(),
+      onOpenVoiceConfig: () => {
+        openedStudio = true;
+      },
+    });
+    document.body.appendChild(panel.element);
+    panel.render();
+
+    const header = panel.element.querySelector('.cast-panel-header');
+    assert.ok(header, 'cast panel header exists');
+    assert.ok(header.querySelector('.cast-panel-title-row'), 'title row exists');
+    assert.equal(header.querySelector('.cast-panel-heading span').textContent.trim(), 'Voice Cast');
+
+    const studioBtn = header.querySelector('#btn-cast-modal-open');
+    assert.ok(studioBtn, 'cast studio button exists');
+    assert.ok(studioBtn.classList.contains('btn-sm'));
+    assert.ok(studioBtn.classList.contains('btn-studio-glow'));
+    studioBtn.click();
+    assert.equal(openedStudio, true, 'clicking cast studio opens voice config');
+
+    const scrollArea = panel.element.querySelector('.cast-scroll-area');
+    assert.ok(scrollArea, 'cast scroll area exists');
+    assert.ok(scrollArea.classList.contains('cast-list'));
+
+    const sectionHeader = scrollArea.querySelector('.cast-section-header');
+    assert.ok(sectionHeader, 'speaking cast section header exists');
+    assert.equal(sectionHeader.querySelector('.cast-section-title').textContent.trim(), 'Speaking Cast');
+    assert.equal(sectionHeader.querySelector('.cast-section-count').textContent.trim(), '1');
+  } finally {
+    removeDom(dom);
+  }
+});
+
+test('cast panel highlights narrator and character cards during active playback', () => {
+  const dom = installDom();
+  try {
+    const scriptStore = castRailStore({
+      name: 'VALENTINE',
+      lineCount: 12,
+      sampleLine: 'Let us move.',
+    });
+
+    const panel = createCastPanel({
+      scriptStore,
+      audioManager: castRailAudio(),
+    });
+    document.body.appendChild(panel.element);
+    panel.render();
+
+    const narratorCard = panel.element.querySelector('.narrator-card');
+    const valCard = panel.element.querySelector('[data-char="VALENTINE"]');
+
+    assert.equal(narratorCard.dataset.char, 'NARRATOR');
+    assert.equal(narratorCard.classList.contains('speaking'), false);
+    assert.equal(valCard.classList.contains('speaking'), false);
+
+    // Narrator speaking
+    panel.setSpeakingCharacters(['NARRATOR']);
+    assert.equal(narratorCard.classList.contains('speaking'), true);
+    assert.equal(valCard.classList.contains('speaking'), false);
+
+    // Character speaking
+    panel.setSpeakingCharacters(['VALENTINE']);
+    assert.equal(narratorCard.classList.contains('speaking'), false);
+    assert.equal(valCard.classList.contains('speaking'), true);
+
+    // Clear speaking
+    panel.setSpeakingCharacters([]);
+    assert.equal(narratorCard.classList.contains('speaking'), false);
+    assert.equal(valCard.classList.contains('speaking'), false);
+  } finally {
+    removeDom(dom);
+  }
+});
+
+test('cast panel preserves focus across render and maintains accessible labels', () => {
+  const dom = installDom();
+  try {
+    const scriptStore = castRailStore({
+      name: 'VALENTINE',
+      lineCount: 12,
+      sampleLine: 'Let us move.',
+    });
+
+    const panel = createCastPanel({
+      scriptStore,
+      audioManager: castRailAudio(),
+    });
+    document.body.appendChild(panel.element);
+    panel.render();
+
+    const voiceSelect = panel.element.querySelector('.char-voice-select');
+    assert.ok(voiceSelect, 'voice select exists');
+    assert.equal(voiceSelect.getAttribute('aria-label'), 'Voice for VALENTINE');
+    assert.equal(voiceSelect.getAttribute('data-focus-key'), 'char-voice-VALENTINE');
+
+    // Focus the select control
+    voiceSelect.focus();
+    assert.equal(dom.window.document.activeElement, voiceSelect);
+
+    // Re-render
+    panel.render();
+
+    // Focus should be restored to the new select element with the same focus key
+    const restoredSelect = panel.element.querySelector('.char-voice-select');
+    assert.ok(restoredSelect);
+    assert.equal(dom.window.document.activeElement, restoredSelect);
+  } finally {
+    removeDom(dom);
+  }
+});
+
 function castRailStore(character) {
   return {
     currentScript: {
