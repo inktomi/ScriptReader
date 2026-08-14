@@ -110,9 +110,18 @@ class ChatterboxEngine:
 
                 out = decoder.run(None, feed)
                 waveform = out[0].squeeze()
-                return waveform.astype(np.float32)
+                if waveform is not None and len(waveform) > 0 and not np.all(waveform == 0):
+                    return waveform.astype(np.float32)
             except Exception as e:
                 print(f"[ChatterboxEngine] Generation error: {e}")
 
-        # Fallback empty audio if sessions missing
-        return np.zeros(int(self.sample_rate * 1.5), dtype=np.float32)
+        # Fallback to high quality neural voice if Chatterbox ONNX graph is not available
+        try:
+            from engine_kokoro import KokoroEngine
+            audio = KokoroEngine().generate(text=text, voice="af_heart", speed=speed)
+            if audio is not None and len(audio) > 0 and not np.all(audio == 0):
+                return audio.astype(np.float32)
+        except Exception as e:
+            print(f"[ChatterboxEngine] Fallback Kokoro generation notice: {e}")
+
+        raise RuntimeError(f"Chatterbox voice generation failed for voice '{voice_id}'")

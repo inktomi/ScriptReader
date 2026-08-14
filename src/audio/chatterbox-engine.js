@@ -4,6 +4,7 @@ import { ModelCacheManager } from './model-cache-manager.js';
 import { getChatterboxVoiceSample } from './chatterbox-voice-store.js';
 import { createOpfsModelCache } from './opfs-model-cache.js';
 import { chatterboxRenderStore, decodePcm16 } from './chatterbox-render-store.js';
+import { isAudioSilent } from './runpod-engine.js';
 import {
   CHATTERBOX_DOWNLOAD_BYTES,
   CHATTERBOX_MODEL_ID,
@@ -611,9 +612,17 @@ export class ChatterboxStudioEngine {
 
   async _loadOrSynthesize(unit, priority) {
     const stored = await this.renderStore.get(unit.key);
-    if (stored) return this._bufferFromPcm(stored.audio, stored.sampleRate);
+    if (stored && stored.audio) {
+      const buffer = this._bufferFromPcm(stored.audio, stored.sampleRate);
+      if (buffer && !isAudioSilent(buffer)) {
+        return buffer;
+      }
+    }
 
     const buffer = await this._synthesize(unit, priority);
+    if (!buffer || isAudioSilent(buffer)) {
+      throw new Error('Studio Local produced empty or silent audio.');
+    }
     await this.renderStore.put(unit.key, buffer.getChannelData(0), buffer.sampleRate);
     return buffer;
   }

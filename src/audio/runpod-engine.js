@@ -63,6 +63,21 @@ function float32ToWavBase64(pcmFloat32, sampleRate = 24000) {
   return btoa(binary);
 }
 
+export function isAudioSilent(buffer) {
+  if (!buffer || (buffer.duration !== undefined && buffer.duration <= 0)) return true;
+  const channelData = typeof buffer.getChannelData === 'function'
+    ? buffer.getChannelData(0)
+    : (buffer.channelData?.[0] || null);
+  if (!channelData) {
+    return (buffer.duration !== undefined && buffer.duration <= 0) || (buffer.length !== undefined && buffer.length <= 0);
+  }
+  if (channelData.length === 0) return true;
+  for (let i = 0; i < channelData.length; i++) {
+    if (Math.abs(channelData[i]) > 0.0001) return false;
+  }
+  return true;
+}
+
 export class RunPodServerlessEngine {
   constructor({
     getApiKey = loadRunPodKey,
@@ -233,7 +248,10 @@ export class RunPodServerlessEngine {
       try {
         const stored = await this.renderStore.get(unit.key);
         if (stored && stored.audio) {
-          return this._bufferFromPcm(stored.audio, stored.sampleRate);
+          const buffer = this._bufferFromPcm(stored.audio, stored.sampleRate);
+          if (buffer && !isAudioSilent(buffer)) {
+            return buffer;
+          }
         }
       } catch (err) {
         console.warn('RunPod render store read notice:', err);
@@ -242,6 +260,10 @@ export class RunPodServerlessEngine {
     if (signal?.aborted) throw new DOMException('aborted', 'AbortError');
 
     const buffer = await this._synthesize(unit, signal);
+    if (!buffer || isAudioSilent(buffer)) {
+      throw new Error('RunPod worker returned empty or silent audio.');
+    }
+
     if (this.renderStore && buffer) {
       try {
         const channelData = typeof buffer.getChannelData === 'function'
@@ -344,6 +366,9 @@ export class RunPodServerlessEngine {
 
         const audioCtx = getAudioContext();
         const buffer = await audioCtx.decodeAudioData(bytes.buffer.slice(0));
+        if (!buffer || buffer.duration <= 0.05 || isAudioSilent(buffer)) {
+          throw new Error('RunPod worker returned empty or silent audio.');
+        }
         return buffer;
       } catch (err) {
         if (err.name === 'AbortError') throw err;

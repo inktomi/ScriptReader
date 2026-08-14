@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { RunPodServerlessEngine } from '../src/audio/runpod-engine.js';
+import { RunPodServerlessEngine, isAudioSilent } from '../src/audio/runpod-engine.js';
 import { ENGINE_IDS } from '../src/audio/engine-contract.js';
 
 const tick = () => new Promise(resolve => setImmediate(resolve));
@@ -113,7 +113,7 @@ test('RunPod _synthesize polls when status is IN_PROGRESS or IN_QUEUE', async ()
 
     // Mock decodeAudioData on audio context
     const unit = { key: 'poll-unit', text: 'Testing polling', voiceId: 'af_heart' };
-    const buffer = { duration: 1.0, getChannelData: () => new Float32Array(24000), sampleRate: 24000 };
+    const buffer = { duration: 1.0, getChannelData: () => new Float32Array([0.1, -0.1, 0.2]), sampleRate: 24000 };
     engine._synthesize = async () => buffer;
 
     const result = await engine._loadOrSynthesize(unit, new AbortController().signal);
@@ -341,7 +341,7 @@ test('RunPod _synthesize skips reference lookup for Kokoro voices and errors on 
       const origAudioContext = globalThis.AudioContext;
       globalThis.window.AudioContext = class {
         async decodeAudioData() {
-          return { duration: 1.0, getChannelData: () => new Float32Array(24000), sampleRate: 24000 };
+          return { duration: 1.0, getChannelData: () => new Float32Array([0.1, -0.1, 0.2]), sampleRate: 24000 };
         }
       };
 
@@ -463,4 +463,71 @@ test('cast panel character test under RunPod handles missing assignment cleanly'
   } finally {
     removeDom(dom);
   }
+});
+
+test('isAudioSilent accurately detects silent audio vs audible speech', () => {
+  assert.equal(isAudioSilent(null), true);
+  assert.equal(isAudioSilent({ duration: 0 }), true);
+  assert.equal(isAudioSilent({ duration: 1.0, getChannelData: () => new Float32Array(1000) }), true);
+  assert.equal(isAudioSilent({ duration: 1.0, getChannelData: () => new Float32Array([0, 0, 0.00001, -0.00001]) }), true);
+  assert.equal(isAudioSilent({ duration: 1.0, getChannelData: () => new Float32Array([0, 0, 0.05, 0.1]) }), false);
+});
+
+test('RunPod _synthesize rejects empty or silent audio and prevents caching invalid renders', async () => {
+  const engine = new RunPodServerlessEngine({
+    getApiKey: () => 'test-key',
+    getEndpointId: () => 'test-endpoint'
+  });
+  engine.isReady = true;
+
+  // 1. Mock _synthesize returning silent audio
+  const silentBuffer = {
+    duration: 1.5,
+    sampleRate: 24000,
+    getChannelData: () => new Float32Array(24000)
+  };
+  engine._synthesize = async () => silentBuffer;
+
+  await assert.rejects(
+    engine._loadOrSynthesize({ key: 'silent-line', text: 'Hello world' }, new AbortController().signal),
+    error => error.message.includes('empty or silent audio')
+  );
+});
+
+test('RunPod _loadOrSynthesize bypasses and replaces corrupt silent renders from renderStore', async () => {
+  const silentPcm = new Int16Array(24000); // 1.0 sec of zeros
+  let writes = [];
+  const fakeStore = {
+    async get(key) {
+      if (key === 'corrupt-line') return { audio: silentPcm, sampleRate: 24000 };
+      return null;
+    },
+    async put(key, audio, sampleRate) {
+      writes.push({ key, audio, sampleRate });
+    }
+  };
+
+  const engine = new RunPodServerlessEngine({
+    getApiKey: () => 'test-key',
+    getEndpointId: () => 'test-endpoint',
+    renderStore: fakeStore
+  });
+  engine.isReady = true;
+  engine._bufferFromPcm = (pcm, sr) => ({
+    duration: 1.0,
+    sampleRate: sr,
+    getChannelData: () => new Float32Array(pcm.length) // returns all zeros
+  });
+
+  const validBuffer = {
+    duration: 1.5,
+    sampleRate: 24000,
+    getChannelData: () => new Float32Array([0.1, -0.2, 0.3])
+  };
+  engine._synthesize = async () => validBuffer;
+
+  const result = await engine._loadOrSynthesize({ key: 'corrupt-line', text: 'Re-render me' }, new AbortController().signal);
+  assert.equal(result, validBuffer);
+  assert.equal(writes.length, 1);
+  assert.equal(writes[0].key, 'corrupt-line');
 });

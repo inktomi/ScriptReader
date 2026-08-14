@@ -55,6 +55,15 @@ def process_single_unit(item: dict) -> dict:
             )
             sr = 24000
 
+        if audio is None or len(audio) == 0 or np.all(audio == 0):
+            return {
+                "id": item.get("id"),
+                "error": "Synthesis produced empty or silent audio",
+                "audio_base64": "",
+                "sample_rate": 24000,
+                "duration": 0.0
+            }
+
         # Encode to WAV 16-bit PCM
         buf = io.BytesIO()
         sf.write(buf, audio, sr, format="WAV", subtype="PCM_16")
