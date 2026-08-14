@@ -11,6 +11,7 @@ from request_contract import (
     normalize_item,
     read_bounded_json,
     validate_batch,
+    validate_voice_registration,
 )
 
 # Global engine instances
@@ -92,7 +93,24 @@ def runpod_handler(job: dict):
     if not isinstance(job_input, dict):
         return {"error": "input must be an object"}
 
-    # 1. Batch Request (Full screenplay render pass)
+    # 1. Voice Registration Request
+    if "register_voices" in job_input or job_input.get("action") == "register_voices":
+        raw_reg = job_input.get("register_voices")
+        raw_voices = job_input.get("voices")
+        voices_payload = raw_reg if isinstance(raw_reg, list) else (raw_voices if isinstance(raw_voices, list) else raw_reg or raw_voices or [])
+        try:
+            validated_voices = validate_voice_registration(voices_payload)
+            registered = []
+            for voice_entry in validated_voices:
+                vid = voice_entry["voice_id"]
+                audio_data = voice_entry["reference_audio"]
+                get_chatterbox().register_speaker_reference(vid, audio_data)
+                registered.append(vid)
+            return {"registered": len(registered), "voices": registered}
+        except Exception as error:
+            return {"error": str(error), "registered": 0, "voices": []}
+
+    # 2. Batch Request (Full screenplay render pass)
     if "batch" in job_input:
         try:
             batch = validate_batch(job_input["batch"])
@@ -101,7 +119,7 @@ def runpod_handler(job: dict):
         results = [process_single_unit(item) for item in batch]
         return {"batch_results": results, "count": len(results)}
 
-    # 2. Single line streaming request
+    # 3. Single line streaming request
     return process_single_unit(job_input)
 
 # FastAPI HTTP support
@@ -122,6 +140,28 @@ app.add_middleware(
 @app.get("/health")
 def health():
     return {"status": "ok", "service": "ScriptReader TTS Worker"}
+
+@app.post("/v1/voices/register")
+async def register_voices_endpoint(request: Request):
+    """Register voice embeddings in worker memory to avoid re-uploading reference audio."""
+    try:
+        data = await read_bounded_json(request)
+        raw_reg = data.get("register_voices")
+        raw_voices = data.get("voices")
+        voices_payload = raw_reg if isinstance(raw_reg, list) else (raw_voices if isinstance(raw_voices, list) else raw_reg or raw_voices or [])
+        validated_voices = validate_voice_registration(voices_payload)
+        registered = []
+        for voice_entry in validated_voices:
+            vid = voice_entry["voice_id"]
+            audio_data = voice_entry["reference_audio"]
+            get_chatterbox().register_speaker_reference(vid, audio_data)
+            registered.append(vid)
+        return {"registered": len(registered), "voices": registered}
+    except InputError as error:
+        return JSONResponse({"error": str(error)}, status_code=413 if "too large" in str(error) or "exceeds" in str(error) else 400)
+    except Exception as error:
+        return JSONResponse({"error": str(error)}, status_code=400)
+
 
 @app.post("/v1/audio/speech")
 async def openai_speech(request: Request):
@@ -145,7 +185,7 @@ async def batch_speech(request: Request):
     except InputError as error:
         return JSONResponse({"error": str(error)}, status_code=413 if "too large" in str(error) or "exceeds" in str(error) else 400)
     results = [process_single_unit(item) for item in batch]
-    return {"results": results, "count": len(results)}
+    return {"results": results, "batch_results": results, "count": len(results)}
 
 if __name__ == "__main__":
     # Check if run under RunPod Serverless or standalone HTTP

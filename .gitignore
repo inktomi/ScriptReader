@@ -36,3 +36,7 @@ entities.json
 .env.local
 .env.*.local
 .envrc
+
+# Python cache
+__pycache__/
+*.pyc

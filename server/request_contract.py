@@ -111,6 +111,42 @@ def validate_batch(items):
     return items
 
 
+MAX_VOICE_REGISTRATIONS = 64
+
+
+def validate_voice_registration(items):
+    if not isinstance(items, list):
+        raise InputError("voices must be an array")
+    if not items:
+        raise InputError("voices array must not be empty")
+    if len(items) > MAX_VOICE_REGISTRATIONS:
+        raise InputError(f"voices exceeds {MAX_VOICE_REGISTRATIONS} items")
+
+    validated = []
+    for item in items:
+        if not isinstance(item, dict):
+            raise InputError("voice registration item must be an object")
+        raw_voice = item.get("voice_id") or item.get("voice")
+        if not isinstance(raw_voice, str) or not raw_voice.strip():
+            raise InputError("voice_id must be a non-empty string")
+        voice_id = raw_voice.strip()
+        if len(voice_id) > MAX_VOICE_ID_CHARS:
+            raise InputError("voice identifier is too long")
+
+        ref_b64 = item.get("reference_audio_b64")
+        if not ref_b64:
+            raise InputError(f"reference_audio_b64 is required for voice '{voice_id}'")
+        ref_bytes = _decode_reference(ref_b64)
+        if not ref_bytes:
+            raise InputError(f"reference audio is empty for voice '{voice_id}'")
+
+        validated.append({
+            "voice_id": voice_id,
+            "reference_audio": ref_bytes,
+        })
+    return validated
+
+
 async def read_bounded_json(request):
     chunks = []
     received = 0

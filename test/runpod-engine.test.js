@@ -704,3 +704,304 @@ test('RunPod _loadOrSynthesize bypasses and replaces corrupt silent renders from
   assert.equal(writes.length, 1);
   assert.equal(writes[0].key, 'corrupt-line');
 });
+
+test('RunPod engine dynamically micro-batches multiple queued units into a single runsync payload', async () => {
+  const originalFetch = globalThis.fetch;
+  const requests = [];
+  const validAudioB64 = 'UklGRigAAABXQVZFZm10IBAAAAABAAEARKwAAIhYAQACABAAZGF0YQAAAAA=';
+
+  globalThis.fetch = async (url, options) => {
+    if (url.includes('/runsync')) {
+      const body = JSON.parse(options.body);
+      requests.push(body);
+      const batchItems = body.input.batch || [];
+      const batch_results = batchItems.map((item) => ({
+        id: item.id,
+        audio_base64: validAudioB64,
+        sample_rate: 24000,
+        duration: 1.0,
+      }));
+      return jsonResponse({
+        status: 'COMPLETED',
+        output: { batch_results, count: batch_results.length },
+      });
+    }
+    return { ok: false, status: 404 };
+  };
+
+  const origAudioContext = globalThis.AudioContext;
+  globalThis.AudioContext = class {
+    async decodeAudioData() {
+      return { duration: 1.0, getChannelData: () => new Float32Array([0.1, -0.1, 0.2]), sampleRate: 24000 };
+    }
+  };
+
+  try {
+    const engine = new RunPodServerlessEngine({
+      getApiKey: () => 'test-key',
+      getEndpointId: () => 'test-endpoint',
+    });
+    engine.isReady = true;
+
+    // Enqueue 3 units simultaneously
+    const p1 = engine.request({ key: 'unit-1', text: 'Line 1', voiceId: 'af_heart' });
+    const p2 = engine.request({ key: 'unit-2', text: 'Line 2', voiceId: 'af_heart' });
+    const p3 = engine.request({ key: 'unit-3', text: 'Line 3', voiceId: 'af_heart' });
+
+    const [b1, b2, b3] = await Promise.all([p1, p2, p3]);
+
+    assert.ok(b1 && b2 && b3);
+    assert.equal(requests.length, 1, 'all 3 queued units must be bundled into 1 network request');
+    assert.equal(requests[0].input.batch.length, 3);
+    assert.equal(requests[0].input.batch[0].id, 'unit-1');
+    assert.equal(requests[0].input.batch[1].id, 'unit-2');
+    assert.equal(requests[0].input.batch[2].id, 'unit-3');
+  } finally {
+    globalThis.fetch = originalFetch;
+    globalThis.AudioContext = origAudioContext;
+  }
+});
+
+test('RunPod voice registration sends reference audio only once and omits it on subsequent requests', async () => {
+  const originalFetch = globalThis.fetch;
+  const payloads = [];
+  const validAudioB64 = 'UklGRigAAABXQVZFZm10IBAAAAABAAEARKwAAIhYAQACABAAZGF0YQAAAAA=';
+
+  globalThis.fetch = async (_url, options) => {
+    const body = JSON.parse(options.body);
+    payloads.push(body);
+    return jsonResponse({
+      status: 'COMPLETED',
+      output: { audio_base64: validAudioB64, sample_rate: 24000, duration: 1.0 },
+    });
+  };
+
+  const origAudioContext = globalThis.AudioContext;
+  globalThis.AudioContext = class {
+    async decodeAudioData() {
+      return { duration: 1.0, getChannelData: () => new Float32Array([0.1, -0.1, 0.2]), sampleRate: 24000 };
+    }
+  };
+
+  try {
+    const engine = new RunPodServerlessEngine({
+      getApiKey: () => 'test-key',
+      getEndpointId: () => 'test-endpoint',
+    });
+    engine.isReady = true;
+    engine._getVoiceReferenceB64 = async () => 'SAMPLE_BASE64_AUDIO';
+
+    const unit1 = { key: 'u1', text: 'First line', voiceId: 'studio-alice', voiceCacheId: 'studio-alice@1@runpod:ep' };
+    const unit2 = { key: 'u2', text: 'Second line', voiceId: 'studio-alice', voiceCacheId: 'studio-alice@1@runpod:ep' };
+
+    await engine._synthesize(unit1, new AbortController().signal);
+    assert.equal(payloads.length, 1);
+    assert.equal(
+      payloads[0].input.reference_audio_b64,
+      'SAMPLE_BASE64_AUDIO',
+      'first request includes reference audio',
+    );
+
+    await engine._synthesize(unit2, new AbortController().signal);
+    assert.equal(payloads.length, 2);
+    assert.equal(
+      payloads[1].input.reference_audio_b64,
+      null,
+      'subsequent request for registered voice omits reference audio payload',
+    );
+  } finally {
+    globalThis.fetch = originalFetch;
+    globalThis.AudioContext = origAudioContext;
+  }
+});
+
+test('RunPod registerVoices explicitly pre-registers voice reference samples', async () => {
+  const originalFetch = globalThis.fetch;
+  let registerPayload = null;
+
+  globalThis.fetch = async (url, options) => {
+    if (url.includes('/runsync')) {
+      registerPayload = JSON.parse(options.body);
+      return jsonResponse({
+        status: 'COMPLETED',
+        output: { registered: 2, voices: ['studio-alice@1@runpod:ep', 'studio-bob@1@runpod:ep'] },
+      });
+    }
+    return { ok: false, status: 404 };
+  };
+
+  try {
+    const engine = new RunPodServerlessEngine({
+      getApiKey: () => 'test-key',
+      getEndpointId: () => 'ep',
+    });
+    engine.isReady = true;
+    engine._getVoiceReferenceB64 = async (id) => `SAMPLE_B64_FOR_${id}`;
+
+    const voices = [
+      { id: 'studio-alice', renderRevision: 1 },
+      { id: 'studio-bob', renderRevision: 1 },
+      { id: 'af_heart' }, // Kokoro voice should be skipped
+    ];
+
+    const res = await engine.registerVoices(voices);
+    assert.equal(res.registered, 2);
+    assert.ok(registerPayload?.input?.register_voices);
+    assert.equal(registerPayload.input.register_voices.length, 2);
+    assert.equal(registerPayload.input.register_voices[0].voice_id, 'studio-alice@1@runpod:ep');
+    assert.equal(registerPayload.input.register_voices[1].voice_id, 'studio-bob@1@runpod:ep');
+    assert.ok(engine._registeredVoiceIds.has('studio-alice@1@runpod:ep'));
+    assert.ok(engine._registeredVoiceIds.has('studio-bob@1@runpod:ep'));
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('RunPod batch execution isolates per-unit errors without failing peer items in the batch', async () => {
+  const originalFetch = globalThis.fetch;
+  const validAudioB64 = 'UklGRigAAABXQVZFZm10IBAAAAABAAEARKwAAIhYAQACABAAZGF0YQAAAAA=';
+
+  globalThis.fetch = async (_url, options) => {
+    const body = JSON.parse(options.body);
+    const batchItems = body.input.batch || [];
+    const batch_results = batchItems.map((item) => {
+      if (item.id === 'bad-unit') {
+        return { id: item.id, error: 'Phoneme synthesis error' };
+      }
+      return { id: item.id, audio_base64: validAudioB64, sample_rate: 24000, duration: 1.0 };
+    });
+    return jsonResponse({
+      status: 'COMPLETED',
+      output: { batch_results, count: batch_results.length },
+    });
+  };
+
+  const origAudioContext = globalThis.AudioContext;
+  globalThis.AudioContext = class {
+    async decodeAudioData() {
+      return { duration: 1.0, getChannelData: () => new Float32Array([0.1, -0.1, 0.2]), sampleRate: 24000 };
+    }
+  };
+
+  try {
+    const engine = new RunPodServerlessEngine({
+      getApiKey: () => 'test-key',
+      getEndpointId: () => 'test-endpoint',
+    });
+    engine.isReady = true;
+
+    const goodReq = engine.request({ key: 'good-unit', text: 'Good line', voiceId: 'af_heart' });
+    const badReq = engine.request({ key: 'bad-unit', text: 'Bad line', voiceId: 'af_heart' });
+
+    const results = await Promise.allSettled([goodReq, badReq]);
+    assert.equal(results[0].status, 'fulfilled');
+    assert.ok(results[0].value);
+    assert.equal(results[1].status, 'rejected');
+    assert.match(results[1].reason.message, /Phoneme synthesis error/);
+  } finally {
+    globalThis.fetch = originalFetch;
+    globalThis.AudioContext = origAudioContext;
+  }
+});
+
+test('failed RunPod synthesis does not mark voice as registered, preserving reference audio on retry', async () => {
+  const originalFetch = globalThis.fetch;
+  const payloads = [];
+  let shouldFail = true;
+  const validAudioB64 = 'UklGRigAAABXQVZFZm10IBAAAAABAAEARKwAAIhYAQACABAAZGF0YQAAAAA=';
+
+  globalThis.fetch = async (_url, options) => {
+    const body = JSON.parse(options.body);
+    payloads.push(body);
+    if (shouldFail) {
+      return jsonResponse({ status: 'FAILED', error: 'Transient GPU timeout' });
+    }
+    return jsonResponse({
+      status: 'COMPLETED',
+      output: { audio_base64: validAudioB64, sample_rate: 24000, duration: 1.0 },
+    });
+  };
+
+  const origAudioContext = globalThis.AudioContext;
+  globalThis.AudioContext = class {
+    async decodeAudioData() {
+      return { duration: 1.0, getChannelData: () => new Float32Array([0.1, -0.1, 0.2]), sampleRate: 24000 };
+    }
+  };
+
+  try {
+    const engine = new RunPodServerlessEngine({
+      getApiKey: () => 'test-key',
+      getEndpointId: () => 'test-endpoint',
+    });
+    engine.isReady = true;
+    engine._getVoiceReferenceB64 = async () => 'SAMPLE_REF_AUDIO';
+
+    const unit = {
+      key: 'retry-unit',
+      text: 'Retry line',
+      voiceId: 'studio-claire',
+      voiceCacheId: 'studio-claire@1@ep',
+    };
+
+    // 1. Initial attempt fails
+    await assert.rejects(engine._synthesize(unit, new AbortController().signal), /Transient GPU timeout/);
+    assert.equal(payloads.length, 1);
+    assert.equal(payloads[0].input.reference_audio_b64, 'SAMPLE_REF_AUDIO');
+    assert.equal(
+      engine._registeredVoiceIds.has('studio-claire@1@ep'),
+      false,
+      'failed request must not mark voice as registered',
+    );
+
+    // 2. Retry succeeds and retains reference audio payload
+    shouldFail = false;
+    const buffer = await engine._synthesize(unit, new AbortController().signal);
+    assert.ok(buffer);
+    assert.equal(payloads.length, 2);
+    assert.equal(payloads[1].input.reference_audio_b64, 'SAMPLE_REF_AUDIO', 'retry re-transmits reference audio');
+    assert.equal(
+      engine._registeredVoiceIds.has('studio-claire@1@ep'),
+      true,
+      'successful request marks voice as registered',
+    );
+  } finally {
+    globalThis.fetch = originalFetch;
+    globalThis.AudioContext = origAudioContext;
+  }
+});
+
+test('RunPod registerVoices polls when serverless job is queued or in progress', async () => {
+  const originalFetch = globalThis.fetch;
+  let statusChecks = 0;
+
+  globalThis.fetch = async (url) => {
+    if (url.includes('/runsync')) {
+      return jsonResponse({ status: 'IN_QUEUE', id: 'reg-job-999' });
+    }
+    if (url.includes('/status/reg-job-999')) {
+      statusChecks++;
+      return jsonResponse({
+        status: statusChecks >= 2 ? 'COMPLETED' : 'IN_PROGRESS',
+        output: statusChecks >= 2 ? { registered: 1, voices: ['studio-dave@1@ep'] } : null,
+      });
+    }
+    return { ok: false, status: 404 };
+  };
+
+  try {
+    const engine = new RunPodServerlessEngine({
+      getApiKey: () => 'test-key',
+      getEndpointId: () => 'ep',
+    });
+    engine.isReady = true;
+    engine._getVoiceReferenceB64 = async () => 'SAMPLE_B64';
+
+    const res = await engine.registerVoices([{ id: 'studio-dave', renderRevision: 1 }]);
+    assert.equal(res.registered, 1);
+    assert.ok(statusChecks >= 2, 'polled status endpoint until completed');
+    assert.ok(engine._registeredVoiceIds.has('studio-dave@1@runpod:ep'));
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
