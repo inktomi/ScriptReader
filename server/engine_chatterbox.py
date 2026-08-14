@@ -73,6 +73,8 @@ class ChatterboxEngine:
                 break
 
         print(f"[ChatterboxEngine] Successfully loaded sessions: {list(self.sessions.keys())}")
+        active = {name: s.get_providers()[0] for name, s in self.sessions.items()}
+        print(f"[ChatterboxEngine] Active execution providers: {active}")
         required = {"embed_tokens", "speech_encoder", "language_model", "conditional_decoder"}
         missing = sorted(required.difference(self.sessions))
         if missing:
