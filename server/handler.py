@@ -102,6 +102,7 @@ def process_units(items: list) -> list:
                 "reference_audio_bytes": unit["reference_audio"],
                 "exaggeration": unit["exaggeration"],
                 "speed": unit["speed"],
+                "language_id": unit.get("language_id", "en"),
             }
             for _index, unit in chatterbox_units
         ]

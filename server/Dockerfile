@@ -34,6 +34,7 @@ RUN python download_weights.py
 # a worker that cannot get out.
 ENV HF_HUB_OFFLINE=1
 ENV TRANSFORMERS_OFFLINE=1
+ENV TRANSFORMERS_ATTN_IMPLEMENTATION=eager
 
 # This worker exists to use a GPU. It refuses to start on CPU rather than bill
 # at GPU rates for inference running orders of magnitude slower. Override only

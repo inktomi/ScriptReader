@@ -79,6 +79,11 @@ def normalize_item(item):
     if len(voice) > MAX_VOICE_ID_CHARS:
         raise InputError("voice identifier is too long")
 
+    raw_language = item.get("language_id") or item.get("language") or item.get("lang") or "en"
+    if not isinstance(raw_language, str) or not raw_language.strip():
+        raw_language = "en"
+    language_id = raw_language.strip().lower()
+
     return {
         "id": item.get("id"),
         "text": text,
@@ -92,6 +97,7 @@ def normalize_item(item):
             item.get("exaggeration"), name="exaggeration", default=0.5,
             minimum=0.0, maximum=1.0
         ),
+        "language_id": language_id,
         "reference_audio": _decode_reference(item.get("reference_audio_b64")),
     }
 
