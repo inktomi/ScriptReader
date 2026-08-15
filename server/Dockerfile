@@ -17,7 +17,8 @@ WORKDIR /app
 
 # Install Python requirements
 COPY requirements.txt .
-RUN pip install --no-cache-dir --break-system-packages -r requirements.txt && \
+RUN pip install --no-cache-dir --break-system-packages setuptools wheel numpy cython && \
+    pip install --no-cache-dir --break-system-packages --no-build-isolation -r requirements.txt && \
     pip uninstall -y torchvision || true
 
 # Register all nvidia pip libraries with system dynamic linker

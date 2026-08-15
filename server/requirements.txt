@@ -3,7 +3,7 @@ fastapi==0.141.1
 uvicorn[standard]==0.34.0
 pydantic==2.10.6
 torchaudio
-chatterbox-tts
+git+https://github.com/resemble-ai/chatterbox.git
 numpy>=1.26.0
 librosa
 scipy>=1.13.0
