@@ -118,6 +118,7 @@ class _BoundDecodeRunner:
 
             ortvalue_factory = ort.OrtValue.ortvalue_from_numpy
 
+        self.ortvalue_factory = ortvalue_factory
         self.session = session
         self.past_names = past_names
         self.input_names = [item.name for item in session.get_inputs()]
@@ -138,8 +139,10 @@ class _BoundDecodeRunner:
         binding = self.session.io_binding()
         inputs_embeds = np.asarray(inputs_embeds, dtype=self.float_dtype)
         attention_mask = np.asarray(attention_mask, dtype=np.int64)
-        binding.bind_cpu_input("inputs_embeds", inputs_embeds)
-        binding.bind_cpu_input("attention_mask", attention_mask)
+        inputs_ort = self.ortvalue_factory(inputs_embeds, "cuda", 0)
+        mask_ort = self.ortvalue_factory(attention_mask, "cuda", 0)
+        binding.bind_ortvalue_input("inputs_embeds", inputs_ort)
+        binding.bind_ortvalue_input("attention_mask", mask_ort)
         for name, value in zip(self.past_names, self.past):
             binding.bind_ortvalue_input(name, value)
         for name in self.output_names:
@@ -459,7 +462,20 @@ class ChatterboxEngine:
             position_ids = np.full((batch, 1), index + 1, dtype=np.int64)
             inputs_embeds = self._embed(next_token, position_ids, exaggeration).astype(float_dtype, copy=False)
             attention_mask = np.concatenate((attention_mask, np.ones((batch, 1), dtype=np.int64)), axis=1)
-            logits = np.asarray(runner.step(inputs_embeds, attention_mask)[:, -1, :], dtype=np.float32)
+            try:
+                step_logits = runner.step(inputs_embeds, attention_mask)
+            except Exception as error:
+                if isinstance(runner, _BoundDecodeRunner):
+                    print(f"[ChatterboxEngine] Device-resident step failed ({error}); switching to host runner")
+                    past_host = {
+                        name: (v.numpy() if hasattr(v, "numpy") else np.asarray(v))
+                        for name, v in zip(past_names, runner.past)
+                    }
+                    runner = _HostDecodeRunner(language_model, past_names, past_host)
+                    step_logits = runner.step(inputs_embeds, attention_mask)
+                else:
+                    raise
+            logits = np.asarray(step_logits[:, -1, :], dtype=np.float32)
 
         for row_index, done in enumerate(finished):
             if not done:
