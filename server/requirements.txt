@@ -2,11 +2,10 @@ runpod==1.12.0
 fastapi==0.141.1
 uvicorn[standard]==0.34.0
 pydantic==2.10.6
-transformers>=4.48.0
 torchaudio
-chatterbox-tts>=0.1.7
+chatterbox-tts
 numpy>=1.26.0
-librosa>=0.11.0
+librosa
 scipy>=1.13.0
 soundfile
 kokoro==0.9.4
