@@ -17,7 +17,7 @@ WORKDIR /app
 
 # Install Python requirements
 COPY requirements.txt .
-RUN pip install --no-cache-dir --break-system-packages setuptools wheel numpy cython && \
+RUN pip install --no-cache-dir --break-system-packages setuptools wheel numpy cython uv uv-build && \
     pip install --no-cache-dir --break-system-packages --no-build-isolation -r requirements.txt && \
     pip uninstall -y torchvision || true
 
