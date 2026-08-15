@@ -4,11 +4,11 @@ uvicorn[standard]==0.34.0
 pydantic==2.10.6
 transformers>=4.48.0
 torchaudio
-chatterbox-tts
-numpy
-scipy
+chatterbox-tts>=0.1.7
+numpy>=1.26.0
+librosa>=0.11.0
+scipy>=1.13.0
 soundfile
-librosa
 kokoro==0.9.4
 misaki[en]==0.9.4
 huggingface-hub>=0.29.0
