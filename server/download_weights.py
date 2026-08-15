@@ -1,3 +1,4 @@
+import gc
 import os
 import sys
 from huggingface_hub import snapshot_download
@@ -6,18 +7,13 @@ from huggingface_hub import snapshot_download
 def main():
     print("=== Pre-caching model weights for offline GPU inference ===")
 
-    print("1. Downloading Chatterbox Multilingual V3 PyTorch weights...")
+    print("1. Downloading Chatterbox Multilingual V3 PyTorch weights (sequential/low-memory)...")
     snapshot_download(
         repo_id="ResembleAI/chatterbox",
-        allow_patterns=[
-            "*.json",
-            "*.safetensors",
-            "*.pt",
-            "*.txt",
-            "*.model",
-        ],
+        max_workers=2,
     )
     print("Chatterbox Multilingual V3 weights cached successfully.")
+    gc.collect()
 
     print("2. Pre-warming Chatterbox pipeline...")
     try:
@@ -27,6 +23,8 @@ def main():
     except Exception as e:
         print(f"Chatterbox pipeline warmup notice (non-fatal): {e}")
 
+    gc.collect()
+
     # Kokoro goes into the Hugging Face cache.
     # KPipeline resolves through that cache, so pre-downloading and warming it
     # guarantees it will work under HF_HUB_OFFLINE. Every voice file is included.
@@ -34,8 +32,10 @@ def main():
     snapshot_download(
         repo_id="hexgrad/Kokoro-82M",
         allow_patterns=["config.json", "*.pth", "voices/*"],
+        max_workers=2,
     )
     print("Kokoro weights cached successfully.")
+    gc.collect()
 
     print("4. Pre-warming Kokoro pipeline (downloads the g2p dictionaries)...")
     try:
