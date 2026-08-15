@@ -50,8 +50,11 @@ class ChatterboxEngine:
 
         try:
             from chatterbox.mtl_tts import ChatterboxMultilingualTTS
-            self.model = ChatterboxMultilingualTTS.from_pretrained(device=self.device)
-            print("[ChatterboxEngine] Loaded ChatterboxMultilingualTTS successfully.")
+            try:
+                self.model = ChatterboxMultilingualTTS.from_pretrained(device=self.device, t3_model="v3")
+            except (TypeError, Exception):
+                self.model = ChatterboxMultilingualTTS.from_pretrained(device=self.device)
+            print("[ChatterboxEngine] Loaded ChatterboxMultilingualTTS V3 successfully.")
         except Exception as e:
             try:
                 from chatterbox.tts import ChatterboxTTS
