@@ -10,7 +10,17 @@ def main():
     print("1. Downloading Chatterbox Multilingual V3 PyTorch weights (sequential/low-memory)...")
     snapshot_download(
         repo_id="ResembleAI/chatterbox",
-        max_workers=2,
+        allow_patterns=[
+            "*.json",
+            "*.txt",
+            "*.model",
+            "*23lang*",
+            "*s3gen*",
+            "*tokenizer*",
+            "*encoder*",
+            "*.pt",
+        ],
+        max_workers=1,
     )
     print("Chatterbox Multilingual V3 weights cached successfully.")
     gc.collect()
@@ -32,7 +42,7 @@ def main():
     snapshot_download(
         repo_id="hexgrad/Kokoro-82M",
         allow_patterns=["config.json", "*.pth", "voices/*"],
-        max_workers=2,
+        max_workers=1,
     )
     print("Kokoro weights cached successfully.")
     gc.collect()
