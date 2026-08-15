@@ -29,6 +29,17 @@ ENV LD_LIBRARY_PATH=/usr/local/lib/python3.12/dist-packages/nvidia/cublas/lib:/u
 COPY download_weights.py .
 RUN python download_weights.py
 
+# Everything the worker reads is in the image now. Reaching the hub at run time
+# would only add a revision check to the cold-start path — and a failing one on
+# a worker that cannot get out.
+ENV HF_HUB_OFFLINE=1
+ENV TRANSFORMERS_OFFLINE=1
+
+# This worker exists to use a GPU. It refuses to start on CPU rather than bill
+# at GPU rates for inference running orders of magnitude slower. Override only
+# for a deliberate local CPU run.
+ENV SCRIPTREADER_REQUIRE_GPU=1
+
 # Copy application server files
 COPY engine_kokoro.py .
 COPY engine_chatterbox.py .

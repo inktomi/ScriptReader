@@ -212,6 +212,28 @@ smaller fast-local option. Studio Local is an explicit roughly 1.5 GB install,
 cached by the browser for later offline sessions; it is intended primarily for
 desktop browsers with WebGPU.
 
+### The RunPod worker
+
+`server/` builds the Serverless worker image. It is written for one card — the
+48 GB NVIDIA L40S — and takes that seriously: it loads the half-precision
+language model, decodes up to 32 lines as a single batch, and keeps the
+attention cache in GPU memory across decode steps rather than copying it back
+through host memory every token. A worker that cannot find a CUDA execution
+provider refuses to start instead of billing at GPU rates for CPU inference;
+set `SCRIPTREADER_REQUIRE_GPU=0` for a deliberate local CPU run.
+
+The endpoint's own configuration lives in `scripts/runpod-endpoint.mjs` rather
+than only in the RunPod console, because GPU selection there is a prioritised
+fallback list and an endpoint that merely asks for "48 GB" can be answered with
+a different card without saying so.
+
+```bash
+RUNPOD_API_KEY=... node scripts/runpod-endpoint.mjs
+```
+
+That prints the difference between the console and this repository; add
+`--apply` to write it.
+
 ## Privacy & Security
 
 Parsing is always local. Kokoro and Studio Local synthesis stay inside the

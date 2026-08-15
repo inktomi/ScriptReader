@@ -1,9 +1,23 @@
 import asyncio
 import base64
+import sys
+import types
 import unittest
 from pathlib import Path
+from unittest import mock
 
-from request_contract import (
+import numpy as np
+
+
+# Importing handler pulls in the engines, which must not require CUDA, PyTorch
+# or libsndfile just to check the request contract. Declared here as well as in
+# the engine tests so this file can be run on its own.
+sys.modules.setdefault("torch", types.SimpleNamespace(
+    cuda=types.SimpleNamespace(is_available=lambda: False)
+))
+sys.modules.setdefault("soundfile", types.SimpleNamespace())
+
+from request_contract import (  # noqa: E402
     InputError,
     MAX_BATCH_ITEMS,
     MAX_HTTP_REQUEST_BYTES,
@@ -123,6 +137,67 @@ class RequestContractTests(unittest.TestCase):
         })
         self.assertEqual(res_invalid["registered"], 0)
         self.assertIn("error", res_invalid)
+
+
+class FakeSoundFile:
+    @staticmethod
+    def write(buffer, audio, sample_rate, format=None, subtype=None):
+        buffer.write(b"RIFF" + len(audio).to_bytes(4, "little") + b"WAVE")
+
+
+class HandlerBatchTests(unittest.TestCase):
+    def test_chatterbox_lines_render_in_one_batched_engine_call(self):
+        import handler
+
+        recorded = []
+
+        class FakeChatterbox:
+            def generate_batch(self, items, max_new_tokens=None):
+                recorded.append(items)
+                return [np.full(2400, 0.5, dtype=np.float32), RuntimeError("this line failed")]
+
+        class FakeKokoro:
+            def generate(self, text, voice, speed):
+                return np.full(1200, 0.25, dtype=np.float32)
+
+        with mock.patch.object(handler, "get_chatterbox", FakeChatterbox), \
+             mock.patch.object(handler, "get_kokoro", FakeKokoro), \
+             mock.patch.object(handler, "sf", FakeSoundFile):
+            results = handler.process_units([
+                {"id": "a", "engine": "chatterbox", "text": "Alpha", "voice_id": "studio@1"},
+                {"id": "b", "engine": "kokoro", "text": "Bravo", "voice": "af_heart"},
+                {"id": "c", "engine": "chatterbox", "text": "Charlie", "voice_id": "studio@1"},
+                {"id": "d", "engine": "chatterbox", "text": "", "voice_id": "studio@1"},
+            ])
+
+        # Both Chatterbox lines reach the engine as one batch, and the Kokoro
+        # line in between does not split them apart.
+        self.assertEqual(len(recorded), 1)
+        self.assertEqual([item["text"] for item in recorded[0]], ["Alpha", "Charlie"])
+
+        # Results stay in request order regardless of how they were routed.
+        self.assertEqual([result["id"] for result in results], ["a", "b", "c", "d"])
+        self.assertTrue(results[0]["audio_base64"])
+        self.assertTrue(results[1]["audio_base64"])
+        self.assertIn("this line failed", results[2]["error"])
+        self.assertIn("text must not be empty", results[3]["error"])
+
+    def test_single_unit_path_shares_the_batch_implementation(self):
+        import handler
+
+        class FakeChatterbox:
+            def generate_batch(self, items, max_new_tokens=None):
+                return [np.full(2400, 0.5, dtype=np.float32)]
+
+        with mock.patch.object(handler, "get_chatterbox", FakeChatterbox), \
+             mock.patch.object(handler, "sf", FakeSoundFile):
+            result = handler.process_single_unit(
+                {"id": "solo", "engine": "chatterbox", "text": "Alone", "voice_id": "studio@1"}
+            )
+
+        self.assertEqual(result["id"], "solo")
+        self.assertEqual(result["sample_rate"], 24000)
+        self.assertTrue(result["audio_base64"])
 
 
 if __name__ == "__main__":

@@ -1556,6 +1556,20 @@ export class ScreenplayAudioManager {
       });
     };
 
+    // How much work to hand the engine beyond the group being awaited. A remote
+    // engine that batches across a fleet only reaches full speed once its queue
+    // holds enough units to form several concurrent requests — awaiting one
+    // group of six left three GPU workers behind a single request in flight.
+    // Progress and the playable-runway check still advance every group, so the
+    // bar and the moment playback can start are unaffected. A local engine
+    // declares no batching and gets exactly the behaviour it had before.
+    const engineCapabilities = engine.capabilities || {};
+    const lookahead = Math.max(
+      0,
+      Math.max(1, engineCapabilities.concurrency || 1) * Math.max(1, engineCapabilities.batchSize || 1) -
+        STUDIO_PREWARM_BATCH_UNITS,
+    );
+
     publish(completed < units.length);
     for (
       let offset = 0;
@@ -1566,6 +1580,18 @@ export class ScreenplayAudioManager {
         .slice(offset, offset + STUDIO_PREWARM_BATCH_UNITS)
         .filter((unit) => !this._preparedStudioKeys.has(unit.key));
       if (batchUnits.length === 0) continue;
+
+      // Queue the units after this group without waiting on them. They carry a
+      // later priority, so the group being awaited is still served first, and
+      // the engine dedupes by key when the loop reaches them.
+      const lookaheadStart = offset + STUDIO_PREWARM_BATCH_UNITS;
+      for (let ahead = lookaheadStart; ahead < Math.min(units.length, lookaheadStart + lookahead); ahead++) {
+        const unit = units[ahead];
+        if (this._preparedStudioKeys.has(unit.key)) continue;
+        this._engineForUnit(unit)
+          .request(unit, ahead)
+          ?.catch(() => {});
+      }
 
       const batchStartedAt = Date.now();
       const results = await Promise.allSettled(

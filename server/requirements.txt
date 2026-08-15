@@ -3,12 +3,16 @@ fastapi==0.141.1
 uvicorn[standard]==0.34.0
 pydantic==2.10.6
 transformers==4.49.0
-onnxruntime-gpu==1.28.0
-nvidia-cuda-runtime==13.3.29
-nvidia-cublas==13.6.1.10
-nvidia-cudnn-cu13==9.24.0.43
-nvidia-cufft==12.3.0.29
-nvidia-curand==10.4.3.29
+
+# The CUDA libraries come from onnxruntime-gpu's own extras, deliberately.
+# Hand-pinning nvidia-* here collided with the base image: torch 2.13.0 requires
+# nvidia-cudnn-cu13==9.20.0.48, and an explicit 9.24 pin installs over it with
+# only a warning, leaving torch running against a cuDNN it was not built for.
+# The extras ask for `nvidia-cudnn-cu13~=9.0`, which the already-installed
+# version satisfies, so pip leaves torch's copy alone and adds only what ORT
+# needs on top (including nvidia-cuda-nvrtc, which the old list omitted).
+onnxruntime-gpu[cuda,cudnn]==1.28.0
+
 numpy==1.26.4
 scipy==1.15.2
 soundfile==0.13.1

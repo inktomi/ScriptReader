@@ -2,9 +2,33 @@ import os
 import torch
 import numpy as np
 
+
+def _requires_gpu():
+    return os.environ.get("SCRIPTREADER_REQUIRE_GPU", "1").strip().lower() not in {"0", "false", "no", ""}
+
+
 class KokoroEngine:
-    def __init__(self, models_dir="/models/kokoro"):
+    """Kokoro narration.
+
+    Weights are not read from a directory: KPipeline resolves them through the
+    Hugging Face cache, which the image warms at build time. That is why there
+    is no models_dir here — passing one only ever looked like it did something.
+    """
+
+    def __init__(self, require_gpu=None):
+        self._require_gpu = _requires_gpu() if require_gpu is None else require_gpu
         self.device = "cuda" if torch.cuda.is_available() else "cpu"
+        if self.device != "cuda" and self._require_gpu:
+            raise RuntimeError(
+                "torch reports no CUDA device. This worker bills at GPU rates "
+                "and will not quietly run Kokoro on CPU. Set "
+                "SCRIPTREADER_REQUIRE_GPU=0 to allow a deliberate CPU run."
+            )
+        if self.device == "cuda":
+            # Ada runs fp32 matmuls through the tensor cores at TF32 precision,
+            # which is ample for an 82M vocoder and several times faster.
+            torch.backends.cuda.matmul.allow_tf32 = True
+            torch.backends.cudnn.allow_tf32 = True
         self.sample_rate = 24000
         self.pipelines = {}
         print(f"[KokoroEngine] Initialized on device: {self.device}")
@@ -15,6 +39,8 @@ class KokoroEngine:
                 from kokoro import KPipeline
                 self.pipelines[lang_code] = KPipeline(lang_code=lang_code, device=self.device)
             except Exception as e:
+                if self._require_gpu:
+                    raise
                 print(f"[KokoroEngine] Failed to initialize KPipeline with device={self.device}, falling back to cpu: {e}")
                 from kokoro import KPipeline
                 self.pipelines[lang_code] = KPipeline(lang_code=lang_code, device='cpu')
@@ -29,12 +55,18 @@ class KokoroEngine:
         pipeline = self._get_pipeline(lang_code)
 
         chunks = []
-        generator = pipeline(text.strip(), voice=voice, speed=speed, split_pattern=r'\n+')
-        for _, _, audio in generator:
-            if audio is not None and len(audio) > 0:
-                chunks.append(audio)
+        with torch.inference_mode():
+            generator = pipeline(text.strip(), voice=voice, speed=speed, split_pattern=r'\n+')
+            for _, _, audio in generator:
+                if audio is not None and len(audio) > 0:
+                    chunks.append(audio)
 
         if not chunks:
             return np.zeros(0, dtype=np.float32)
 
         return np.concatenate(chunks).astype(np.float32)
+
+    def warmup(self, voice: str = "af_heart"):
+        """Build the pipeline and run one line before any job arrives."""
+        audio = self.generate("Warm up.", voice=voice, speed=1.0)
+        print(f"[KokoroEngine] Warmup complete ({len(audio)} samples)")

@@ -7,7 +7,11 @@ import { ENGINE_IDS } from './engine-contract.js';
 
 const MAX_CACHED_SECONDS = 1500;
 const CONCURRENCY = 6;
-const MAX_BATCH_SIZE = 6;
+// The worker renders a whole batch in one pass on the GPU, where the cost is
+// dominated by streaming the model's weights rather than by the number of
+// lines. Sending six at a time asked a 48GB card to do a fraction of what it
+// can hold.
+const MAX_BATCH_SIZE = 24;
 const MAX_ATTEMPTS = 3;
 const RETRYABLE_SUBMISSION_STATUS = new Set([429]);
 const RETRYABLE_POLL_STATUS = new Set([408, 409, 429, 500, 502, 503, 504]);
@@ -16,6 +20,21 @@ const MAX_RUNPOD_BATCH_RESPONSE_BYTES = 16 * 1024 * 1024;
 const MAX_AUDIO_BASE64_CHARS = 6 * 1024 * 1024;
 const MAX_AUDIO_SECONDS = 60;
 const MAX_REFERENCE_CACHE_ENTRIES = 32;
+// A cold worker pulls a multi-gigabyte image and loads its model before it can
+// answer anything, and a queued job waits behind however many are ahead of it.
+// The old fixed budget of forty polls gave up after a minute and threw away
+// audio that had already been paid for.
+const POLL_INTERVAL_MS = 1500;
+const MAX_POLL_INTERVAL_MS = 5000;
+const SINGLE_JOB_DEADLINE_MS = 5 * 60 * 1000;
+const BATCH_JOB_DEADLINE_MS = 20 * 60 * 1000;
+// The speaker encoder conditions on a few seconds. Trimming matters now that
+// the reference travels with every request instead of being left on one worker.
+const MAX_REFERENCE_SECONDS = 10;
+// Keeps a batch under the worker's request body limit when a scene has many
+// distinct speakers; a request refused outright costs a round trip and renders
+// nothing.
+const MAX_BATCH_REFERENCE_CHARS = 5 * 1024 * 1024;
 
 function sleep(ms, signal) {
   return new Promise((resolve, reject) => {
@@ -97,11 +116,21 @@ export class RunPodServerlessEngine {
     getEndpointId = loadRunPodEndpointId,
     hasConsent = hasCloudConsent,
     renderStore = chatterboxRenderStore,
+    // Poll pacing is endpoint policy: an endpoint configured with a longer
+    // worker execution timeout wants a longer client deadline to match.
+    pollIntervalMs = POLL_INTERVAL_MS,
+    maxPollIntervalMs = MAX_POLL_INTERVAL_MS,
+    singleJobDeadlineMs = SINGLE_JOB_DEADLINE_MS,
+    batchJobDeadlineMs = BATCH_JOB_DEADLINE_MS,
   } = {}) {
     this.getApiKey = getApiKey;
     this.getEndpointId = getEndpointId;
     this.hasConsent = hasConsent;
     this.renderStore = renderStore;
+    this.pollIntervalMs = pollIntervalMs;
+    this.maxPollIntervalMs = maxPollIntervalMs;
+    this.singleJobDeadlineMs = singleJobDeadlineMs;
+    this.batchJobDeadlineMs = batchJobDeadlineMs;
 
     this.isReady = false;
     this.isLoading = false;
@@ -133,6 +162,9 @@ export class RunPodServerlessEngine {
       nativeSampleRate: 24000,
       maxChunkChars: 350,
       concurrency: CONCURRENCY,
+      // Declared so a caller feeding this engine knows how much work it has to
+      // hand over before the remote fleet is actually busy.
+      batchSize: MAX_BATCH_SIZE,
       onUnavailable: 'error',
     };
   }
@@ -260,7 +292,9 @@ export class RunPodServerlessEngine {
     try {
       const sample = await getChatterboxVoiceSample(voiceId);
       if (sample && sample.length > 0) {
-        const b64 = float32ToWavBase64(sample, 24000);
+        const maxSamples = MAX_REFERENCE_SECONDS * 24000;
+        const trimmed = sample.length > maxSamples ? sample.subarray(0, maxSamples) : sample;
+        const b64 = float32ToWavBase64(trimmed, 24000);
         this._voiceBase64Cache.set(cacheId, b64);
         while (this._voiceBase64Cache.size > MAX_REFERENCE_CACHE_ENTRIES) {
           this._voiceBase64Cache.delete(this._voiceBase64Cache.keys().next().value);
@@ -421,13 +455,27 @@ export class RunPodServerlessEngine {
     return { registered: registrationOutput?.registered ?? payloadItems.length };
   }
 
-  async _pollRegistrationJob(endpointId, jobId, apiKey, signal = null) {
+  /**
+   * Wait for a submitted job, bounded by a wall-clock deadline rather than a
+   * poll count.
+   *
+   * A worker that is cold, or a job queued behind others, routinely takes
+   * longer than a fixed number of polls allows. Giving up did not cancel the
+   * job — it kept running, kept billing, and its audio was discarded.
+   */
+  async _pollJobOutput(endpointId, jobId, apiKey, { signal, deadlineMs, maxBytes, tooLargeError, label }) {
     const statusUrl = `https://api.runpod.ai/v2/${endpointId}/status/${jobId}`;
-    for (let i = 0; i < 40; i++) {
+    const deadline = Date.now() + deadlineMs;
+    let interval = this.pollIntervalMs;
+    let firstPoll = true;
+
+    while (Date.now() < deadline) {
       if (signal?.aborted) throw new DOMException('aborted', 'AbortError');
-      if (i > 0) {
-        await sleep(1500, signal);
+      if (!firstPoll) {
+        await sleep(interval, signal);
+        interval = Math.min(this.maxPollIntervalMs, Math.round(interval * 1.25));
       }
+      firstPoll = false;
 
       const res = await fetch(statusUrl, {
         headers: { Authorization: `Bearer ${apiKey}` },
@@ -445,11 +493,7 @@ export class RunPodServerlessEngine {
         }
         throw new Error(`RunPod status check failed with HTTP ${res.status}`);
       }
-      const data = await readBoundedResponseJson(res, {
-        maxBytes: MAX_RUNPOD_RESPONSE_BYTES,
-        signal,
-        tooLargeError: () => new Error('RunPod returned an oversized registration response.'),
-      });
+      const data = await readBoundedResponseJson(res, { maxBytes, signal, tooLargeError });
 
       if (data.status === 'COMPLETED') {
         if (data.output?.error) {
@@ -458,13 +502,23 @@ export class RunPodServerlessEngine {
         return data.output || {};
       }
       if (data.status === 'FAILED' || data.status === 'CANCELLED' || data.status === 'TIMED_OUT') {
-        throw new Error(data.error || `RunPod registration task ${data.status.toLowerCase()}`);
+        throw new Error(data.error || `RunPod ${label} ${data.status.toLowerCase()}`);
       }
     }
-    throw new Error('RunPod voice registration job polling timed out');
+    throw new Error(`RunPod ${label} polling timed out`);
   }
 
-  async _synthesize(unit, signal) {
+  async _pollRegistrationJob(endpointId, jobId, apiKey, signal = null) {
+    return this._pollJobOutput(endpointId, jobId, apiKey, {
+      signal,
+      deadlineMs: this.singleJobDeadlineMs,
+      maxBytes: MAX_RUNPOD_RESPONSE_BYTES,
+      tooLargeError: () => new Error('RunPod returned an oversized registration response.'),
+      label: 'voice registration job',
+    });
+  }
+
+  async _synthesize(unit, signal, allowReferenceRetry = true) {
     if (!this.hasConsent()) {
       const error = new Error('Cloud voice consent was revoked.');
       error.code = 'no_consent';
@@ -484,16 +538,16 @@ export class RunPodServerlessEngine {
 
     const voiceCacheId = unit.voiceCacheId || unit.voiceId;
     let refB64 = null;
-    let needsRegistration = false;
     if (!isKokoro) {
-      if (this._registeredVoiceIds.has(voiceCacheId)) {
-        refB64 = null;
-      } else {
-        refB64 = await this._getVoiceReferenceB64(unit.voiceId, voiceCacheId);
-        if (!refB64) {
-          throw new Error('This Studio voice is missing its reference recording. Add it again in casting.');
-        }
-        needsRegistration = true;
+      // The worker's speaker cache lives in one process's memory and RunPod
+      // offers no affinity, so with a fleet of three roughly two requests in
+      // three land on a worker that has never seen this voice. Withholding the
+      // reference to save an upload bought a failed job and a retry for it —
+      // both billed. It now travels with every request, trimmed to the few
+      // seconds the encoder actually conditions on.
+      refB64 = await this._getVoiceReferenceB64(unit.voiceId, voiceCacheId);
+      if (!refB64) {
+        throw new Error('This Studio voice is missing its reference recording. Add it again in casting.');
       }
     }
 
@@ -556,11 +610,14 @@ export class RunPodServerlessEngine {
     });
     let audioB64 = '';
 
+    // The reference now ships with every request, so this should not happen.
+    // It survives as one retry against a worker whose cache was evicted mid
+    // flight; bounding it keeps a persistent worker-side fault from recursing.
     if (data.status === 'COMPLETED') {
       if (data.output?.error) {
-        if (data.output.error.includes('has no reference recording') && !refB64) {
+        if (data.output.error.includes('has no reference recording') && allowReferenceRetry) {
           this._registeredVoiceIds.delete(voiceCacheId);
-          return this._synthesize(unit, signal);
+          return this._synthesize(unit, signal, false);
         }
         throw new Error(data.output.error);
       }
@@ -569,9 +626,9 @@ export class RunPodServerlessEngine {
       try {
         audioB64 = await this._pollJob(endpointId, data.id, key, signal);
       } catch (pollErr) {
-        if (pollErr.message?.includes('has no reference recording') && !refB64) {
+        if (pollErr.message?.includes('has no reference recording') && allowReferenceRetry) {
           this._registeredVoiceIds.delete(voiceCacheId);
-          return this._synthesize(unit, signal);
+          return this._synthesize(unit, signal, false);
         }
         throw pollErr;
       }
@@ -602,53 +659,21 @@ export class RunPodServerlessEngine {
       throw new Error('RunPod worker returned invalid, empty, or silent audio.');
     }
 
-    if (needsRegistration) {
+    if (refB64) {
       this._registeredVoiceIds.add(voiceCacheId);
     }
     return buffer;
   }
 
   async _pollJob(endpointId, jobId, apiKey, signal = null) {
-    const statusUrl = `https://api.runpod.ai/v2/${endpointId}/status/${jobId}`;
-    for (let i = 0; i < 40; i++) {
-      if (signal?.aborted) throw new DOMException('aborted', 'AbortError');
-      if (i > 0) {
-        await sleep(1500, signal);
-      }
-
-      const res = await fetch(statusUrl, {
-        headers: { Authorization: `Bearer ${apiKey}` },
-        signal,
-      });
-
-      if (!res.ok) {
-        if (RETRYABLE_POLL_STATUS.has(res.status)) {
-          try {
-            await res.body?.cancel?.();
-          } catch (_) {
-            /* preserve HTTP status */
-          }
-          continue;
-        }
-        throw new Error(`RunPod status check failed with HTTP ${res.status}`);
-      }
-      const data = await readBoundedResponseJson(res, {
-        maxBytes: MAX_RUNPOD_RESPONSE_BYTES,
-        signal,
-        tooLargeError: () => new Error('RunPod returned too much audio data.'),
-      });
-
-      if (data.status === 'COMPLETED') {
-        if (data.output?.error) {
-          throw new Error(data.output.error);
-        }
-        return data.output?.audio_base64 || '';
-      }
-      if (data.status === 'FAILED' || data.status === 'CANCELLED' || data.status === 'TIMED_OUT') {
-        throw new Error(data.error || `RunPod worker task ${data.status.toLowerCase()}`);
-      }
-    }
-    throw new Error('RunPod job polling timed out');
+    const output = await this._pollJobOutput(endpointId, jobId, apiKey, {
+      signal,
+      deadlineMs: this.singleJobDeadlineMs,
+      maxBytes: MAX_RUNPOD_RESPONSE_BYTES,
+      tooLargeError: () => new Error('RunPod returned too much audio data.'),
+      label: 'worker task',
+    });
+    return output?.audio_base64 || '';
   }
 
   async _synthesizeBatch(items, signal = null) {
@@ -662,7 +687,9 @@ export class RunPodServerlessEngine {
 
     const payloadBatch = [];
     const seenVoicesInBatch = new Set();
-    for (const item of items) {
+    let referenceChars = 0;
+    for (let itemIndex = 0; itemIndex < items.length; itemIndex++) {
+      const item = items[itemIndex];
       const unit = item.unit;
       const voiceIdStr = String(unit.voiceId || '');
       const isKokoro =
@@ -684,6 +711,15 @@ export class RunPodServerlessEngine {
           if (!refB64) {
             throw new Error('This Studio voice is missing its reference recording. Add it again in casting.');
           }
+          // A scene with many distinct speakers can outgrow the worker's body
+          // limit. Splitting here renders both halves instead of having the
+          // whole request refused.
+          if (itemIndex > 0 && referenceChars + refB64.length > MAX_BATCH_REFERENCE_CHARS) {
+            await this._synthesizeBatch(items.slice(0, itemIndex), signal);
+            await this._synthesizeBatch(items.slice(itemIndex), signal);
+            return;
+          }
+          referenceChars += refB64.length;
           seenVoicesInBatch.add(voiceCacheId);
         }
       }
@@ -703,10 +739,15 @@ export class RunPodServerlessEngine {
     const payload = { input: { batch: payloadBatch } };
     let res = null;
 
+    // Submitted asynchronously rather than through /runsync: RunPod keeps a
+    // /runsync result for one minute and a /run result for thirty. A whole
+    // screenplay's batch regularly outlives the shorter window, and losing the
+    // result of a job that has already been paid for is the one outcome worth
+    // engineering against.
     for (let attempts = 1; attempts <= MAX_ATTEMPTS; attempts++) {
       if (signal?.aborted) throw new DOMException('aborted', 'AbortError');
       try {
-        res = await fetch(`https://api.runpod.ai/v2/${endpointId}/runsync`, {
+        res = await fetch(`https://api.runpod.ai/v2/${endpointId}/run`, {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
@@ -834,46 +875,14 @@ export class RunPodServerlessEngine {
   }
 
   async _pollBatchJob(endpointId, jobId, apiKey, signal) {
-    const statusUrl = `https://api.runpod.ai/v2/${endpointId}/status/${jobId}`;
-    for (let i = 0; i < 40; i++) {
-      if (signal?.aborted) throw new DOMException('aborted', 'AbortError');
-      if (i > 0) {
-        await sleep(1500, signal);
-      }
-
-      const res = await fetch(statusUrl, {
-        headers: { Authorization: `Bearer ${apiKey}` },
-        signal,
-      });
-
-      if (!res.ok) {
-        if (RETRYABLE_POLL_STATUS.has(res.status)) {
-          try {
-            await res.body?.cancel?.();
-          } catch (_) {
-            /* preserve HTTP status */
-          }
-          continue;
-        }
-        throw new Error(`RunPod status check failed with HTTP ${res.status}`);
-      }
-      const data = await readBoundedResponseJson(res, {
-        maxBytes: MAX_RUNPOD_BATCH_RESPONSE_BYTES,
-        signal,
-        tooLargeError: () => new Error('RunPod returned too much audio data.'),
-      });
-
-      if (data.status === 'COMPLETED') {
-        if (data.output?.error) {
-          throw new Error(data.output.error);
-        }
-        return data.output?.batch_results || data.output?.results || [];
-      }
-      if (data.status === 'FAILED' || data.status === 'CANCELLED' || data.status === 'TIMED_OUT') {
-        throw new Error(data.error || `RunPod batch task ${data.status.toLowerCase()}`);
-      }
-    }
-    throw new Error('RunPod batch job polling timed out');
+    const output = await this._pollJobOutput(endpointId, jobId, apiKey, {
+      signal,
+      deadlineMs: this.batchJobDeadlineMs,
+      maxBytes: MAX_RUNPOD_BATCH_RESPONSE_BYTES,
+      tooLargeError: () => new Error('RunPod returned too much audio data.'),
+      label: 'batch task',
+    });
+    return output?.batch_results || output?.results || [];
   }
 
   async _processBatch(batchItems) {

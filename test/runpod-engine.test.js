@@ -705,13 +705,15 @@ test('RunPod _loadOrSynthesize bypasses and replaces corrupt silent renders from
   assert.equal(writes[0].key, 'corrupt-line');
 });
 
-test('RunPod engine dynamically micro-batches multiple queued units into a single runsync payload', async () => {
+test('RunPod engine micro-batches queued units into a single asynchronous /run payload', async () => {
   const originalFetch = globalThis.fetch;
   const requests = [];
+  const urls = [];
   const validAudioB64 = 'UklGRigAAABXQVZFZm10IBAAAAABAAEARKwAAIhYAQACABAAZGF0YQAAAAA=';
 
   globalThis.fetch = async (url, options) => {
-    if (url.includes('/runsync')) {
+    urls.push(String(url));
+    if (String(url).endsWith('/run')) {
       const body = JSON.parse(options.body);
       requests.push(body);
       const batchItems = body.input.batch || [];
@@ -752,6 +754,12 @@ test('RunPod engine dynamically micro-batches multiple queued units into a singl
 
     assert.ok(b1 && b2 && b3);
     assert.equal(requests.length, 1, 'all 3 queued units must be bundled into 1 network request');
+    // /runsync discards a result one minute after the job completes; /run keeps
+    // it for thirty, which is what a whole-screenplay batch needs.
+    assert.ok(
+      urls.every((url) => !url.includes('/runsync')),
+      'a batch render must not be submitted synchronously',
+    );
     assert.equal(requests[0].input.batch.length, 3);
     assert.equal(requests[0].input.batch[0].id, 'unit-1');
     assert.equal(requests[0].input.batch[1].id, 'unit-2');
@@ -762,7 +770,7 @@ test('RunPod engine dynamically micro-batches multiple queued units into a singl
   }
 });
 
-test('RunPod voice registration sends reference audio only once and omits it on subsequent requests', async () => {
+test('RunPod carries reference audio on every request because workers do not share a cache', async () => {
   const originalFetch = globalThis.fetch;
   const payloads = [];
   const validAudioB64 = 'UklGRigAAABXQVZFZm10IBAAAAABAAEARKwAAIhYAQACABAAZGF0YQAAAAA=';
@@ -802,12 +810,16 @@ test('RunPod voice registration sends reference audio only once and omits it on 
       'first request includes reference audio',
     );
 
+    // The worker's speaker cache is per-process memory and RunPod routes each
+    // request independently, so a second request that omitted the reference
+    // would fail on any worker but the one that answered the first — a billed
+    // job plus a billed retry, for every voice, on every worker.
     await engine._synthesize(unit2, new AbortController().signal);
     assert.equal(payloads.length, 2);
     assert.equal(
       payloads[1].input.reference_audio_b64,
-      null,
-      'subsequent request for registered voice omits reference audio payload',
+      'SAMPLE_BASE64_AUDIO',
+      'a repeat request still carries the reference for whichever worker answers it',
     );
   } finally {
     globalThis.fetch = originalFetch;
@@ -1131,5 +1143,150 @@ test('RunPod _synthesize automatically recovers when asynchronously polled job r
   } finally {
     globalThis.fetch = originalFetch;
     globalThis.AudioContext = origAudioContext;
+  }
+});
+
+const VALID_AUDIO_B64 = 'UklGRigAAABXQVZFZm10IBAAAAABAAEARKwAAIhYAQACABAAZGF0YQAAAAA=';
+
+function batchItem(engine, key, voiceCacheId) {
+  const item = {
+    unit: { key, text: `Line ${key}`, voiceId: `studio-${key}`, voiceCacheId },
+    controller: new AbortController(),
+    generation: engine.generation,
+    promise: null,
+    resolved: null,
+    rejected: null,
+  };
+  item.resolve = (buffer) => {
+    item.resolved = buffer;
+  };
+  item.reject = (error) => {
+    item.rejected = error;
+  };
+  return item;
+}
+
+function stubAudioContext() {
+  const original = globalThis.AudioContext;
+  globalThis.AudioContext = class {
+    async decodeAudioData() {
+      return { duration: 1.0, getChannelData: () => new Float32Array([0.1, -0.1, 0.2]), sampleRate: 24000 };
+    }
+  };
+  return () => {
+    globalThis.AudioContext = original;
+  };
+}
+
+/**
+ * Reference audio now travels with every request, so a scene with many distinct
+ * speakers can outgrow the worker's request body limit. The batch has to split
+ * rather than be refused whole.
+ */
+test('RunPod splits a batch whose reference audio would exceed the worker body limit', async () => {
+  const originalFetch = globalThis.fetch;
+  const restoreAudio = stubAudioContext();
+  const batchSizes = [];
+
+  globalThis.fetch = async (_url, options) => {
+    const body = JSON.parse(options.body);
+    if (!body.input?.batch) return { ok: false, status: 404 };
+    batchSizes.push(body.input.batch.length);
+    return jsonResponse({
+      status: 'COMPLETED',
+      output: {
+        batch_results: body.input.batch.map((entry) => ({
+          id: entry.id,
+          audio_base64: VALID_AUDIO_B64,
+          sample_rate: 24000,
+          duration: 1.0,
+        })),
+      },
+    });
+  };
+
+  try {
+    const engine = new RunPodServerlessEngine({
+      getApiKey: () => 'test-key',
+      getEndpointId: () => 'test-endpoint',
+      renderStore: null,
+    });
+    engine.isReady = true;
+    engine._getVoiceReferenceB64 = async () => 'A'.repeat(3 * 1024 * 1024);
+
+    const items = [
+      batchItem(engine, 'u1', 'alice@1'),
+      batchItem(engine, 'u2', 'bob@1'),
+      batchItem(engine, 'u3', 'carol@1'),
+    ];
+    await engine._synthesizeBatch(items, null);
+
+    assert.ok(batchSizes.length > 1, 'an oversized batch must be split across requests');
+    assert.equal(
+      batchSizes.reduce((sum, size) => sum + size, 0),
+      items.length,
+      'splitting must not drop or duplicate a line',
+    );
+    for (const item of items) {
+      assert.ok(item.resolved, `${item.unit.key} should have resolved`);
+      assert.equal(item.rejected, null);
+    }
+  } finally {
+    globalThis.fetch = originalFetch;
+    restoreAudio();
+  }
+});
+
+/**
+ * A cold worker plus a queue ahead of the job routinely exceeded the old fixed
+ * budget of forty polls. Giving up did not cancel the job: it kept running,
+ * kept billing, and its audio was discarded.
+ */
+test('RunPod keeps polling a slow batch well past the old forty-poll ceiling', async () => {
+  const originalFetch = globalThis.fetch;
+  let polls = 0;
+
+  globalThis.fetch = async (url) => {
+    if (String(url).endsWith('/run')) return jsonResponse({ status: 'IN_QUEUE', id: 'slow-job' });
+    if (String(url).includes('/status/slow-job')) {
+      polls++;
+      if (polls < 60) return jsonResponse({ status: 'IN_PROGRESS' });
+      return jsonResponse({ status: 'COMPLETED', output: { batch_results: [{ id: 'u1' }] } });
+    }
+    return { ok: false, status: 404 };
+  };
+
+  try {
+    const engine = new RunPodServerlessEngine({
+      getApiKey: () => 'test-key',
+      getEndpointId: () => 'test-endpoint',
+      pollIntervalMs: 0,
+      maxPollIntervalMs: 0,
+      batchJobDeadlineMs: 60_000,
+    });
+    const results = await engine._pollBatchJob('test-endpoint', 'slow-job', 'test-key', null);
+
+    assert.equal(polls, 60);
+    assert.deepEqual(results, [{ id: 'u1' }]);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('RunPod polling still gives up at its deadline rather than waiting forever', async () => {
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async () => jsonResponse({ status: 'IN_PROGRESS' });
+
+  try {
+    const engine = new RunPodServerlessEngine({
+      getApiKey: () => 'test-key',
+      getEndpointId: () => 'test-endpoint',
+      pollIntervalMs: 1,
+      maxPollIntervalMs: 1,
+      batchJobDeadlineMs: 30,
+    });
+    await assert.rejects(engine._pollBatchJob('test-endpoint', 'stuck-job', 'test-key', null), /polling timed out/);
+  } finally {
+    globalThis.fetch = originalFetch;
   }
 });

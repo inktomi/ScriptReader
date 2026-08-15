@@ -1032,3 +1032,78 @@ test('RunPod and Studio prewarm cleanly skip unspeakable parentheticals without 
   assert.equal(manager.renderStatus.completed, 3);
   assert.equal(manager.renderStatus.total, 3);
 });
+
+/**
+ * A batching remote engine only reaches full speed once its queue holds enough
+ * units to form several concurrent requests. Awaiting a single group of six
+ * left a fleet of GPU workers idle behind one request in flight, so the prewarm
+ * loop now queues further groups ahead of the one it is waiting on.
+ */
+function prewarmHarness(capabilities, lineCount) {
+  const manager = new ScreenplayAudioManager();
+  manager.engineId = ENGINE_IDS.RUNPOD;
+  const requested = [];
+  const pending = [];
+
+  manager.engine = fakeEngine({
+    capabilities: { id: ENGINE_IDS.RUNPOD, metered: false, ...capabilities },
+    request(unit) {
+      requested.push(unit.key);
+      return new Promise((resolve) => {
+        pending.push(() => resolve({ duration: 2 }));
+      });
+    },
+  });
+  manager.scriptElements = Array.from({ length: lineCount }, (_, index) => ({
+    type: 'DIALOGUE',
+    character: 'VALENTINE',
+    text: `Line ${index}`,
+  }));
+  manager._unitsForLine = (line) =>
+    line < lineCount
+      ? [{ key: `unit-${line}`, estimatedDuration: 2, leadPause: 0, engineId: ENGINE_IDS.RUNPOD }]
+      : null;
+
+  // Requests arrive in waves, so releasing one snapshot is not enough to finish.
+  const drain = async (prewarm) => {
+    let settled = false;
+    const done = prewarm.then(() => {
+      settled = true;
+    });
+    for (let guard = 0; !settled && guard < 200; guard++) {
+      for (const resolve of pending.splice(0)) resolve();
+      await new Promise((resolve) => setImmediate(resolve));
+    }
+    return done;
+  };
+
+  return { manager, requested, drain };
+}
+
+test('a batching engine is handed more than one request worth of work at a time', async () => {
+  const { manager, requested, drain } = prewarmHarness({ concurrency: 6, batchSize: 24 }, 40);
+
+  const prewarm = manager._queueStudioPrewarm(manager.engine, manager.prewarmGeneration);
+  await new Promise((resolve) => setImmediate(resolve));
+
+  assert.ok(
+    requested.length > 6,
+    `expected the queue to be filled past the awaited group, saw ${requested.length} requests`,
+  );
+  assert.equal(requested.length, 40, 'every unit inside the lookahead window is queued up front');
+
+  await drain(prewarm);
+  assert.equal(manager.renderStatus.completed, 40);
+});
+
+test('a non-batching engine still receives exactly one group at a time', async () => {
+  const { manager, requested, drain } = prewarmHarness({ concurrency: 1 }, 40);
+
+  const prewarm = manager._queueStudioPrewarm(manager.engine, manager.prewarmGeneration);
+  await new Promise((resolve) => setImmediate(resolve));
+
+  assert.equal(requested.length, 6, 'a local engine must not be flooded with the whole script');
+
+  await drain(prewarm);
+  assert.equal(manager.renderStatus.completed, 40);
+});
