@@ -93,10 +93,7 @@ class _HostDecodeRunner:
 
     def step(self, inputs_embeds, attention_mask):
         values = {"inputs_embeds": inputs_embeds, "attention_mask": attention_mask, **self.past}
-        missing = [name for name in self.input_names if name not in values]
-        if missing:
-            raise RuntimeError(f"Model input contract changed; missing values for: {', '.join(missing)}")
-        outputs = self.session.run(None, {name: values[name] for name in self.input_names})
+        outputs = self.session.run(None, ChatterboxEngine._feed(self.session, values))
         logits, present = outputs[0], outputs[1:]
         if len(present) != len(self.past_names):
             raise RuntimeError("Chatterbox language model returned an incomplete attention cache")
@@ -125,16 +122,22 @@ class _BoundDecodeRunner:
         self.past_names = past_names
         self.input_names = [item.name for item in session.get_inputs()]
         self.output_names = [item.name for item in session.get_outputs()]
+        self.float_dtype = _input_dtype(session, "inputs_embeds")
         allowed = {"inputs_embeds", "attention_mask", *past_names}
         unexpected = [name for name in self.input_names if name not in allowed]
         if unexpected:
             raise RuntimeError(f"Model input contract changed; cannot bind: {', '.join(unexpected)}")
         if len(self.output_names) != len(past_names) + 1:
             raise RuntimeError("Chatterbox language model returned an incomplete attention cache")
-        self.past = [ortvalue_factory(past[name], "cuda", 0) for name in past_names]
+        self.past = [
+            ortvalue_factory(np.asarray(past[name], dtype=self.float_dtype), "cuda", 0)
+            for name in past_names
+        ]
 
     def step(self, inputs_embeds, attention_mask):
         binding = self.session.io_binding()
+        inputs_embeds = np.asarray(inputs_embeds, dtype=self.float_dtype)
+        attention_mask = np.asarray(attention_mask, dtype=np.int64)
         binding.bind_cpu_input("inputs_embeds", inputs_embeds)
         binding.bind_cpu_input("attention_mask", attention_mask)
         for name, value in zip(self.past_names, self.past):
@@ -273,11 +276,18 @@ class ChatterboxEngine:
 
     @staticmethod
     def _feed(session, values):
-        names = [item.name for item in session.get_inputs()]
-        missing = [name for name in names if name not in values]
+        inputs = session.get_inputs()
+        missing = [item.name for item in inputs if item.name not in values]
         if missing:
             raise RuntimeError(f"Model input contract changed; missing values for: {', '.join(missing)}")
-        return {name: values[name] for name in names}
+        result = {}
+        for item in inputs:
+            val = values[item.name]
+            expected_np_type = _numpy_dtype(getattr(item, "type", None))
+            if isinstance(val, np.ndarray) and val.dtype != expected_np_type:
+                val = val.astype(expected_np_type, copy=False)
+            result[item.name] = val
+        return result
 
     def register_speaker_reference(self, voice_id: str, audio_bytes: bytes):
         """Encode and cache reference voice sample embedding."""
