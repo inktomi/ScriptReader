@@ -186,6 +186,7 @@ class ChatterboxEngine:
                 if voice_id in self.speakers_cache:
                     return
                 with torch.inference_mode():
+                    self.model.conds = None
                     self.model.prepare_conditionals(temp_path, exaggeration=0.5)
                     # Cache the extracted speaker condition tensors
                     if hasattr(self.model, "conds") and self.model.conds is not None:

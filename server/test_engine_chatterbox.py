@@ -809,6 +809,27 @@ class ChatterboxEngineTests(unittest.TestCase):
                     self.assertIsInstance(stretched, np.ndarray)
                     self.assertGreater(len(stretched), 0)
 
+    def test_register_speaker_reference_clears_stale_conds_on_failure(self):
+        engine = self._build_engine()
+
+        # Simulate leftover conditionals from prior render
+        engine.model.conds = ("stale_speaker_conds",)
+
+        class FailingPrepareModel(FakeChatterboxModel):
+            def prepare_conditionals(self, wav_path, exaggeration=0.5):
+                # Simulate a model failure that leaves self.conds untouched
+                pass
+
+        engine.model = FailingPrepareModel()
+        engine.model.conds = ("stale_speaker_conds",)
+
+        with mock.patch("engine_chatterbox.sf", FakeSoundFile):
+            with self.assertRaisesRegex(RuntimeError, "failed to extract speaker conditioning"):
+                engine.register_speaker_reference("voice_corrupted", b"fake_wav_bytes")
+
+        # Must not have cached the stale conditionals
+        self.assertNotIn("voice_corrupted", engine.speakers_cache)
+
 
 if __name__ == "__main__":
     unittest.main()
