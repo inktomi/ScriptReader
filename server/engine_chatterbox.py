@@ -2,6 +2,7 @@ import inspect
 import io
 import os
 import tempfile
+import threading
 import numpy as np
 import soundfile as sf
 import torch
@@ -27,6 +28,7 @@ class ChatterboxEngine:
         self.speakers_cache = {}
         self.model = None
         self._initialized = False
+        self._lock = threading.RLock()
         self._require_gpu = _requires_gpu() if require_gpu is None else require_gpu
         self.device = "cuda" if torch.cuda.is_available() else "cpu"
 
@@ -36,43 +38,45 @@ class ChatterboxEngine:
             torch.backends.cudnn.allow_tf32 = True
 
     def _ensure_loaded(self):
-        if self._initialized:
-            return
+        with self._lock:
+            if self._initialized:
+                return
 
-        if self.device != "cuda" and self._require_gpu:
-            raise RuntimeError(
-                f"Chatterbox requires a CUDA device (torch reports device='{self.device}'). "
-                "This worker bills at GPU rates and will not quietly run on CPU. "
-                "Set SCRIPTREADER_REQUIRE_GPU=0 to allow a deliberate CPU run."
-            )
-
-        print(f"[ChatterboxEngine] Loading Chatterbox Multilingual model on device: {self.device}...")
-
-        try:
-            from chatterbox.mtl_tts import ChatterboxMultilingualTTS
-            try:
-                self.model = ChatterboxMultilingualTTS.from_pretrained(device=self.device, t3_model="v3")
-            except (TypeError, Exception):
-                self.model = ChatterboxMultilingualTTS.from_pretrained(device=self.device)
-            print("[ChatterboxEngine] Loaded ChatterboxMultilingualTTS V3 successfully.")
-        except Exception as e:
-            try:
-                from chatterbox.tts import ChatterboxTTS
-                self.model = ChatterboxTTS.from_pretrained(device=self.device)
-                print(f"[ChatterboxEngine] Loaded ChatterboxTTS fallback ({e}).")
-            except Exception as e2:
+            if self.device != "cuda" and self._require_gpu:
                 raise RuntimeError(
-                    f"Could not load Chatterbox model from Hugging Face cache: {e}; fallback error: {e2}"
-                ) from e
+                    f"Chatterbox requires a CUDA device (torch reports device='{self.device}'). "
+                    "This worker bills at GPU rates and will not quietly run on CPU. "
+                    "Set SCRIPTREADER_REQUIRE_GPU=0 to allow a deliberate CPU run."
+                )
 
-        self.sample_rate = getattr(self.model, "sr", 24000)
-        self._initialized = True
+            print(f"[ChatterboxEngine] Loading Chatterbox Multilingual model on device: {self.device}...")
+
+            try:
+                from chatterbox.mtl_tts import ChatterboxMultilingualTTS
+                try:
+                    self.model = ChatterboxMultilingualTTS.from_pretrained(device=self.device, t3_model="v3")
+                except (TypeError, Exception):
+                    self.model = ChatterboxMultilingualTTS.from_pretrained(device=self.device)
+                print("[ChatterboxEngine] Loaded ChatterboxMultilingualTTS V3 successfully.")
+            except Exception as e:
+                try:
+                    from chatterbox.tts import ChatterboxTTS
+                    self.model = ChatterboxTTS.from_pretrained(device=self.device)
+                    print(f"[ChatterboxEngine] Loaded ChatterboxTTS fallback ({e}).")
+                except Exception as e2:
+                    raise RuntimeError(
+                        f"Could not load Chatterbox model from Hugging Face cache: {e}; fallback error: {e2}"
+                    ) from e
+
+            self.sample_rate = getattr(self.model, "sr", 24000)
+            self._initialized = True
 
     def register_speaker_reference(self, voice_id: str, audio_bytes: bytes):
         """Extract and cache speaker conditioning embeddings from reference audio."""
         self._ensure_loaded()
-        if voice_id in self.speakers_cache:
-            return
+        with self._lock:
+            if voice_id in self.speakers_cache:
+                return
 
         audio_data, sr = sf.read(io.BytesIO(audio_bytes), dtype="float32")
         if audio_data.ndim > 1:
@@ -90,13 +94,16 @@ class ChatterboxEngine:
             with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as temp_wav:
                 temp_path = temp_wav.name
             sf.write(temp_path, audio_data, self.sample_rate, format="WAV", subtype="PCM_16")
-            with torch.inference_mode():
-                self.model.prepare_conditionals(temp_path, exaggeration=0.5)
-                # Cache the extracted speaker condition tensors
-                if hasattr(self.model, "conds") and self.model.conds is not None:
-                    self.speakers_cache[voice_id] = self.model.conds
-                else:
-                    raise RuntimeError("Chatterbox failed to extract speaker conditioning tensors")
+            with self._lock:
+                if voice_id in self.speakers_cache:
+                    return
+                with torch.inference_mode():
+                    self.model.prepare_conditionals(temp_path, exaggeration=0.5)
+                    # Cache the extracted speaker condition tensors
+                    if hasattr(self.model, "conds") and self.model.conds is not None:
+                        self.speakers_cache[voice_id] = self.model.conds
+                    else:
+                        raise RuntimeError("Chatterbox failed to extract speaker conditioning tensors")
         finally:
             if temp_path and os.path.exists(temp_path):
                 try:
@@ -105,14 +112,14 @@ class ChatterboxEngine:
                     pass
 
     def _prepare_row(self, item: dict):
-        text = (item.get("text") or "").strip()
-        if not text or not any(c.isalnum() for c in text):
-            return None
-
         voice_id = item.get("voice_id") or "default"
         reference = item.get("reference_audio_bytes")
         if reference and voice_id not in self.speakers_cache:
             self.register_speaker_reference(voice_id, reference)
+
+        text = (item.get("text") or "").strip()
+        if not text or not any(c.isalnum() for c in text):
+            return None
 
         speaker_conds = self.speakers_cache.get(voice_id)
         if speaker_conds is None:
@@ -160,20 +167,21 @@ class ChatterboxEngine:
         return self.model.generate(**filtered_kwargs)
 
     def _render_row(self, row: dict) -> np.ndarray:
-        # Load cached speaker conditionals onto model instance
-        self.model.conds = row["speaker_conds"]
+        with self._lock:
+            # Load cached speaker conditionals onto model instance
+            self.model.conds = row["speaker_conds"]
 
-        with torch.inference_mode():
-            wav = self._safe_generate(
-                text=row["text"],
-                language_id=row["language_id"],
-                exaggeration=row["exaggeration"],
-                cfg_weight=0.5,
-                temperature=0.8,
-                repetition_penalty=1.2,
-                min_p=0.05,
-                top_p=1.0,
-            )
+            with torch.inference_mode():
+                wav = self._safe_generate(
+                    text=row["text"],
+                    language_id=row["language_id"],
+                    exaggeration=row["exaggeration"],
+                    cfg_weight=0.5,
+                    temperature=0.8,
+                    repetition_penalty=1.2,
+                    min_p=0.05,
+                    top_p=1.0,
+                )
 
         if isinstance(wav, torch.Tensor):
             audio = wav.detach().cpu().squeeze().numpy().astype(np.float32)

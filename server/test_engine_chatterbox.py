@@ -1,5 +1,7 @@
 import io
 import sys
+import threading
+import time
 import types
 import unittest
 from unittest import mock
@@ -32,6 +34,16 @@ class FakeTensor:
         return self._array
 
 
+class FakeSoundFile:
+    @staticmethod
+    def read(buffer, dtype="float32"):
+        return np.full(2400, 0.1, dtype=np.float32), 24000
+
+    @staticmethod
+    def write(target, audio, sample_rate, format=None, subtype=None):
+        pass
+
+
 # Mock torch and soundfile if not installed in test environment
 fake_torch = types.SimpleNamespace(
     cuda=types.SimpleNamespace(is_available=lambda: False),
@@ -43,7 +55,7 @@ fake_torch = types.SimpleNamespace(
     Tensor=FakeTensor,
 )
 sys.modules.setdefault("torch", fake_torch)
-sys.modules.setdefault("soundfile", types.SimpleNamespace())
+sys.modules.setdefault("soundfile", FakeSoundFile)
 sys.modules.setdefault("librosa", types.SimpleNamespace(
     effects=types.SimpleNamespace(time_stretch=lambda y, rate: y)
 ))
@@ -87,14 +99,44 @@ class FakeChatterboxModel:
         return FakeTensor(np.full(100, 0.25, dtype=np.float32))
 
 
-class FakeSoundFile:
-    @staticmethod
-    def read(buffer, dtype="float32"):
-        return np.full(2400, 0.1, dtype=np.float32), 24000
+class ConcurrentFakeChatterboxModel:
+    def __init__(self, sr=24000):
+        self.sr = sr
+        self.conds = None
+        self.generation_records = []
+        self._active_generations = 0
+        self.had_concurrent_execution = False
+        self._lock = threading.Lock()
+        self.prepare_count = 0
 
-    @staticmethod
-    def write(target, audio, sample_rate, format=None, subtype=None):
-        pass
+    def prepare_conditionals(self, wav_path, exaggeration=0.5):
+        time.sleep(0.01)
+        self.conds = ("fake_conds", wav_path, exaggeration)
+        with self._lock:
+            self.prepare_count += 1
+
+    def generate(self, text, **kwargs):
+        current_conds = self.conds
+        with self._lock:
+            self._active_generations += 1
+            if self._active_generations > 1:
+                self.had_concurrent_execution = True
+
+        # Simulate GPU inference delay where GIL would be released
+        time.sleep(0.02)
+
+        exit_conds = self.conds
+        with self._lock:
+            self.generation_records.append({
+                "text": text,
+                "entry_conds": current_conds,
+                "exit_conds": exit_conds,
+                "corrupted": current_conds != exit_conds,
+            })
+            self._active_generations -= 1
+
+        return FakeTensor(np.full(100, 0.25, dtype=np.float32))
+
 
 
 class ChatterboxEngineTests(unittest.TestCase):
@@ -194,6 +236,311 @@ class ChatterboxEngineTests(unittest.TestCase):
         with mock.patch("engine_chatterbox.sf", FakeSoundFile):
             engine.warmup()
         self.assertNotIn("__warmup__", engine.speakers_cache)
+
+    def test_batch_caches_reference_from_unspeakable_first_item(self):
+        engine = self._build_engine()
+
+        items = [
+            {
+                "text": "...",
+                "voice_id": "voice_early_ref",
+                "reference_audio_bytes": b"fake_wav_bytes",
+            },
+            {
+                "text": "This line must succeed.",
+                "voice_id": "voice_early_ref",
+                "reference_audio_bytes": None,
+            },
+        ]
+
+        with mock.patch("engine_chatterbox.sf", FakeSoundFile):
+            results = engine.generate_batch(items)
+
+        # Voice should be successfully registered in cache
+        self.assertIn("voice_early_ref", engine.speakers_cache)
+        self.assertIsNotNone(engine.speakers_cache["voice_early_ref"])
+
+        # Item 0 returns empty array
+        self.assertEqual(len(results), 2)
+        self.assertIsInstance(results[0], np.ndarray)
+        self.assertEqual(len(results[0]), 0)
+
+        # Item 1 successfully rendered using the cached conditionals
+        self.assertIsInstance(results[1], np.ndarray)
+        self.assertEqual(len(results[1]), 100)
+
+        # Model generate was called once for the speakable line
+        self.assertEqual(len(self.fake_model.recorded_calls), 1)
+        self.assertEqual(self.fake_model.recorded_calls[0]["text"], "This line must succeed.")
+
+    def test_generate_caches_reference_even_if_single_call_is_unspeakable(self):
+        engine = self._build_engine()
+
+        with mock.patch("engine_chatterbox.sf", FakeSoundFile):
+            # Prime cache with unspeakable text
+            empty_audio = engine.generate(
+                text="   ---   ",
+                voice_id="voice_prime",
+                reference_audio_bytes=b"fake_wav_bytes",
+            )
+
+        self.assertEqual(len(empty_audio), 0)
+        self.assertIn("voice_prime", engine.speakers_cache)
+
+        # Next call without reference audio should now succeed
+        spoken_audio = engine.generate(
+            text="Spoken line after priming.",
+            voice_id="voice_prime",
+        )
+        self.assertEqual(len(spoken_audio), 100)
+        self.assertEqual(len(self.fake_model.recorded_calls), 1)
+        self.assertEqual(self.fake_model.recorded_calls[0]["text"], "Spoken line after priming.")
+
+    def test_batch_unspeakable_with_corrupt_reference_isolates_error(self):
+        engine = self._build_engine()
+
+        class ErrorSoundFile:
+            @staticmethod
+            def read(buffer, dtype="float32"):
+                raise RuntimeError("Invalid WAV header")
+
+        items = [
+            {
+                "text": "...",
+                "voice_id": "voice_bad_ref",
+                "reference_audio_bytes": b"invalid_bytes",
+            },
+        ]
+
+        with mock.patch("engine_chatterbox.sf", ErrorSoundFile):
+            results = engine.generate_batch(items)
+
+        self.assertEqual(len(results), 1)
+        self.assertIsInstance(results[0], Exception)
+        self.assertIn("Invalid WAV header", str(results[0]))
+        self.assertNotIn("voice_bad_ref", engine.speakers_cache)
+
+    def test_batch_unspeakable_without_reference_returns_empty_and_does_not_cache(self):
+        engine = self._build_engine()
+
+        items = [
+            {
+                "text": "...",
+                "voice_id": "voice_never_registered",
+                "reference_audio_bytes": None,
+            },
+            {
+                "text": "Spoken line",
+                "voice_id": "voice_never_registered",
+                "reference_audio_bytes": None,
+            },
+        ]
+
+        results = engine.generate_batch(items)
+        self.assertEqual(len(results), 2)
+        self.assertIsInstance(results[0], np.ndarray)
+        self.assertEqual(len(results[0]), 0)
+        self.assertIsInstance(results[1], Exception)
+        self.assertIn("has no reference recording", str(results[1]))
+        self.assertNotIn("voice_never_registered", engine.speakers_cache)
+
+    def test_concurrent_generation_protects_speaker_conditionals(self):
+        concurrent_model = ConcurrentFakeChatterboxModel()
+        engine = self._build_engine()
+        engine.model = concurrent_model
+
+        voices = [f"speaker_{i}" for i in range(5)]
+        for v in voices:
+            engine.speakers_cache[v] = (f"conds_for_{v}",)
+
+        errors = []
+        threads = []
+        num_threads = 10
+
+        def worker(thread_idx):
+            try:
+                voice = voices[thread_idx % len(voices)]
+                audio = engine.generate(
+                    text=f"Line from thread {thread_idx}",
+                    voice_id=voice,
+                )
+                if len(audio) != 100:
+                    errors.append(f"Thread {thread_idx} received invalid audio length")
+            except Exception as e:
+                errors.append(f"Thread {thread_idx} failed: {e}")
+
+        for i in range(num_threads):
+            t = threading.Thread(target=worker, args=(i,))
+            threads.append(t)
+            t.start()
+
+        for t in threads:
+            t.join()
+
+        self.assertEqual(errors, [])
+        self.assertFalse(concurrent_model.had_concurrent_execution)
+        self.assertEqual(len(concurrent_model.generation_records), num_threads)
+        for record in concurrent_model.generation_records:
+            self.assertFalse(record["corrupted"], f"State corrupted in record: {record}")
+            expected_conds = (f"conds_for_speaker_{int(record['text'].split()[-1]) % len(voices)}",)
+            self.assertEqual(record["entry_conds"], expected_conds)
+            self.assertEqual(record["exit_conds"], expected_conds)
+
+    def test_concurrent_registration_and_generation_safety(self):
+        concurrent_model = ConcurrentFakeChatterboxModel()
+        engine = self._build_engine()
+        engine.model = concurrent_model
+        engine.speakers_cache["speaker_static"] = ("conds_static",)
+
+        errors = []
+        threads = []
+
+        def registration_worker(i):
+            try:
+                engine.register_speaker_reference(f"dynamic_speaker_{i}", b"audio_bytes")
+            except Exception as e:
+                errors.append(f"Reg {i} failed: {e}")
+
+        def generation_worker(i):
+            try:
+                audio = engine.generate(f"Generation line {i}", voice_id="speaker_static")
+                if len(audio) != 100:
+                    errors.append(f"Gen {i} invalid audio length")
+            except Exception as e:
+                errors.append(f"Gen {i} failed: {e}")
+
+        with mock.patch("engine_chatterbox.sf", FakeSoundFile):
+            for i in range(5):
+                threads.append(threading.Thread(target=registration_worker, args=(i,)))
+                threads.append(threading.Thread(target=generation_worker, args=(i,)))
+
+            for t in threads:
+                t.start()
+            for t in threads:
+                t.join()
+
+        self.assertEqual(errors, [])
+        self.assertFalse(concurrent_model.had_concurrent_execution)
+        for i in range(5):
+            self.assertIn(f"dynamic_speaker_{i}", engine.speakers_cache)
+
+    def test_concurrent_registration_same_voice_deduplicates_model_prepare(self):
+        concurrent_model = ConcurrentFakeChatterboxModel()
+        engine = self._build_engine()
+        engine.model = concurrent_model
+
+        threads = []
+        errors = []
+
+        def worker():
+            try:
+                engine.register_speaker_reference("shared_voice", b"audio_bytes")
+            except Exception as e:
+                errors.append(e)
+
+        with mock.patch("engine_chatterbox.sf", FakeSoundFile):
+            for _ in range(8):
+                t = threading.Thread(target=worker)
+                threads.append(t)
+                t.start()
+
+            for t in threads:
+                t.join()
+
+        self.assertEqual(errors, [])
+        self.assertIn("shared_voice", engine.speakers_cache)
+        self.assertEqual(concurrent_model.prepare_count, 1)
+
+    def test_concurrent_ensure_loaded_initializes_once(self):
+        engine = ChatterboxEngine(require_gpu=False)
+        engine.device = "cpu"
+        engine._initialized = False
+        load_count = 0
+        load_lock = threading.Lock()
+
+        class MockTTS:
+            sr = 24000
+
+            @classmethod
+            def from_pretrained(cls, *args, **kwargs):
+                nonlocal load_count
+                with load_lock:
+                    load_count += 1
+                time.sleep(0.02)
+                return FakeChatterboxModel()
+
+        errors = []
+        threads = []
+
+        def worker():
+            try:
+                with mock.patch.dict("sys.modules", {"chatterbox.mtl_tts": types.SimpleNamespace(ChatterboxMultilingualTTS=MockTTS)}):
+                    engine._ensure_loaded()
+            except Exception as e:
+                errors.append(e)
+
+        for _ in range(8):
+            t = threading.Thread(target=worker)
+            threads.append(t)
+            t.start()
+
+        for t in threads:
+            t.join()
+
+        self.assertEqual(errors, [])
+        self.assertTrue(engine._initialized)
+        self.assertEqual(load_count, 1)
+
+    def test_lock_released_on_generation_error(self):
+        engine = self._build_engine()
+
+        class ErrorModel:
+            def __init__(self):
+                self.sr = 24000
+                self.conds = None
+
+            def generate(self, *args, **kwargs):
+                raise RuntimeError("Simulated CUDA failure")
+
+        engine.model = ErrorModel()
+        engine.speakers_cache["voice_fail"] = ("conds",)
+
+        with self.assertRaisesRegex(RuntimeError, "Simulated CUDA failure"):
+            engine.generate("Fail text", voice_id="voice_fail")
+
+        # Verify the lock is released: we can acquire it without blocking
+        acquired = engine._lock.acquire(blocking=False)
+        self.assertTrue(acquired)
+        if acquired:
+            engine._lock.release()
+
+        # Now replace with working model and verify generate succeeds
+        engine.model = self.fake_model
+        audio = engine.generate("Recovery text", voice_id="voice_fail")
+        self.assertEqual(len(audio), 100)
+
+    def test_lock_released_on_prepare_conditionals_error(self):
+        engine = self._build_engine()
+
+        class ErrorModel:
+            def __init__(self):
+                self.sr = 24000
+                self.conds = None
+
+            def prepare_conditionals(self, *args, **kwargs):
+                raise RuntimeError("Simulated prepare failure")
+
+        engine.model = ErrorModel()
+
+        with mock.patch("engine_chatterbox.sf", FakeSoundFile):
+            with self.assertRaisesRegex(RuntimeError, "Simulated prepare failure"):
+                engine.register_speaker_reference("voice_fail", b"audio_bytes")
+
+        # Verify the lock is released
+        acquired = engine._lock.acquire(blocking=False)
+        self.assertTrue(acquired)
+        if acquired:
+            engine._lock.release()
 
 
 if __name__ == "__main__":
