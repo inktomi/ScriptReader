@@ -218,9 +218,9 @@ class ChatterboxEngine:
             "text": text,
             "voice_id": voice_id,
             "speaker_conds": speaker_conds,
-            "exaggeration": float(item.get("exaggeration", 0.5)),
-            "speed": float(item.get("speed", 1.0)),
-            "language_id": str(item.get("language_id", "en")).lower(),
+            "exaggeration": float(0.5 if item.get("exaggeration") is None else item.get("exaggeration")),
+            "speed": float(1.0 if item.get("speed") is None else item.get("speed")),
+            "language_id": str(item.get("language_id") or "en").strip().lower() or "en",
         }
 
     def _safe_generate(

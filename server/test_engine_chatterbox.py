@@ -830,6 +830,30 @@ class ChatterboxEngineTests(unittest.TestCase):
         # Must not have cached the stale conditionals
         self.assertNotIn("voice_corrupted", engine.speakers_cache)
 
+    def test_prepare_row_handles_explicit_none_attributes(self):
+        engine = self._build_engine()
+        engine.speakers_cache["voice_test"] = ("conds",)
+
+        items = [
+            {
+                "text": "Line with null attributes.",
+                "voice_id": "voice_test",
+                "exaggeration": None,
+                "speed": None,
+                "language_id": None,
+            },
+        ]
+
+        results = engine.generate_batch(items)
+        self.assertEqual(len(results), 1)
+        self.assertIsInstance(results[0], np.ndarray)
+        self.assertEqual(len(results[0]), 100)
+
+        call = self.fake_model.recorded_calls[0]
+        self.assertEqual(call["exaggeration"], 0.5)
+        self.assertEqual(call["speed"] if "speed" in call else 1.0, 1.0)
+        self.assertEqual(call["language_id"], "en")
+
 
 if __name__ == "__main__":
     unittest.main()
