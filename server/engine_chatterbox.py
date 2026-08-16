@@ -286,10 +286,17 @@ class ChatterboxEngine:
         if abs(row["speed"] - 1.0) > 0.01:
             # Librosa phase vocoder for clean time-stretching without pitch shifts
             import librosa
-            audio = librosa.effects.time_stretch(audio, rate=row["speed"]).astype(np.float32)
-            # Overlap-add in phase vocoder can cause constructive interference peaks > 1.0 or NaNs
-            audio = np.nan_to_num(audio, copy=False, nan=0.0, posinf=1.0, neginf=-1.0)
-            audio = np.clip(audio, -1.0, 1.0, out=audio)
+            audio_len = len(audio)
+            if audio_len >= 32:
+                # Dynamically scale n_fft for short utterances to prevent Librosa ParameterError
+                # while preserving power-of-2 efficiency for FFT kernels.
+                n_fft = min(2048, max(32, int(2 ** int(np.log2(audio_len)))))
+                audio = librosa.effects.time_stretch(
+                    audio, rate=row["speed"], n_fft=n_fft
+                ).astype(np.float32)
+                # Overlap-add in phase vocoder can cause constructive interference peaks > 1.0 or NaNs
+                audio = np.nan_to_num(audio, copy=False, nan=0.0, posinf=1.0, neginf=-1.0)
+                audio = np.clip(audio, -1.0, 1.0, out=audio)
 
         return audio
 

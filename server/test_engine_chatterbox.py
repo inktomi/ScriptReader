@@ -61,7 +61,7 @@ fake_torch = types.SimpleNamespace(
 sys.modules.setdefault("torch", fake_torch)
 sys.modules.setdefault("soundfile", FakeSoundFile)
 sys.modules.setdefault("librosa", types.SimpleNamespace(
-    effects=types.SimpleNamespace(time_stretch=lambda y, rate: y)
+    effects=types.SimpleNamespace(time_stretch=lambda y, rate=1.0, **kwargs: y)
 ))
 
 from engine_chatterbox import ChatterboxEngine, LRUSpeakerCache  # noqa: E402
@@ -732,6 +732,82 @@ class ChatterboxEngineTests(unittest.TestCase):
             self.assertEqual(audio[0], -1.0)
             self.assertEqual(audio[2], 1.0)
             self.assertEqual(audio[3], 0.0)
+
+    def test_speed_modification_dynamic_nfft_for_short_audio(self):
+        """Verify dynamic n_fft calculation prevents ParameterError for sub-2048 audio."""
+        engine = self._build_engine()
+        engine.speakers_cache["voice_good"] = ("mock_conds",)
+
+        test_cases = [
+            # (signal_length, expected_n_fft)
+            (3000, 2048),
+            (2048, 2048),
+            (1500, 1024),
+            (600, 512),
+            (200, 128),
+            (50, 32),
+        ]
+
+        for length, expected_n_fft in test_cases:
+            self.fake_model.recorded_calls.clear()
+            # Configure fake model to return an array of the test length
+            with mock.patch.object(
+                self.fake_model,
+                "generate",
+                return_value=FakeTensor(np.full(length, 0.2, dtype=np.float32)),
+            ):
+                with mock.patch("librosa.effects.time_stretch") as mock_stretch:
+                    mock_stretch.side_effect = lambda y, rate=1.0, n_fft=2048: np.full(
+                        int(len(y) / rate), 0.2, dtype=np.float32
+                    )
+
+                    audio = engine.generate("Short exclamation.", voice_id="voice_good", speed=1.2)
+
+                    self.assertIsInstance(audio, np.ndarray)
+                    mock_stretch.assert_called_once()
+                    _, kwargs = mock_stretch.call_args
+                    self.assertEqual(
+                        kwargs.get("n_fft"),
+                        expected_n_fft,
+                        f"Failed n_fft match for input length {length}",
+                    )
+
+    def test_speed_modification_sub_32_samples_bypasses_vocoder(self):
+        """Audio under 32 samples should not invoke librosa time_stretch."""
+        engine = self._build_engine()
+        engine.speakers_cache["voice_good"] = ("mock_conds",)
+
+        with mock.patch.object(
+            self.fake_model,
+            "generate",
+            return_value=FakeTensor(np.full(20, 0.15, dtype=np.float32)),
+        ):
+            with mock.patch("librosa.effects.time_stretch") as mock_stretch:
+                audio = engine.generate("Tiny clip.", voice_id="voice_good", speed=1.25)
+                self.assertEqual(len(audio), 20)
+                mock_stretch.assert_not_called()
+
+    def test_real_librosa_time_stretch_short_signals_without_error(self):
+        """Directly test real librosa.effects.time_stretch using dynamic n_fft calculation."""
+        try:
+            import librosa
+        except (ImportError, AttributeError):
+            self.skipTest("librosa not installed in local test environment")
+
+        speeds = [0.8, 1.25]
+        lengths = [40, 100, 500, 1200, 2048, 4000]
+
+        for L in lengths:
+            for speed in speeds:
+                synthetic_audio = np.sin(np.linspace(0, 100, L)).astype(np.float32)
+                audio_len = len(synthetic_audio)
+                if audio_len >= 32:
+                    n_fft = min(2048, max(32, int(2 ** int(np.log2(audio_len)))))
+                    stretched = librosa.effects.time_stretch(
+                        synthetic_audio, rate=speed, n_fft=n_fft
+                    ).astype(np.float32)
+                    self.assertIsInstance(stretched, np.ndarray)
+                    self.assertGreater(len(stretched), 0)
 
 
 if __name__ == "__main__":
