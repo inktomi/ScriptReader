@@ -222,6 +222,21 @@ through host memory every token. A worker that cannot find a CUDA execution
 provider refuses to start instead of billing at GPU rates for CPU inference;
 set `SCRIPTREADER_REQUIRE_GPU=0` for a deliberate local CPU run.
 
+Cloned Chatterbox voices are held as conditioning tensors in worker memory,
+bounded at 64 by an LRU so a long-lived worker cannot grow without limit;
+`SCRIPTREADER_SPEAKER_CACHE_SIZE` changes the bound. Eviction is not a failure
+the listener sees — the browser re-sends the reference recording once when a
+worker reports a voice it no longer holds. `SCRIPTREADER_WORKER_CONCURRENCY`
+(default 2) sets how many jobs a worker accepts at once; inference is
+serialised per engine regardless, so this overlaps WAV encoding with the next
+job rather than running two renders on one card.
+
+The worker also answers OpenAI's `/v1/audio/speech` shape, so any
+OpenAI-compatible client can point at it: `tts-1` and its siblings route to
+Kokoro, and OpenAI's voice names resolve to their Kokoro equivalents
+(`alloy` to `af_alloy`, and so on) rather than failing on a voice Kokoro has
+never heard of.
+
 The endpoint's own configuration lives in `scripts/runpod-endpoint.mjs` rather
 than only in the RunPod console, because GPU selection there is a prioritised
 fallback list and an endpoint that merely asks for "48 GB" can be answered with

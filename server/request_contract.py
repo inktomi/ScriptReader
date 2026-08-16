@@ -28,6 +28,31 @@ ENGINE_ALIASES = {
     "gpt-4o-mini-tts": "kokoro",
 }
 
+# OpenAI ships its own voice names, and Kokoro does not answer to them: an
+# OpenAI-shaped request asks for "alloy" where the Kokoro voice is "af_alloy".
+# Accepting the model identifier without also accepting the voice left the
+# canonical OpenAI request failing on a missing voice file.
+#
+# The six original OpenAI voices map onto Kokoro's same-named entries; the rest
+# invert the hand-written CROSS_ENGINE_VOICE_MAP in src/audio/voice-catalog.js
+# so the worker and the browser agree on who sounds like whom. No Kokoro voice
+# is named without its prefix, so none of these can shadow a real one.
+OPENAI_VOICE_ALIASES = {
+    "alloy": "af_alloy",
+    "echo": "am_echo",
+    "fable": "bm_fable",
+    "nova": "af_nova",
+    "onyx": "am_onyx",
+    "shimmer": "af_river",
+    "ash": "am_fenrir",
+    "ballad": "bf_emma",
+    "cedar": "am_michael",
+    "coral": "af_sarah",
+    "marin": "af_heart",
+    "sage": "af_nicole",
+    "verse": "am_puck",
+}
+
 
 class InputError(ValueError):
     """A client-visible request-contract failure."""
@@ -79,7 +104,9 @@ def normalize_item(item):
         raise InputError("engine must be a string")
     engine_key = raw_engine.strip().lower()
     if engine_key not in ENGINE_ALIASES:
-        raise InputError("engine must be 'kokoro' or 'chatterbox'")
+        raise InputError(
+            "engine must be one of: " + ", ".join(sorted(ENGINE_ALIASES))
+        )
     engine = ENGINE_ALIASES[engine_key]
 
     if engine == "chatterbox":
@@ -94,6 +121,8 @@ def normalize_item(item):
     voice = raw_voice.strip()
     if len(voice) > MAX_VOICE_ID_CHARS:
         raise InputError("voice identifier is too long")
+    if engine == "kokoro":
+        voice = OPENAI_VOICE_ALIASES.get(voice.lower(), voice)
 
     raw_language = item.get("language_id") or item.get("language") or item.get("lang") or "en"
     if not isinstance(raw_language, str) or not raw_language.strip():

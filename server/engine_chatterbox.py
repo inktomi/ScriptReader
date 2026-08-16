@@ -18,13 +18,47 @@ def _requires_gpu():
 DEFAULT_MAX_SPEAKER_CACHE_SIZE = 64
 
 
+def _speaker_cache_size(explicit=None):
+    """Resolve the speaker-cache bound, preferring an explicit constructor value.
+
+    A malformed environment value must not take the worker down: preload_engines()
+    builds this engine before any job is accepted, so an exception raised here
+    kills the process rather than failing one request.
+    """
+    if explicit is not None:
+        return explicit
+    raw = os.environ.get("SCRIPTREADER_SPEAKER_CACHE_SIZE", "")
+    if not raw.strip():
+        return DEFAULT_MAX_SPEAKER_CACHE_SIZE
+    try:
+        return int(raw)
+    except ValueError:
+        print(
+            f"[ChatterboxEngine] Ignoring malformed SCRIPTREADER_SPEAKER_CACHE_SIZE={raw!r}; "
+            f"using {DEFAULT_MAX_SPEAKER_CACHE_SIZE}."
+        )
+        return DEFAULT_MAX_SPEAKER_CACHE_SIZE
+
+
 class LRUSpeakerCache(collections.OrderedDict):
     """Thread-safe bounded LRU cache for speaker conditioning tensors."""
 
     def __init__(self, maxsize: int = DEFAULT_MAX_SPEAKER_CACHE_SIZE, *args, **kwargs):
-        super().__init__(*args, **kwargs)
+        # Both attributes must exist before OrderedDict.__init__ runs: it seeds
+        # any initial items through the overridden __setitem__, which reads them.
         self.maxsize = max(1, int(maxsize))
         self._lock = threading.RLock()
+        super().__init__(*args, **kwargs)
+
+    def copy(self):
+        # OrderedDict.copy() rebuilds through self.__class__(self), which would
+        # read the source mapping as this class's maxsize argument. Copying
+        # explicitly keeps the bound and every entry.
+        with self._lock:
+            duplicate = self.__class__(self.maxsize)
+            for key, value in super().items():
+                duplicate[key] = value
+            return duplicate
 
     def __getitem__(self, key):
         with self._lock:
@@ -110,10 +144,7 @@ class ChatterboxEngine:
     def __init__(self, models_dir=None, require_gpu=None, max_cache_size=None):
         self.models_dir = models_dir
         self.sample_rate = 24000
-        cache_size = max_cache_size if max_cache_size is not None else int(
-            os.environ.get("SCRIPTREADER_SPEAKER_CACHE_SIZE", str(DEFAULT_MAX_SPEAKER_CACHE_SIZE))
-        )
-        self.speakers_cache = LRUSpeakerCache(maxsize=cache_size)
+        self.speakers_cache = LRUSpeakerCache(maxsize=_speaker_cache_size(max_cache_size))
         self.model = None
         self._initialized = False
         self._lock = threading.RLock()
@@ -248,15 +279,21 @@ class ChatterboxEngine:
         sig = inspect.signature(self.model.generate)
         params = sig.parameters
         has_var_keyword = any(p.kind == inspect.Parameter.VAR_KEYWORD for p in params.values())
-        if has_var_keyword:
-            filtered_kwargs = dict(kwargs)
+        # A model taking **kwargs accepts everything, so nothing is filtered out.
+        # One that does not would raise on any argument it never declared.
+        filtered_kwargs = dict(kwargs) if has_var_keyword else {
+            k: v for k, v in kwargs.items() if k in params
+        }
+        # A declared parameter decides what the language argument is called.
+        # Only fall back to language_id-through-**kwargs when neither name is
+        # declared: a model with both `lang` and **kwargs would otherwise keep
+        # its default and synthesise the wrong language without complaining.
+        if "language_id" in params:
             filtered_kwargs["language_id"] = language_id
-        else:
-            filtered_kwargs = {k: v for k, v in kwargs.items() if k in params}
-            if "language_id" in params:
-                filtered_kwargs["language_id"] = language_id
-            elif "lang" in params:
-                filtered_kwargs["lang"] = language_id
+        elif "lang" in params:
+            filtered_kwargs["lang"] = language_id
+        elif has_var_keyword:
+            filtered_kwargs["language_id"] = language_id
 
         return self.model.generate(**filtered_kwargs)
 
@@ -292,20 +329,21 @@ class ChatterboxEngine:
         if audio is None or audio.size == 0 or np.all(audio == 0):
             raise RuntimeError(f"Chatterbox voice generation failed for voice '{row['voice_id']}'")
 
-        if abs(row["speed"] - 1.0) > 0.01:
+        # Below 32 samples — about 1.3 ms at 24 kHz — there is no window left to
+        # stretch, so the speed request is dropped. Nothing audible is lost:
+        # audio that short is rejected as silent before it reaches a caller.
+        if abs(row["speed"] - 1.0) > 0.01 and len(audio) >= 32:
             # Librosa phase vocoder for clean time-stretching without pitch shifts
             import librosa
-            audio_len = len(audio)
-            if audio_len >= 32:
-                # Dynamically scale n_fft for short utterances to prevent Librosa ParameterError
-                # while preserving power-of-2 efficiency for FFT kernels.
-                n_fft = min(2048, max(32, int(2 ** int(np.log2(audio_len)))))
-                audio = librosa.effects.time_stretch(
-                    audio, rate=row["speed"], n_fft=n_fft
-                ).astype(np.float32)
-                # Overlap-add in phase vocoder can cause constructive interference peaks > 1.0 or NaNs
-                audio = np.nan_to_num(audio, copy=False, nan=0.0, posinf=1.0, neginf=-1.0)
-                audio = np.clip(audio, -1.0, 1.0, out=audio)
+            # Dynamically scale n_fft for short utterances to prevent Librosa ParameterError
+            # while preserving power-of-2 efficiency for FFT kernels.
+            n_fft = min(2048, max(32, int(2 ** int(np.log2(len(audio))))))
+            audio = librosa.effects.time_stretch(
+                audio, rate=row["speed"], n_fft=n_fft
+            ).astype(np.float32)
+            # Overlap-add in phase vocoder can cause constructive interference peaks > 1.0 or NaNs
+            audio = np.nan_to_num(audio, copy=False, nan=0.0, posinf=1.0, neginf=-1.0)
+            audio = np.clip(audio, -1.0, 1.0, out=audio)
 
         return audio
 

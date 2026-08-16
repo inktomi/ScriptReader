@@ -1,22 +1,13 @@
-import base64
-import io
 import sys
-import types
 import unittest
+from pathlib import Path
 from unittest import mock
+
 import numpy as np
 
-# Provide fake modules for headless testing if soundfile/torch are not installed
-try:
-    import soundfile as sf
-except ImportError:
-    sf = types.SimpleNamespace()
-    sys.modules.setdefault("soundfile", sf)
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-sys.modules.setdefault("torch", types.SimpleNamespace(
-    cuda=types.SimpleNamespace(is_available=lambda: False)
-))
-
+import _test_stubs  # noqa: F401, E402  (installs the stubs)
 from handler import _encode_result  # noqa: E402
 
 
@@ -77,6 +68,43 @@ class HandlerEncodeResultTests(unittest.TestCase):
         self.assertEqual(captured_audio[0].ndim, 1)
         self.assertEqual(len(captured_audio[0]), 2400)
 
+    def test_encode_result_does_not_mutate_the_callers_array(self):
+        """np.asarray returns a view for float32, so sanitizing must copy first."""
+        unit = {"id": "line-shared", "text": "Shared buffer"}
+        raw_audio = np.array([-2.5, np.nan, 0.5, np.inf], dtype=np.float32)
+        original = raw_audio.copy()
+
+        with mock.patch("handler.sf.write", side_effect=lambda buf, *a, **k: buf.write(b"RIFF")):
+            _encode_result(unit, raw_audio, sr=24000)
+
+        self.assertEqual(raw_audio[0], original[0], "caller's sample was clamped in place")
+        self.assertTrue(np.isnan(raw_audio[1]), "caller's NaN was overwritten in place")
+        self.assertTrue(np.isinf(raw_audio[3]), "caller's Inf was overwritten in place")
+
+    def test_encode_result_handles_zero_dimensional_audio(self):
+        """A single sample can arrive 0-d, which has no len() and breaks np.clip(out=)."""
+        unit = {"id": "line-scalar", "text": "One sample"}
+
+        captured = []
+
+        def mock_write(buf, audio, sr, format=None, subtype=None):
+            captured.append(audio)
+            buf.write(b"RIFF_MOCK_WAV")
+
+        with mock.patch("handler.sf.write", side_effect=mock_write):
+            result = _encode_result(unit, np.float32(0.5), sr=24000)
+
+        self.assertNotIn("error", result)
+        self.assertEqual(captured[0].ndim, 1)
+        self.assertEqual(len(captured[0]), 1)
+        self.assertEqual(captured[0][0], 0.5)
+
+    def test_encode_result_marks_silent_audio_as_a_client_error(self):
+        unit = {"id": "line-silent", "text": "..."}
+        result = _encode_result(unit, np.zeros(100, dtype=np.float32))
+        self.assertIn("empty or silent audio", result["error"])
+        self.assertTrue(result["client_error"])
+
     def test_openai_speech_returns_json_error_on_invalid_input(self):
         import asyncio
         import json
@@ -97,12 +125,59 @@ class HandlerEncodeResultTests(unittest.TestCase):
         self.assertIn("error", body)
         self.assertIn("text must not be empty", body["error"])
 
-        # Missing reference error
-        req_missing = FakeRequest(json.dumps({"input": "Hello", "engine": "chatterbox", "voice_id": "unregistered"}).encode("utf-8"))
-        res_missing = asyncio.run(openai_speech(req_missing))
-        self.assertEqual(res_missing.status_code, 400)
-        body_missing = json.loads(res_missing.body.decode("utf-8"))
-        self.assertIn("error", body_missing)
+    def test_openai_speech_returns_400_for_missing_voice_reference(self):
+        """An unregistered voice is the caller's to fix, so it must not read 5xx."""
+        import asyncio
+        import json
+        import handler
+        from handler import openai_speech
+
+        class FakeRequest:
+            async def stream(self):
+                yield json.dumps({
+                    "input": "Hello",
+                    "engine": "chatterbox",
+                    "voice_id": "unregistered",
+                }).encode("utf-8")
+
+        class FakeChatterbox:
+            def generate_batch(self, items):
+                return [RuntimeError("Chatterbox voice 'unregistered' has no reference recording")]
+
+        # Without this the real engine is constructed, and the 400 under test
+        # comes from "requires a CUDA device" rather than the missing reference.
+        with mock.patch.object(handler, "get_chatterbox", FakeChatterbox):
+            res = asyncio.run(openai_speech(FakeRequest()))
+
+        self.assertEqual(res.status_code, 400)
+        body = json.loads(res.body.decode("utf-8"))
+        self.assertIn("has no reference recording", body["error"])
+
+    def test_openai_speech_returns_500_for_worker_failure(self):
+        """A worker fault must stay retryable: 400 would tell the client to give up."""
+        import asyncio
+        import json
+        import handler
+        from handler import openai_speech
+
+        class FakeRequest:
+            async def stream(self):
+                yield json.dumps({
+                    "input": "Hello",
+                    "engine": "chatterbox",
+                    "voice_id": "some-voice",
+                }).encode("utf-8")
+
+        class BrokenChatterbox:
+            def generate_batch(self, items):
+                raise RuntimeError("CUDA out of memory")
+
+        with mock.patch.object(handler, "get_chatterbox", BrokenChatterbox):
+            res = asyncio.run(openai_speech(FakeRequest()))
+
+        self.assertEqual(res.status_code, 500)
+        body = json.loads(res.body.decode("utf-8"))
+        self.assertIn("CUDA out of memory", body["error"])
 
 
 if __name__ == "__main__":

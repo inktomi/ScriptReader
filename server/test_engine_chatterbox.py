@@ -1,4 +1,3 @@
-import io
 import os
 import sys
 import threading
@@ -12,58 +11,7 @@ import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-
-class FakeInferenceMode:
-    def __enter__(self):
-        return self
-
-    def __exit__(self, *args):
-        pass
-
-
-class FakeTensor:
-    def __init__(self, array):
-        self._array = np.asarray(array, dtype=np.float32)
-
-    def detach(self):
-        return self
-
-    def cpu(self):
-        return self
-
-    def squeeze(self):
-        return FakeTensor(self._array.squeeze())
-
-    def numpy(self):
-        return self._array
-
-
-class FakeSoundFile:
-    @staticmethod
-    def read(buffer, dtype="float32"):
-        return np.full(2400, 0.1, dtype=np.float32), 24000
-
-    @staticmethod
-    def write(target, audio, sample_rate, format=None, subtype=None):
-        pass
-
-
-# Mock torch and soundfile if not installed in test environment
-fake_torch = types.SimpleNamespace(
-    cuda=types.SimpleNamespace(is_available=lambda: False),
-    inference_mode=lambda: FakeInferenceMode(),
-    backends=types.SimpleNamespace(
-        cuda=types.SimpleNamespace(matmul=types.SimpleNamespace(allow_tf32=True)),
-        cudnn=types.SimpleNamespace(allow_tf32=True),
-    ),
-    Tensor=FakeTensor,
-)
-sys.modules.setdefault("torch", fake_torch)
-sys.modules.setdefault("soundfile", FakeSoundFile)
-sys.modules.setdefault("librosa", types.SimpleNamespace(
-    effects=types.SimpleNamespace(time_stretch=lambda y, rate=1.0, **kwargs: y)
-))
-
+from _test_stubs import FakeSoundFile, FakeTensor  # noqa: E402  (installs the stubs)
 from engine_chatterbox import ChatterboxEngine, LRUSpeakerCache  # noqa: E402
 
 
@@ -146,6 +94,18 @@ class ConcurrentFakeChatterboxModel:
 class ChatterboxEngineTests(unittest.TestCase):
     def setUp(self):
         self.fake_model = FakeChatterboxModel()
+
+    def assertLockFree(self, lock):
+        """Assert nothing holds the lock — not merely that this thread does not.
+
+        RLock._is_owned() only answers for the calling thread, so it cannot see
+        a lock stranded by a worker, which is the failure these tests are for.
+        Taking it non-blocking proves it is actually free.
+        """
+        acquired = lock.acquire(blocking=False)
+        if acquired:
+            lock.release()
+        self.assertTrue(acquired, "lock is still held")
 
     def _build_engine(self, require_gpu=False):
         engine = ChatterboxEngine(require_gpu=require_gpu)
@@ -240,7 +200,7 @@ class ChatterboxEngineTests(unittest.TestCase):
         with mock.patch("engine_chatterbox.sf", FakeSoundFile):
             engine.warmup()
         self.assertNotIn("__warmup__", engine.speakers_cache)
-        self.assertFalse(engine._lock._is_owned())
+        self.assertLockFree(engine._lock)
 
     def test_batch_caches_reference_from_unspeakable_first_item(self):
         engine = self._build_engine()
@@ -514,7 +474,7 @@ class ChatterboxEngineTests(unittest.TestCase):
             engine.generate("Fail text", voice_id="voice_fail")
 
         # Verify the lock is released and not owned by current thread
-        self.assertFalse(engine._lock._is_owned())
+        self.assertLockFree(engine._lock)
 
         # Now replace with working model and verify generate succeeds
         engine.model = self.fake_model
@@ -539,7 +499,7 @@ class ChatterboxEngineTests(unittest.TestCase):
                 engine.register_speaker_reference("voice_fail", b"audio_bytes")
 
         # Verify the lock is released and not owned by current thread
-        self.assertFalse(engine._lock._is_owned())
+        self.assertLockFree(engine._lock)
 
     def test_cache_capacity_enforced(self):
         cache = LRUSpeakerCache(maxsize=3)
@@ -629,6 +589,35 @@ class ChatterboxEngineTests(unittest.TestCase):
         cache.clear()
         self.assertEqual(len(cache), 0)
 
+    def test_cache_accepts_initial_items(self):
+        """OrderedDict.__init__ seeds through __setitem__, which reads maxsize/_lock."""
+        cache = LRUSpeakerCache(8, {"v1": "c1", "v2": "c2"})
+        self.assertEqual(cache.maxsize, 8)
+        self.assertEqual(cache.items(), [("v1", "c1"), ("v2", "c2")])
+
+    def test_cache_copy_preserves_bound_and_every_entry(self):
+        """OrderedDict.copy() would pass the mapping itself as maxsize."""
+        cache = LRUSpeakerCache(maxsize=3)
+        cache["v1"] = "c1"
+        cache["v2"] = "c2"
+
+        duplicate = cache.copy()
+
+        self.assertIsInstance(duplicate, LRUSpeakerCache)
+        self.assertEqual(duplicate.maxsize, 3)
+        self.assertEqual(duplicate.items(), [("v1", "c1"), ("v2", "c2")])
+
+        # The copy is independent of the original.
+        duplicate["v3"] = "c3"
+        self.assertNotIn("v3", cache)
+
+    def test_malformed_cache_size_env_var_falls_back_to_default(self):
+        """preload_engines() builds this engine, so a bad value must not kill startup."""
+        for bogus in ("not-a-number", "", "   ", "12.5"):
+            with mock.patch.dict(os.environ, {"SCRIPTREADER_SPEAKER_CACHE_SIZE": bogus}):
+                engine = ChatterboxEngine(require_gpu=False)
+                self.assertEqual(engine.speakers_cache.maxsize, 64)
+
     def test_cache_min_size_enforcement(self):
         cache_zero = LRUSpeakerCache(maxsize=0)
         self.assertEqual(cache_zero.maxsize, 1)
@@ -689,6 +678,93 @@ class ChatterboxEngineTests(unittest.TestCase):
     def test_cache_explicit_constructor_arg(self):
         engine = ChatterboxEngine(require_gpu=False, max_cache_size=10)
         self.assertEqual(engine.speakers_cache.maxsize, 10)
+
+    def test_safe_generate_prefers_declared_language_parameter_over_kwargs(self):
+        """A model with both `lang` and **kwargs must get the language on `lang`.
+
+        Routing it into **kwargs instead leaves `lang` at its default, so the
+        line synthesises in the wrong language without raising anything.
+        """
+        engine = self._build_engine()
+
+        class LangPlusKwargsModel:
+            sr = 24000
+
+            def __init__(self):
+                self.calls = []
+
+            def generate(self, text, lang="en", exaggeration=0.5, **kwargs):
+                self.calls.append({"text": text, "lang": lang, "kwargs": kwargs})
+                return FakeTensor(np.full(100, 0.25, dtype=np.float32))
+
+        model = LangPlusKwargsModel()
+        engine.model = model
+        engine.speakers_cache["voice_lang"] = ("mock_conds",)
+
+        engine.generate("Bonjour.", voice_id="voice_lang", language_id="fr")
+
+        self.assertEqual(model.calls[0]["lang"], "fr")
+        self.assertNotIn("language_id", model.calls[0]["kwargs"])
+
+    def test_safe_generate_uses_language_id_when_only_var_keyword_is_declared(self):
+        """A fully variadic signature has no named parameter to filter against."""
+        engine = self._build_engine()
+
+        class VariadicModel:
+            sr = 24000
+
+            def __init__(self):
+                self.calls = []
+
+            def generate(self, *args, **kwargs):
+                self.calls.append(kwargs)
+                return FakeTensor(np.full(100, 0.25, dtype=np.float32))
+
+        model = VariadicModel()
+        engine.model = model
+        engine.speakers_cache["voice_var"] = ("mock_conds",)
+
+        engine.generate("Hola.", voice_id="voice_var", language_id="es")
+
+        self.assertEqual(model.calls[0]["language_id"], "es")
+        self.assertEqual(model.calls[0]["text"], "Hola.")
+
+    def test_safe_generate_filters_unknown_kwargs_for_narrow_signatures(self):
+        """A model that declares neither language name gets nothing it cannot take."""
+        engine = self._build_engine()
+
+        class NarrowModel:
+            sr = 24000
+
+            def __init__(self):
+                self.calls = []
+
+            def generate(self, text, exaggeration=0.5):
+                self.calls.append({"text": text, "exaggeration": exaggeration})
+                return FakeTensor(np.full(100, 0.25, dtype=np.float32))
+
+        model = NarrowModel()
+        engine.model = model
+        engine.speakers_cache["voice_narrow"] = ("mock_conds",)
+
+        audio = engine.generate("Plain.", voice_id="voice_narrow", exaggeration=0.7)
+
+        self.assertEqual(len(audio), 100)
+        self.assertEqual(model.calls[0], {"text": "Plain.", "exaggeration": 0.7})
+
+    def test_short_audio_skips_time_stretch_without_raising(self):
+        """Under 32 samples there is no window to stretch; speed is dropped, not fatal."""
+        engine = self._build_engine()
+        engine.speakers_cache["voice_short"] = ("mock_conds",)
+        engine.model.generate = mock.MagicMock(
+            return_value=FakeTensor(np.full(16, 0.25, dtype=np.float32))
+        )
+
+        with mock.patch("librosa.effects.time_stretch") as stretch:
+            audio = engine.generate("Tiny.", voice_id="voice_short", speed=1.5)
+
+        stretch.assert_not_called()
+        self.assertEqual(len(audio), 16)
 
     def test_render_row_clamps_overshoot_and_sanitizes_nans(self):
         """Verify that vocoder outputs with peaks > 1.0 and NaNs are clamped and sanitized."""

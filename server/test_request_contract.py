@@ -1,22 +1,17 @@
 import asyncio
 import base64
 import sys
-import types
 import unittest
 from pathlib import Path
 from unittest import mock
 
 import numpy as np
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 # Importing handler pulls in the engines, which must not require CUDA, PyTorch
-# or libsndfile just to check the request contract. Declared here as well as in
-# the engine tests so this file can be run on its own.
-sys.modules.setdefault("torch", types.SimpleNamespace(
-    cuda=types.SimpleNamespace(is_available=lambda: False)
-))
-sys.modules.setdefault("soundfile", types.SimpleNamespace())
-
+# or libsndfile just to check the request contract.
+import _test_stubs  # noqa: F401, E402  (installs the stubs)
 from request_contract import (  # noqa: E402
     InputError,
     MAX_BATCH_ITEMS,
@@ -250,7 +245,64 @@ class OpenAIModelAliasesTests(unittest.TestCase):
                 f"Model identifier '{model}' failed to alias to 'kokoro'",
             )
             self.assertEqual(normalized["text"], "Testing OpenAI alias resolution.")
-            self.assertEqual(normalized["voice"], "alloy")
+            # Kokoro has no voice named bare "alloy"; af_alloy is the equivalent.
+            self.assertEqual(normalized["voice"], "af_alloy")
+
+    def test_openai_voice_names_resolve_to_kokoro_voices(self):
+        """The canonical OpenAI body must name a voice Kokoro can actually load."""
+        expected = {
+            "alloy": "af_alloy",
+            "echo": "am_echo",
+            "fable": "bm_fable",
+            "nova": "af_nova",
+            "onyx": "am_onyx",
+            "shimmer": "af_river",
+            "sage": "af_nicole",
+            "coral": "af_sarah",
+            "ballad": "bf_emma",
+            "verse": "am_puck",
+            "ash": "am_fenrir",
+            "cedar": "am_michael",
+            "marin": "af_heart",
+        }
+        for openai_voice, kokoro_voice in expected.items():
+            normalized = normalize_item({
+                "model": "tts-1",
+                "input": "Voice alias resolution.",
+                "voice": openai_voice,
+            })
+            self.assertEqual(normalized["engine"], "kokoro")
+            self.assertEqual(
+                normalized["voice"],
+                kokoro_voice,
+                f"OpenAI voice '{openai_voice}' failed to alias to '{kokoro_voice}'",
+            )
+
+        # Mixed case and surrounding space still resolve.
+        self.assertEqual(
+            normalize_item({"model": "tts-1", "input": "Hi", "voice": "  ALLOY "})["voice"],
+            "af_alloy",
+        )
+
+    def test_native_kokoro_voices_are_left_alone(self):
+        """Aliasing must not rewrite a voice Kokoro already answers to."""
+        for voice in ("af_heart", "bf_emma", "am_adam", "bm_george"):
+            normalized = normalize_item({
+                "engine": "kokoro",
+                "input": "Native voice.",
+                "voice": voice,
+            })
+            self.assertEqual(normalized["voice"], voice)
+
+    def test_chatterbox_voice_ids_are_never_aliased(self):
+        """Chatterbox voice ids are opaque cache keys and must survive verbatim."""
+        normalized = normalize_item({
+            "engine": "chatterbox",
+            "text": "Cloned line.",
+            "voice_id": "alloy",
+        })
+        self.assertEqual(normalized["engine"], "chatterbox")
+        self.assertEqual(normalized["voice"], "alloy")
 
     def test_engine_field_precedence_over_model_field(self):
         """Explicit engine field takes precedence over model parameter."""
@@ -265,7 +317,7 @@ class OpenAIModelAliasesTests(unittest.TestCase):
 
     def test_invalid_model_identifier_raises_input_error(self):
         """Unsupported model or engine names raise descriptive InputError."""
-        with self.assertRaisesRegex(InputError, "engine must be 'kokoro' or 'chatterbox'"):
+        with self.assertRaisesRegex(InputError, "engine must be one of: .*chatterbox.*kokoro"):
             normalize_item({"model": "unsupported-model-v1", "input": "Hello"})
 
         with self.assertRaisesRegex(InputError, "engine must be a string"):

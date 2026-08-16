@@ -1,26 +1,15 @@
+import sys
 import threading
 import time
-import sys
-import types
 import unittest
+from pathlib import Path
 from unittest import mock
+
 import numpy as np
 
-# Mock torch if running in a lightweight test environment without CUDA
-fake_torch = types.SimpleNamespace(
-    cuda=types.SimpleNamespace(is_available=lambda: False),
-    inference_mode=lambda: mock.MagicMock(__enter__=lambda s: s, __exit__=lambda *a: None),
-    backends=types.SimpleNamespace(
-        cuda=types.SimpleNamespace(matmul=types.SimpleNamespace(allow_tf32=True)),
-        cudnn=types.SimpleNamespace(allow_tf32=True),
-    ),
-)
-sys.modules.setdefault("torch", fake_torch)
-fake_kokoro = types.SimpleNamespace(KPipeline=None)
-sys.modules.setdefault("kokoro", fake_kokoro)
-if not hasattr(sys.modules["kokoro"], "KPipeline"):
-    sys.modules["kokoro"].KPipeline = None
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 
+from _test_stubs import FakeTensor  # noqa: E402  (installs the stubs)
 from engine_kokoro import KokoroEngine  # noqa: E402
 
 
@@ -171,28 +160,16 @@ class KokoroEngineTests(unittest.TestCase):
         self.assertEqual(max_concurrent, 1)
 
     def test_generate_handles_cuda_torch_tensors(self):
-        class FakeTorchTensor:
-            def __init__(self, array):
-                self._array = np.asarray(array, dtype=np.float32)
-
-            def detach(self):
-                return self
-
-            def cpu(self):
-                return self
-
-            def numpy(self):
-                return self._array
-
         class TorchPipeline(FakeKPipeline):
             def __call__(self, text, voice='af_heart', speed=1.0, split_pattern=None):
-                yield text, "phonemes", FakeTorchTensor(np.full(100, 0.4, dtype=np.float32))
-                yield text, "phonemes", FakeTorchTensor(np.full(50, 0.2, dtype=np.float32))
+                yield text, "phonemes", FakeTensor(np.full(100, 0.4, dtype=np.float32))
+                yield text, "phonemes", FakeTensor(np.full(50, 0.2, dtype=np.float32))
 
         engine = KokoroEngine(require_gpu=False)
         engine.pipelines["a"] = TorchPipeline(lang_code='a')
 
-        with mock.patch("engine_kokoro.torch.Tensor", FakeTorchTensor):
+        # Patched explicitly so this holds when a real torch is installed too.
+        with mock.patch("engine_kokoro.torch.Tensor", FakeTensor):
             audio = engine.generate("Testing torch tensor chunks.", voice="af_heart")
 
         self.assertIsInstance(audio, np.ndarray)

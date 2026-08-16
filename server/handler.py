@@ -35,43 +35,55 @@ def get_chatterbox():
         chatterbox_engine = ChatterboxEngine()
     return chatterbox_engine
 
-def _error_result(item_id, error) -> dict:
-    print(f"[Handler Error] Failed processing unit: {error}")
+SILENT_AUDIO_ERROR = "Synthesis produced empty or silent audio"
+
+def _is_client_error(error) -> bool:
+    """Whether a failed unit is the caller's to fix rather than the worker's.
+
+    This is the only thing separating a 4xx from a 5xx on the HTTP endpoints,
+    and the browser treats 5xx as retryable and 4xx as final — so a worker fault
+    reported as 400 costs the caller that line permanently.
+    """
+    if isinstance(error, InputError):
+        return True
+    # The caller must send reference_audio_b64 or register the voice first;
+    # runpod-engine.js already keys its one retry off this exact wording.
+    return "has no reference recording" in str(error)
+
+def _error_result(item_id, error, *, client_error=None, log=True) -> dict:
+    if log:
+        print(f"[Handler Error] Failed processing unit: {error}")
     return {
         "id": item_id,
         "error": str(error),
+        "client_error": _is_client_error(error) if client_error is None else client_error,
         "audio_base64": "",
         "sample_rate": 24000,
-        "duration": 0.0
+        "duration": 0.0,
     }
 
 def _encode_result(unit: dict, audio, sr: int = 24000) -> dict:
     if audio is None:
-        return {
-            "id": unit["id"],
-            "error": "Synthesis produced empty or silent audio",
-            "audio_base64": "",
-            "sample_rate": 24000,
-            "duration": 0.0,
-        }
+        return _error_result(unit["id"], SILENT_AUDIO_ERROR, client_error=True, log=False)
 
-    audio = np.asarray(audio, dtype=np.float32)
+    # np.asarray hands back a view when the input is already float32, so
+    # sanitizing in place would rewrite the engine's own array. Copy once.
+    audio = np.array(audio, dtype=np.float32, copy=True)
+    # A single sample can arrive as a 0-d array, which has no length at all.
+    # Both engines widen their own output; this is the third place that needs it.
+    audio = np.atleast_1d(audio)
     if audio.ndim > 1:
-        audio = audio.squeeze()
+        audio = np.atleast_1d(audio.squeeze())
 
     # Sanitize non-finite values (NaN, +inf, -inf) and clamp to valid [-1.0, 1.0] PCM float range
     audio = np.nan_to_num(audio, copy=False, nan=0.0, posinf=1.0, neginf=-1.0)
     audio = np.clip(audio, -1.0, 1.0, out=audio)
 
-    if len(audio) == 0 or np.all(audio == 0) or np.all(np.abs(audio) <= 0.0001):
-        return {
-            "id": unit["id"],
-            "error": "Synthesis produced empty or silent audio",
-            "audio_base64": "",
-            "sample_rate": 24000,
-            "duration": 0.0,
-        }
-    if len(audio) / sr > MAX_OUTPUT_SECONDS:
+    # An all-zero buffer is a special case of the amplitude floor below it.
+    if audio.size == 0 or np.all(np.abs(audio) <= 0.0001):
+        return _error_result(unit["id"], SILENT_AUDIO_ERROR, client_error=True, log=False)
+    frames = audio.shape[0]
+    if frames / sr > MAX_OUTPUT_SECONDS:
         return _error_result(unit["id"], InputError(f"synthesis output exceeds {MAX_OUTPUT_SECONDS:g} seconds"))
 
     # Encode to WAV 16-bit PCM
@@ -81,7 +93,7 @@ def _encode_result(unit: dict, audio, sr: int = 24000) -> dict:
         "id": unit["id"],
         "audio_base64": base64.b64encode(buf.getvalue()).decode("utf-8"),
         "sample_rate": sr,
-        "duration": round(len(audio) / sr, 3),
+        "duration": round(frames / sr, 3),
     }
 
 def process_units(items: list) -> list:
@@ -232,11 +244,17 @@ async def openai_speech(request: Request):
         return JSONResponse({"error": str(error)}, status_code=413 if "too large" in str(error) else 400)
     result = process_single_unit(data)
     if result.get("error"):
-        return JSONResponse({"error": result["error"]}, status_code=400)
+        # A malformed request is the caller's to fix. A worker fault — no CUDA
+        # device, a model that will not load, an allocation failure — is not,
+        # and answering 400 tells the client never to retry it.
+        return JSONResponse(
+            {"error": result["error"]},
+            status_code=400 if result.get("client_error") else 500,
+        )
     if result.get("audio_base64"):
         audio_bytes = base64.b64decode(result["audio_base64"])
         return Response(content=audio_bytes, media_type="audio/wav")
-    return JSONResponse({"error": "Synthesis produced no audio output"}, status_code=400)
+    return JSONResponse({"error": "Synthesis produced no audio output"}, status_code=500)
 
 @app.post("/v1/audio/batch")
 async def batch_speech(request: Request):
