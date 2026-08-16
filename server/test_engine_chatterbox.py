@@ -1,12 +1,16 @@
 import io
+import os
 import sys
 import threading
 import time
 import types
 import unittest
+from pathlib import Path
 from unittest import mock
 
 import numpy as np
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 
 class FakeInferenceMode:
@@ -60,7 +64,7 @@ sys.modules.setdefault("librosa", types.SimpleNamespace(
     effects=types.SimpleNamespace(time_stretch=lambda y, rate: y)
 ))
 
-from engine_chatterbox import ChatterboxEngine  # noqa: E402
+from engine_chatterbox import ChatterboxEngine, LRUSpeakerCache  # noqa: E402
 
 
 class FakeChatterboxModel:
@@ -541,6 +545,155 @@ class ChatterboxEngineTests(unittest.TestCase):
         self.assertTrue(acquired)
         if acquired:
             engine._lock.release()
+
+    def test_cache_capacity_enforced(self):
+        cache = LRUSpeakerCache(maxsize=3)
+        cache["v1"] = "cond1"
+        cache["v2"] = "cond2"
+        cache["v3"] = "cond3"
+        cache["v4"] = "cond4"
+
+        self.assertEqual(len(cache), 3)
+        self.assertNotIn("v1", cache)
+        self.assertIn("v2", cache)
+        self.assertIn("v3", cache)
+        self.assertIn("v4", cache)
+
+    def test_cache_lru_eviction_order(self):
+        cache = LRUSpeakerCache(maxsize=3)
+        cache["v1"] = "cond1"
+        cache["v2"] = "cond2"
+        cache["v3"] = "cond3"
+
+        cache["v4"] = "cond4"
+        self.assertEqual(list(cache.keys()), ["v2", "v3", "v4"])
+
+        cache["v5"] = "cond5"
+        self.assertEqual(list(cache.keys()), ["v3", "v4", "v5"])
+
+    def test_cache_get_and_getitem_promotes_to_mru(self):
+        cache = LRUSpeakerCache(maxsize=3)
+        cache["v1"] = "cond1"
+        cache["v2"] = "cond2"
+        cache["v3"] = "cond3"
+
+        # Access v1 via get() to make v2 the oldest
+        _ = cache.get("v1")
+        cache["v4"] = "cond4"
+
+        self.assertNotIn("v2", cache)
+        self.assertIn("v1", cache)
+        self.assertIn("v3", cache)
+        self.assertIn("v4", cache)
+
+        # Access v3 via __getitem__ to make v1 the oldest
+        _ = cache["v3"]
+        cache["v5"] = "cond5"
+
+        self.assertNotIn("v1", cache)
+        self.assertIn("v3", cache)
+        self.assertIn("v4", cache)
+        self.assertIn("v5", cache)
+
+    def test_cache_re_registration_updates_and_promotes(self):
+        cache = LRUSpeakerCache(maxsize=3)
+        cache["v1"] = "cond1"
+        cache["v2"] = "cond2"
+        cache["v3"] = "cond3"
+
+        cache["v1"] = "cond1_updated"
+        cache["v4"] = "cond4"
+
+        self.assertNotIn("v2", cache)
+        self.assertEqual(list(cache.keys()), ["v3", "v1", "v4"])
+        self.assertEqual(cache["v1"], "cond1_updated")
+        self.assertEqual(list(cache.keys()), ["v3", "v4", "v1"])
+
+    def test_cache_methods_and_copies(self):
+        cache = LRUSpeakerCache(maxsize=3)
+        cache["v1"] = "c1"
+        cache["v2"] = "c2"
+
+        self.assertEqual(cache.keys(), ["v1", "v2"])
+        self.assertEqual(cache.values(), ["c1", "c2"])
+        self.assertEqual(cache.items(), [("v1", "c1"), ("v2", "c2")])
+
+        # Test pop
+        popped = cache.pop("v1")
+        self.assertEqual(popped, "c1")
+        self.assertNotIn("v1", cache)
+        self.assertEqual(cache.pop("nonexistent", "fallback"), "fallback")
+
+        # Test __delitem__
+        cache["v3"] = "c3"
+        del cache["v2"]
+        self.assertNotIn("v2", cache)
+        self.assertEqual(len(cache), 1)
+
+        # Test clear
+        cache.clear()
+        self.assertEqual(len(cache), 0)
+
+    def test_cache_min_size_enforcement(self):
+        cache_zero = LRUSpeakerCache(maxsize=0)
+        self.assertEqual(cache_zero.maxsize, 1)
+
+        cache_neg = LRUSpeakerCache(maxsize=-5)
+        self.assertEqual(cache_neg.maxsize, 1)
+
+    def test_batch_generation_exceeding_cache_capacity_succeeds(self):
+        engine = ChatterboxEngine(require_gpu=False, max_cache_size=2)
+        engine.model = self.fake_model
+        engine.device = "cpu"
+        engine._initialized = True
+
+        items = [
+            {"text": "Line 1.", "voice_id": "v1", "reference_audio_bytes": b"wav1"},
+            {"text": "Line 2.", "voice_id": "v2", "reference_audio_bytes": b"wav2"},
+            {"text": "Line 3.", "voice_id": "v3", "reference_audio_bytes": b"wav3"},
+            {"text": "Line 4.", "voice_id": "v4", "reference_audio_bytes": b"wav4"},
+        ]
+
+        with mock.patch("engine_chatterbox.sf", FakeSoundFile):
+            results = engine.generate_batch(items)
+
+        self.assertEqual(len(results), 4)
+        for r in results:
+            self.assertIsInstance(r, np.ndarray)
+            self.assertEqual(len(r), 100)
+
+        # Only the 2 most recent voices remain in cache
+        self.assertEqual(len(engine.speakers_cache), 2)
+        self.assertNotIn("v1", engine.speakers_cache)
+        self.assertNotIn("v2", engine.speakers_cache)
+        self.assertIn("v3", engine.speakers_cache)
+        self.assertIn("v4", engine.speakers_cache)
+
+    def test_cache_thread_safety_concurrent_access(self):
+        cache = LRUSpeakerCache(maxsize=5)
+
+        def worker(thread_id):
+            for i in range(50):
+                key = f"voice_{thread_id}_{i % 10}"
+                cache[key] = f"cond_{thread_id}_{i}"
+                _ = cache.get(key)
+
+        threads = [threading.Thread(target=worker, args=(t,)) for t in range(8)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+        self.assertLessEqual(len(cache), 5)
+
+    def test_configurable_cache_size_via_env_var(self):
+        with mock.patch.dict(os.environ, {"SCRIPTREADER_SPEAKER_CACHE_SIZE": "16"}):
+            engine = ChatterboxEngine(require_gpu=False)
+            self.assertEqual(engine.speakers_cache.maxsize, 16)
+
+    def test_cache_explicit_constructor_arg(self):
+        engine = ChatterboxEngine(require_gpu=False, max_cache_size=10)
+        self.assertEqual(engine.speakers_cache.maxsize, 10)
 
 
 if __name__ == "__main__":

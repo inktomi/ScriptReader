@@ -1,3 +1,4 @@
+import collections
 import inspect
 import io
 import os
@@ -14,6 +15,90 @@ def _requires_gpu():
     return os.environ.get("SCRIPTREADER_REQUIRE_GPU", "1").strip().lower() not in {"0", "false", "no", ""}
 
 
+DEFAULT_MAX_SPEAKER_CACHE_SIZE = 64
+
+
+class LRUSpeakerCache(collections.OrderedDict):
+    """Thread-safe bounded LRU cache for speaker conditioning tensors."""
+
+    def __init__(self, maxsize: int = DEFAULT_MAX_SPEAKER_CACHE_SIZE, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.maxsize = max(1, int(maxsize))
+        self._lock = threading.RLock()
+
+    def __getitem__(self, key):
+        with self._lock:
+            val = super().__getitem__(key)
+            super().move_to_end(key)
+            return val
+
+    def get(self, key, default=None):
+        with self._lock:
+            try:
+                val = super().__getitem__(key)
+                super().move_to_end(key)
+                return val
+            except KeyError:
+                return default
+
+    def __setitem__(self, key, value):
+        with self._lock:
+            super().__setitem__(key, value)
+            super().move_to_end(key)
+            while len(self) > self.maxsize:
+                oldest_key = next(iter(self))
+                oldest_val = super().__getitem__(oldest_key)
+                super().__delitem__(oldest_key)
+                del oldest_val
+
+    def pop(self, key, *args):
+        with self._lock:
+            if key in self:
+                val = super().__getitem__(key)
+                super().__delitem__(key)
+                return val
+            if args:
+                return args[0]
+            raise KeyError(key)
+
+    def popitem(self, last=True):
+        with self._lock:
+            if not self:
+                raise KeyError("dictionary is empty")
+            key = next(reversed(self)) if last else next(iter(self))
+            val = super().__getitem__(key)
+            super().__delitem__(key)
+            return key, val
+
+    def __delitem__(self, key):
+        with self._lock:
+            super().__delitem__(key)
+
+    def __contains__(self, key):
+        with self._lock:
+            return super().__contains__(key)
+
+    def __len__(self):
+        with self._lock:
+            return super().__len__()
+
+    def clear(self):
+        with self._lock:
+            super().clear()
+
+    def keys(self):
+        with self._lock:
+            return list(super().keys())
+
+    def values(self):
+        with self._lock:
+            return list(super().values())
+
+    def items(self):
+        with self._lock:
+            return list(super().items())
+
+
 class ChatterboxEngine:
     """High-quality PyTorch-native Chatterbox Multilingual V3 voice cloning engine.
 
@@ -22,10 +107,13 @@ class ChatterboxEngine:
     memory for instant zero-latency reuse across screenplay lines.
     """
 
-    def __init__(self, models_dir=None, require_gpu=None):
+    def __init__(self, models_dir=None, require_gpu=None, max_cache_size=None):
         self.models_dir = models_dir
         self.sample_rate = 24000
-        self.speakers_cache = {}
+        cache_size = max_cache_size if max_cache_size is not None else int(
+            os.environ.get("SCRIPTREADER_SPEAKER_CACHE_SIZE", str(DEFAULT_MAX_SPEAKER_CACHE_SIZE))
+        )
+        self.speakers_cache = LRUSpeakerCache(maxsize=cache_size)
         self.model = None
         self._initialized = False
         self._lock = threading.RLock()
