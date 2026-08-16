@@ -46,13 +46,30 @@ def _error_result(item_id, error) -> dict:
     }
 
 def _encode_result(unit: dict, audio, sr: int = 24000) -> dict:
-    if audio is None or len(audio) == 0 or np.all(audio == 0) or np.all(np.abs(audio) <= 0.0001):
+    if audio is None:
         return {
             "id": unit["id"],
             "error": "Synthesis produced empty or silent audio",
             "audio_base64": "",
             "sample_rate": 24000,
-            "duration": 0.0
+            "duration": 0.0,
+        }
+
+    audio = np.asarray(audio, dtype=np.float32)
+    if audio.ndim > 1:
+        audio = audio.squeeze()
+
+    # Sanitize non-finite values (NaN, +inf, -inf) and clamp to valid [-1.0, 1.0] PCM float range
+    audio = np.nan_to_num(audio, copy=False, nan=0.0, posinf=1.0, neginf=-1.0)
+    audio = np.clip(audio, -1.0, 1.0, out=audio)
+
+    if len(audio) == 0 or np.all(audio == 0) or np.all(np.abs(audio) <= 0.0001):
+        return {
+            "id": unit["id"],
+            "error": "Synthesis produced empty or silent audio",
+            "audio_base64": "",
+            "sample_rate": 24000,
+            "duration": 0.0,
         }
     if len(audio) / sr > MAX_OUTPUT_SECONDS:
         return _error_result(unit["id"], InputError(f"synthesis output exceeds {MAX_OUTPUT_SECONDS:g} seconds"))
@@ -64,7 +81,7 @@ def _encode_result(unit: dict, audio, sr: int = 24000) -> dict:
         "id": unit["id"],
         "audio_base64": base64.b64encode(buf.getvalue()).decode("utf-8"),
         "sample_rate": sr,
-        "duration": round(len(audio) / sr, 3)
+        "duration": round(len(audio) / sr, 3),
     }
 
 def process_units(items: list) -> list:

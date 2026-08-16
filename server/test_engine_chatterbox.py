@@ -695,6 +695,44 @@ class ChatterboxEngineTests(unittest.TestCase):
         engine = ChatterboxEngine(require_gpu=False, max_cache_size=10)
         self.assertEqual(engine.speakers_cache.maxsize, 10)
 
+    def test_render_row_clamps_overshoot_and_sanitizes_nans(self):
+        """Verify that vocoder outputs with peaks > 1.0 and NaNs are clamped and sanitized."""
+        engine = self._build_engine()
+        engine.speakers_cache["voice_test"] = ("mock_conds",)
+
+        # Mock model.generate to return out-of-bounds audio with NaNs and Infs
+        raw_waveform = np.array([-1.5, -0.5, 0.0, np.nan, 0.5, 1.25, np.inf, -np.inf], dtype=np.float32)
+        engine.model.generate = mock.MagicMock(return_value=FakeTensor(raw_waveform))
+
+        audio = engine.generate("Testing clipping.", voice_id="voice_test", speed=1.0)
+
+        self.assertIsInstance(audio, np.ndarray)
+        self.assertFalse(np.isnan(audio).any(), "Audio should not contain any NaN values")
+        self.assertFalse(np.isinf(audio).any(), "Audio should not contain any Inf values")
+        self.assertTrue(np.all(audio >= -1.0), "All audio samples must be >= -1.0")
+        self.assertTrue(np.all(audio <= 1.0), "All audio samples must be <= 1.0")
+        self.assertEqual(audio[0], -1.0, "Overshoot -1.5 should be clamped to -1.0")
+        self.assertEqual(audio[3], 0.0, "NaN should be converted to 0.0")
+        self.assertEqual(audio[5], 1.0, "Overshoot 1.25 should be clamped to 1.0")
+        self.assertEqual(audio[6], 1.0, "+Inf should be clamped to 1.0")
+        self.assertEqual(audio[7], -1.0, "-Inf should be clamped to -1.0")
+
+    def test_speed_stretch_output_is_clamped_and_sanitized(self):
+        """Verify that phase-vocoder time-stretch output exceeding [-1.0, 1.0] is clamped."""
+        engine = self._build_engine()
+        engine.speakers_cache["voice_test"] = ("mock_conds",)
+
+        # Mock librosa.effects.time_stretch to return out-of-bounds array
+        stretched_out_of_bounds = np.array([-1.2, 0.5, 1.3, np.nan], dtype=np.float32)
+        with mock.patch("librosa.effects.time_stretch", return_value=stretched_out_of_bounds):
+            audio = engine.generate("Speed test.", voice_id="voice_test", speed=1.2)
+            self.assertFalse(np.isnan(audio).any())
+            self.assertTrue(np.all(audio >= -1.0))
+            self.assertTrue(np.all(audio <= 1.0))
+            self.assertEqual(audio[0], -1.0)
+            self.assertEqual(audio[2], 1.0)
+            self.assertEqual(audio[3], 0.0)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -276,6 +276,10 @@ class ChatterboxEngine:
         else:
             audio = np.asarray(wav, dtype=np.float32).squeeze()
 
+        # Sanitize non-finite values and clamp raw vocoder output
+        audio = np.nan_to_num(audio, copy=False, nan=0.0, posinf=1.0, neginf=-1.0)
+        audio = np.clip(audio, -1.0, 1.0, out=audio)
+
         if audio is None or len(audio) == 0 or np.all(audio == 0):
             raise RuntimeError(f"Chatterbox voice generation failed for voice '{row['voice_id']}'")
 
@@ -283,6 +287,9 @@ class ChatterboxEngine:
             # Librosa phase vocoder for clean time-stretching without pitch shifts
             import librosa
             audio = librosa.effects.time_stretch(audio, rate=row["speed"]).astype(np.float32)
+            # Overlap-add in phase vocoder can cause constructive interference peaks > 1.0 or NaNs
+            audio = np.nan_to_num(audio, copy=False, nan=0.0, posinf=1.0, neginf=-1.0)
+            audio = np.clip(audio, -1.0, 1.0, out=audio)
 
         return audio
 
