@@ -513,11 +513,8 @@ class ChatterboxEngineTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "Simulated CUDA failure"):
             engine.generate("Fail text", voice_id="voice_fail")
 
-        # Verify the lock is released: we can acquire it without blocking
-        acquired = engine._lock.acquire(blocking=False)
-        self.assertTrue(acquired)
-        if acquired:
-            engine._lock.release()
+        # Verify the lock is released and not owned by current thread
+        self.assertFalse(engine._lock._is_owned())
 
         # Now replace with working model and verify generate succeeds
         engine.model = self.fake_model
@@ -541,11 +538,8 @@ class ChatterboxEngineTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "Simulated prepare failure"):
                 engine.register_speaker_reference("voice_fail", b"audio_bytes")
 
-        # Verify the lock is released
-        acquired = engine._lock.acquire(blocking=False)
-        self.assertTrue(acquired)
-        if acquired:
-            engine._lock.release()
+        # Verify the lock is released and not owned by current thread
+        self.assertFalse(engine._lock._is_owned())
 
     def test_cache_capacity_enforced(self):
         cache = LRUSpeakerCache(maxsize=3)
