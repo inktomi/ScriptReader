@@ -377,4 +377,5 @@ class ChatterboxEngine:
         except Exception as error:
             print(f"[ChatterboxEngine] Warmup notice (non-fatal): {error}")
         finally:
-            self.speakers_cache.pop(voice_id, None)
+            with self._lock:
+                self.speakers_cache.pop(voice_id, None)

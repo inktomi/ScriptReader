@@ -240,6 +240,7 @@ class ChatterboxEngineTests(unittest.TestCase):
         with mock.patch("engine_chatterbox.sf", FakeSoundFile):
             engine.warmup()
         self.assertNotIn("__warmup__", engine.speakers_cache)
+        self.assertFalse(engine._lock._is_owned())
 
     def test_batch_caches_reference_from_unspeakable_first_item(self):
         engine = self._build_engine()
