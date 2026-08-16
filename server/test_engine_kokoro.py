@@ -1,3 +1,5 @@
+import threading
+import time
 import sys
 import types
 import unittest
@@ -91,6 +93,82 @@ class KokoroEngineTests(unittest.TestCase):
             audio = engine.generate(invalid_text, voice="bf_emma")
             self.assertEqual(len(audio), 0)
             self.assertEqual(audio.dtype, np.float32)
+
+    def test_concurrent_get_pipeline_initialization(self):
+        init_counts = {"a": 0, "b": 0}
+        init_lock = threading.Lock()
+
+        def slow_kpipeline_factory(lang_code='a', device='cpu'):
+            with init_lock:
+                init_counts[lang_code] += 1
+            time.sleep(0.02)
+            return FakeKPipeline(lang_code=lang_code, device=device)
+
+        engine = KokoroEngine(require_gpu=False)
+        threads = []
+        errors = []
+
+        def worker(lang):
+            try:
+                engine._get_pipeline(lang)
+            except Exception as e:
+                errors.append(e)
+
+        with mock.patch("kokoro.KPipeline", side_effect=slow_kpipeline_factory):
+            for i in range(10):
+                lang = "a" if i % 2 == 0 else "b"
+                t = threading.Thread(target=worker, args=(lang,))
+                threads.append(t)
+                t.start()
+
+            for t in threads:
+                t.join()
+
+        self.assertEqual(errors, [])
+        self.assertEqual(init_counts["a"], 1)
+        self.assertEqual(init_counts["b"], 1)
+
+    def test_concurrent_generate_synchronization(self):
+        active_calls = 0
+        max_concurrent = 0
+        lock = threading.Lock()
+
+        class ConcurrentKPipeline(FakeKPipeline):
+            def __call__(self, text, voice='af_heart', speed=1.0, split_pattern=None):
+                nonlocal active_calls, max_concurrent
+                with lock:
+                    active_calls += 1
+                    if active_calls > max_concurrent:
+                        max_concurrent = active_calls
+                time.sleep(0.01)
+                with lock:
+                    active_calls -= 1
+                yield text, "phonemes", np.full(100, 0.5, dtype=np.float32)
+
+        engine = KokoroEngine(require_gpu=False)
+        engine.pipelines["a"] = ConcurrentKPipeline(lang_code='a')
+
+        threads = []
+        errors = []
+
+        def worker(i):
+            try:
+                audio = engine.generate(f"Concurrent line {i}", voice="af_heart")
+                if len(audio) != 100:
+                    errors.append(f"Invalid audio length {len(audio)}")
+            except Exception as e:
+                errors.append(e)
+
+        for i in range(8):
+            t = threading.Thread(target=worker, args=(i,))
+            threads.append(t)
+            t.start()
+
+        for t in threads:
+            t.join()
+
+        self.assertEqual(errors, [])
+        self.assertEqual(max_concurrent, 1)
 
 
 if __name__ == "__main__":
