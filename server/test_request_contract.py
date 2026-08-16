@@ -271,6 +271,20 @@ class OpenAIModelAliasesTests(unittest.TestCase):
         with self.assertRaisesRegex(InputError, "engine must be a string"):
             normalize_item({"model": 12345, "input": "Hello"})
 
+    def test_normalize_item_falls_back_to_input_when_text_empty_or_whitespace(self):
+        """Empty or whitespace text strings fall back to non-empty input field."""
+        # Empty text string falls back to input
+        norm1 = normalize_item({"text": "", "input": "Spoken sentence 1", "model": "tts-1"})
+        self.assertEqual(norm1["text"], "Spoken sentence 1")
+
+        # Whitespace text string falls back to input
+        norm2 = normalize_item({"text": "   \n\t  ", "input": "Spoken sentence 2", "model": "tts-1"})
+        self.assertEqual(norm2["text"], "Spoken sentence 2")
+
+        # Non-empty text takes precedence over input
+        norm3 = normalize_item({"text": "Priority text", "input": "Ignored input", "model": "tts-1"})
+        self.assertEqual(norm3["text"], "Priority text")
+
 
 if __name__ == "__main__":
     unittest.main()

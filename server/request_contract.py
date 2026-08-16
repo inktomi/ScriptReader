@@ -63,7 +63,9 @@ def normalize_item(item):
     if not isinstance(item, dict):
         raise InputError("render item must be an object")
 
-    raw_text = item.get("text") if item.get("text") is not None else item.get("input", "")
+    raw_text = item.get("text")
+    if raw_text is None or (isinstance(raw_text, str) and not raw_text.strip()):
+        raw_text = item.get("input", "")
     if not isinstance(raw_text, str):
         raise InputError("text must be a string")
     text = raw_text.strip()
