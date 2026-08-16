@@ -170,6 +170,51 @@ class KokoroEngineTests(unittest.TestCase):
         self.assertEqual(errors, [])
         self.assertEqual(max_concurrent, 1)
 
+    def test_generate_handles_cuda_torch_tensors(self):
+        class FakeTorchTensor:
+            def __init__(self, array):
+                self._array = np.asarray(array, dtype=np.float32)
+
+            def detach(self):
+                return self
+
+            def cpu(self):
+                return self
+
+            def numpy(self):
+                return self._array
+
+        class TorchPipeline(FakeKPipeline):
+            def __call__(self, text, voice='af_heart', speed=1.0, split_pattern=None):
+                yield text, "phonemes", FakeTorchTensor(np.full(100, 0.4, dtype=np.float32))
+                yield text, "phonemes", FakeTorchTensor(np.full(50, 0.2, dtype=np.float32))
+
+        engine = KokoroEngine(require_gpu=False)
+        engine.pipelines["a"] = TorchPipeline(lang_code='a')
+
+        with mock.patch("engine_kokoro.torch.Tensor", FakeTorchTensor):
+            audio = engine.generate("Testing torch tensor chunks.", voice="af_heart")
+
+        self.assertIsInstance(audio, np.ndarray)
+        self.assertEqual(len(audio), 150)
+        self.assertEqual(audio.dtype, np.float32)
+
+    def test_generate_handles_numpy_and_scalar_chunks(self):
+        class MixedPipeline(FakeKPipeline):
+            def __call__(self, text, voice='af_heart', speed=1.0, split_pattern=None):
+                yield text, "p", np.full((1, 50), 0.1, dtype=np.float32)
+                yield text, "p", None
+                yield text, "p", np.array(0.5, dtype=np.float32)  # 0-D scalar
+                yield text, "p", np.zeros(0, dtype=np.float32)
+
+        engine = KokoroEngine(require_gpu=False)
+        engine.pipelines["a"] = MixedPipeline(lang_code='a')
+
+        audio = engine.generate("Testing mixed chunks.", voice="af_heart")
+        self.assertIsInstance(audio, np.ndarray)
+        self.assertEqual(len(audio), 51)
+        self.assertEqual(audio[-1], 0.5)
+
 
 if __name__ == "__main__":
     unittest.main()

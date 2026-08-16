@@ -62,7 +62,16 @@ class KokoroEngine:
             with torch.inference_mode():
                 generator = pipeline(text.strip(), voice=voice, speed=speed, split_pattern=r'\n+')
                 for _, _, audio in generator:
-                    if audio is not None and len(audio) > 0:
+                    if audio is None:
+                        continue
+                    if isinstance(audio, torch.Tensor):
+                        audio = audio.detach().cpu().numpy()
+                    elif not isinstance(audio, np.ndarray):
+                        audio = np.asarray(audio, dtype=np.float32)
+                    audio = audio.squeeze()
+                    if audio.size > 0:
+                        if audio.ndim == 0:
+                            audio = np.expand_dims(audio, 0)
                         chunks.append(audio)
 
         if not chunks:
