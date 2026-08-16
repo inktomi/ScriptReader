@@ -77,6 +77,33 @@ class HandlerEncodeResultTests(unittest.TestCase):
         self.assertEqual(captured_audio[0].ndim, 1)
         self.assertEqual(len(captured_audio[0]), 2400)
 
+    def test_openai_speech_returns_json_error_on_invalid_input(self):
+        import asyncio
+        import json
+        from handler import openai_speech
+
+        class FakeRequest:
+            def __init__(self, body_bytes):
+                self._body = body_bytes
+
+            async def stream(self):
+                yield self._body
+
+        # Empty text input error
+        req = FakeRequest(json.dumps({"input": "", "model": "tts-1"}).encode("utf-8"))
+        res = asyncio.run(openai_speech(req))
+        self.assertEqual(res.status_code, 400)
+        body = json.loads(res.body.decode("utf-8"))
+        self.assertIn("error", body)
+        self.assertIn("text must not be empty", body["error"])
+
+        # Missing reference error
+        req_missing = FakeRequest(json.dumps({"input": "Hello", "engine": "chatterbox", "voice_id": "unregistered"}).encode("utf-8"))
+        res_missing = asyncio.run(openai_speech(req_missing))
+        self.assertEqual(res_missing.status_code, 400)
+        body_missing = json.loads(res_missing.body.decode("utf-8"))
+        self.assertIn("error", body_missing)
+
 
 if __name__ == "__main__":
     unittest.main()

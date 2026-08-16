@@ -231,10 +231,12 @@ async def openai_speech(request: Request):
     except InputError as error:
         return JSONResponse({"error": str(error)}, status_code=413 if "too large" in str(error) else 400)
     result = process_single_unit(data)
+    if result.get("error"):
+        return JSONResponse({"error": result["error"]}, status_code=400)
     if result.get("audio_base64"):
         audio_bytes = base64.b64decode(result["audio_base64"])
         return Response(content=audio_bytes, media_type="audio/wav")
-    return Response(content=b"", status_code=400)
+    return JSONResponse({"error": "Synthesis produced no audio output"}, status_code=400)
 
 @app.post("/v1/audio/batch")
 async def batch_speech(request: Request):
