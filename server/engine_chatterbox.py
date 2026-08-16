@@ -282,11 +282,14 @@ class ChatterboxEngine:
         else:
             audio = np.asarray(wav, dtype=np.float32).squeeze()
 
+        if audio.ndim == 0:
+            audio = np.atleast_1d(audio)
+
         # Sanitize non-finite values and clamp raw vocoder output
         audio = np.nan_to_num(audio, copy=False, nan=0.0, posinf=1.0, neginf=-1.0)
         audio = np.clip(audio, -1.0, 1.0, out=audio)
 
-        if audio is None or len(audio) == 0 or np.all(audio == 0):
+        if audio is None or audio.size == 0 or np.all(audio == 0):
             raise RuntimeError(f"Chatterbox voice generation failed for voice '{row['voice_id']}'")
 
         if abs(row["speed"] - 1.0) > 0.01:

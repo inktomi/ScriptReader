@@ -879,6 +879,19 @@ class ChatterboxEngineTests(unittest.TestCase):
         self.assertEqual(recorded["cfg_weight"], 0.5)
         self.assertEqual(recorded["temperature"], 0.8)
 
+    def test_render_row_handles_scalar_numpy_output_without_type_error(self):
+        engine = self._build_engine()
+        engine.speakers_cache["voice_scalar"] = ("conds",)
+
+        class ScalarOutputModel(FakeChatterboxModel):
+            def generate(self, *args, **kwargs):
+                # Returns 0-D scalar or 1-element zero tensor
+                return FakeTensor(np.array(0.0, dtype=np.float32))
+
+        engine.model = ScalarOutputModel()
+        with self.assertRaisesRegex(RuntimeError, "generation failed"):
+            engine.generate("Test scalar text.", voice_id="voice_scalar")
+
 
 if __name__ == "__main__":
     unittest.main()
