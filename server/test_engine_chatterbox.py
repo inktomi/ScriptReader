@@ -32,7 +32,7 @@ class FakeTensor:
         return self
 
     def squeeze(self):
-        return self
+        return FakeTensor(self._array.squeeze())
 
     def numpy(self):
         return self._array
