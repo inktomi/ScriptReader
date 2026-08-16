@@ -854,6 +854,36 @@ class ChatterboxEngineTests(unittest.TestCase):
         self.assertEqual(call["speed"] if "speed" in call else 1.0, 1.0)
         self.assertEqual(call["language_id"], "en")
 
+    def test_safe_generate_supports_var_keyword_signatures(self):
+        engine = self._build_engine()
+        engine.speakers_cache["voice_kw"] = ("conds",)
+
+        recorded = {}
+
+        class VarKeywordModel:
+            def __init__(self):
+                self.sr = 24000
+                self.conds = None
+
+            def generate(self, text, **kwargs):
+                recorded.update(kwargs)
+                recorded["text"] = text
+                return FakeTensor(np.full(100, 0.25, dtype=np.float32))
+
+        engine.model = VarKeywordModel()
+        engine.generate(
+            "Testing var keyword.",
+            voice_id="voice_kw",
+            exaggeration=0.75,
+            language_id="es",
+        )
+
+        self.assertEqual(recorded["text"], "Testing var keyword.")
+        self.assertEqual(recorded["exaggeration"], 0.75)
+        self.assertEqual(recorded["language_id"], "es")
+        self.assertEqual(recorded["cfg_weight"], 0.5)
+        self.assertEqual(recorded["temperature"], 0.8)
+
 
 if __name__ == "__main__":
     unittest.main()

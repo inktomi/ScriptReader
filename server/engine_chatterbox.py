@@ -247,11 +247,16 @@ class ChatterboxEngine:
         }
         sig = inspect.signature(self.model.generate)
         params = sig.parameters
-        filtered_kwargs = {k: v for k, v in kwargs.items() if k in params}
-        if "language_id" in params:
+        has_var_keyword = any(p.kind == inspect.Parameter.VAR_KEYWORD for p in params.values())
+        if has_var_keyword:
+            filtered_kwargs = dict(kwargs)
             filtered_kwargs["language_id"] = language_id
-        elif "lang" in params:
-            filtered_kwargs["lang"] = language_id
+        else:
+            filtered_kwargs = {k: v for k, v in kwargs.items() if k in params}
+            if "language_id" in params:
+                filtered_kwargs["language_id"] = language_id
+            elif "lang" in params:
+                filtered_kwargs["lang"] = language_id
 
         return self.model.generate(**filtered_kwargs)
 
