@@ -66,7 +66,12 @@ class KokoroEngine:
 
         return np.concatenate(chunks).astype(np.float32)
 
-    def warmup(self, voice: str = "af_heart"):
-        """Build the pipeline and run one line before any job arrives."""
-        audio = self.generate("Warm up.", voice=voice, speed=1.0)
-        print(f"[KokoroEngine] Warmup complete ({len(audio)} samples)")
+    def warmup(self, voices: tuple = ("af_heart", "bf_emma")):
+        """Build both American and British pipelines before any job arrives."""
+        total_samples = 0
+        for voice in voices:
+            audio = self.generate("Warm up.", voice=voice, speed=1.0)
+            total_samples += len(audio)
+            lang = "British ('b')" if voice.startswith("b") else "American ('a')"
+            print(f"[KokoroEngine] Warmed {lang} pipeline with voice '{voice}' ({len(audio)} samples)")
+        print(f"[KokoroEngine] Full warmup complete ({total_samples} total samples)")

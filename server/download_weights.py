@@ -34,14 +34,22 @@ def main():
     print("Kokoro weights cached successfully.")
     gc.collect()
 
-    print("3. Pre-warming Kokoro pipeline (downloads the g2p dictionaries)...")
-    try:
-        from kokoro import KPipeline
-        pipeline = KPipeline(lang_code='a')
-        pipeline("Warmup.", voice='af_heart', speed=1.0)
-        print("Kokoro pipeline warmed up successfully.")
-    except Exception as e:
-        print(f"Kokoro pipeline warmup notice (non-fatal): {e}")
+    print("3. Pre-warming Kokoro pipelines for all supported dialects...")
+    # ScriptReader supports both American English ('a') and British English ('b')
+    # voices (e.g. 'af_heart', 'bf_emma' which is the default narrator).
+    # Warming both downloads and caches the respective misaki G2P dictionaries and assets.
+    from kokoro import KPipeline
+    warmup_configs = [
+        ("a", "af_heart", "American English ('a')"),
+        ("b", "bf_emma", "British English ('b')"),
+    ]
+    for lang_code, voice, label in warmup_configs:
+        print(f"   - Warming {label} pipeline with voice '{voice}'...")
+        pipeline = KPipeline(lang_code=lang_code)
+        list(pipeline("Pre-warming dialect pipeline.", voice=voice, speed=1.0))
+        del pipeline
+        gc.collect()
+        print(f"   ✓ {label} pipeline warmed up successfully.")
 
     print("=== All model weights pre-baked into image! ===")
 
