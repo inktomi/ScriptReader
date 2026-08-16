@@ -479,18 +479,18 @@ class ChatterboxEngineTests(unittest.TestCase):
 
         def worker():
             try:
-                with mock.patch.dict("sys.modules", {"chatterbox.mtl_tts": types.SimpleNamespace(ChatterboxMultilingualTTS=MockTTS)}):
-                    engine._ensure_loaded()
+                engine._ensure_loaded()
             except Exception as e:
                 errors.append(e)
 
-        for _ in range(8):
-            t = threading.Thread(target=worker)
-            threads.append(t)
-            t.start()
+        with mock.patch.dict("sys.modules", {"chatterbox.mtl_tts": types.SimpleNamespace(ChatterboxMultilingualTTS=MockTTS)}):
+            for _ in range(8):
+                t = threading.Thread(target=worker)
+                threads.append(t)
+                t.start()
 
-        for t in threads:
-            t.join()
+            for t in threads:
+                t.join()
 
         self.assertEqual(errors, [])
         self.assertTrue(engine._initialized)
