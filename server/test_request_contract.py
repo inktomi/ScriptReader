@@ -199,6 +199,78 @@ class HandlerBatchTests(unittest.TestCase):
         self.assertEqual(result["sample_rate"], 24000)
         self.assertTrue(result["audio_base64"])
 
+    def test_openai_speech_payload_routes_to_kokoro_engine(self):
+        """process_single_unit routes OpenAI tts-1 requests to get_kokoro()."""
+        import handler
+
+        recorded_kokoro = []
+
+        class FakeKokoro:
+            def generate(self, text, voice, speed):
+                recorded_kokoro.append({"text": text, "voice": voice, "speed": speed})
+                return np.full(1200, 0.25, dtype=np.float32)
+
+        with mock.patch.object(handler, "get_kokoro", FakeKokoro), \
+             mock.patch.object(handler, "sf", FakeSoundFile):
+            result = handler.process_single_unit({
+                "model": "tts-1",
+                "input": "OpenAI compatibility verified.",
+                "voice": "af_heart",
+            })
+
+        self.assertEqual(len(recorded_kokoro), 1)
+        self.assertEqual(recorded_kokoro[0]["text"], "OpenAI compatibility verified.")
+        self.assertEqual(recorded_kokoro[0]["voice"], "af_heart")
+        self.assertTrue(result["audio_base64"])
+
+
+class OpenAIModelAliasesTests(unittest.TestCase):
+    def test_openai_model_aliases_normalize_to_kokoro(self):
+        """Standard OpenAI model names must resolve to kokoro synthesis engine."""
+        openai_models = [
+            "tts-1",
+            "tts-1-hd",
+            "tts-1-1106",
+            "tts-1-hd-1106",
+            "openai",
+            "gpt-4o-mini-tts",
+            "  TTS-1  ",
+            "TTS-1-HD",
+            " OpenAi \n",
+        ]
+        for model in openai_models:
+            normalized = normalize_item({
+                "model": model,
+                "input": "Testing OpenAI alias resolution.",
+                "voice": "alloy",
+            })
+            self.assertEqual(
+                normalized["engine"],
+                "kokoro",
+                f"Model identifier '{model}' failed to alias to 'kokoro'",
+            )
+            self.assertEqual(normalized["text"], "Testing OpenAI alias resolution.")
+            self.assertEqual(normalized["voice"], "alloy")
+
+    def test_engine_field_precedence_over_model_field(self):
+        """Explicit engine field takes precedence over model parameter."""
+        normalized = normalize_item({
+            "engine": "chatterbox",
+            "model": "tts-1",
+            "text": "Engine takes priority",
+            "voice_id": "character@1",
+        })
+        self.assertEqual(normalized["engine"], "chatterbox")
+        self.assertEqual(normalized["voice"], "character@1")
+
+    def test_invalid_model_identifier_raises_input_error(self):
+        """Unsupported model or engine names raise descriptive InputError."""
+        with self.assertRaisesRegex(InputError, "engine must be 'kokoro' or 'chatterbox'"):
+            normalize_item({"model": "unsupported-model-v1", "input": "Hello"})
+
+        with self.assertRaisesRegex(InputError, "engine must be a string"):
+            normalize_item({"model": 12345, "input": "Hello"})
+
 
 if __name__ == "__main__":
     unittest.main()

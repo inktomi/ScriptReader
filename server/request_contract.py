@@ -15,6 +15,19 @@ MAX_OUTPUT_SECONDS = 60.0
 MIN_SPEED = 0.5
 MAX_SPEED = 2.0
 
+ENGINE_ALIASES = {
+    # Canonical engines
+    "kokoro": "kokoro",
+    "chatterbox": "chatterbox",
+    # OpenAI model identifiers aliased to Kokoro
+    "tts-1": "kokoro",
+    "tts-1-hd": "kokoro",
+    "tts-1-1106": "kokoro",
+    "tts-1-hd-1106": "kokoro",
+    "openai": "kokoro",
+    "gpt-4o-mini-tts": "kokoro",
+}
+
 
 class InputError(ValueError):
     """A client-visible request-contract failure."""
@@ -62,9 +75,10 @@ def normalize_item(item):
     raw_engine = item.get("engine") or item.get("model") or "chatterbox"
     if not isinstance(raw_engine, str):
         raise InputError("engine must be a string")
-    engine = raw_engine.strip().lower()
-    if engine not in {"kokoro", "chatterbox"}:
+    engine_key = raw_engine.strip().lower()
+    if engine_key not in ENGINE_ALIASES:
         raise InputError("engine must be 'kokoro' or 'chatterbox'")
+    engine = ENGINE_ALIASES[engine_key]
 
     if engine == "chatterbox":
         # Chatterbox's worker-memory speaker cache must use the revisioned
