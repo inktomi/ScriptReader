@@ -208,7 +208,15 @@ export async function loadVoiceSampleCatalog({ fetchImpl = globalThis.fetch } = 
   catalogPromise = (async () => {
     let payload;
     try {
-      const response = await fetchImpl(`${assetBase()}${CATALOG_PATH}`);
+      // `no-cache` means revalidate, not "don't cache": the browser still keeps
+      // the file and the server answers 304 with no body when it is unchanged.
+      // Without it a returning visitor pairs a fresh content-hashed bundle with
+      // whatever catalog.json they cached last time, and the mismatch is silent
+      // — a catalog missing a field the new code filters on returns zero
+      // matches rather than an error. The clips keep their long cache; this is
+      // one small conditional request per session for the manifest that has to
+      // agree with the code reading it.
+      const response = await fetchImpl(`${assetBase()}${CATALOG_PATH}`, { cache: 'no-cache' });
       if (!response.ok) throw new Error(`status ${response.status}`);
       payload = await response.json();
     } catch (error) {

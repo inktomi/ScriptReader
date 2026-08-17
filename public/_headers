@@ -41,7 +41,19 @@
 # Voice catalog clips are not content-hashed — a clip's name is its speaker id,
 # and rebuilding the catalog rewrites the file in place. So they get a long but
 # revalidated cache rather than `immutable`: auditioning voices should not
-# refetch the same MP3s all session, but a rebuilt catalog must still reach
-# people who already visited.
-/voice-samples/*
+# refetch the same MP3s all session. A stale clip is only ever last week's take
+# of the same reader, so serving one while revalidating is harmless.
+/voice-samples/*.mp3
   Cache-Control: public, max-age=86400, stale-while-revalidate=604800
+
+# catalog.json is not in that category and must not inherit it. It is a manifest
+# the app's own code reads by field name, so it has to agree with the bundle
+# asking for it — and the bundle is content-hashed, meaning it updates the
+# instant a deploy lands while a cached manifest does not. That skew already
+# shipped once: adding ageBand/accent left returning visitors filtering new
+# fields against an old file, which silently matched zero voices instead of
+# failing. It is small and fetched once per session, so it revalidates.
+# loadVoiceSampleCatalog also requests it with cache: 'no-cache', because this
+# file only governs our own origin and the correctness must not depend on it.
+/voice-samples/catalog.json
+  Cache-Control: no-cache

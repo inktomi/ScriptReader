@@ -144,6 +144,32 @@ test('catalog search ranks clearer recordings first and paginates locally', asyn
   assert.deepEqual(requested, ['/voice-samples/catalog.json'], 'served from our own origin');
 });
 
+test('the catalog is revalidated, so a cached copy cannot outlive the code reading it', async () => {
+  resetVoiceSampleCatalog();
+  const calls = [];
+  await searchVoiceSamples(
+    {},
+    {
+      fetchImpl: async (url, init) => {
+        calls.push({ url, init });
+        return {
+          ok: true,
+          async json() {
+            return catalogPayload([rawEntry]);
+          },
+        };
+      },
+    },
+  );
+
+  // The bundle is content-hashed and updates the moment a deploy lands; a
+  // long-cached catalog.json does not. Pairing the two means new code filtering
+  // on a field an old manifest lacks, which returns zero matches rather than an
+  // error — exactly what shipping ageBand/accent did to returning visitors.
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].init?.cache, 'no-cache');
+});
+
 test('a second search reuses the loaded catalog instead of refetching it', async () => {
   resetVoiceSampleCatalog();
   let fetches = 0;
