@@ -144,6 +144,31 @@ test('catalog search ranks clearer recordings first and paginates locally', asyn
   assert.deepEqual(requested, ['/voice-samples/catalog.json'], 'served from our own origin');
 });
 
+test('ranking is the measured SNR alone, with clip length carrying no weight', async () => {
+  resetVoiceSampleCatalog();
+  const result = await searchVoiceSamples(
+    {},
+    {
+      fetchImpl: fetchingCatalog([
+        // The old score was min(45, snr) * 2 + min(12, seconds), which ranked
+        // `padded` above `cleanest` on three extra seconds. Chatterbox slices a
+        // reference to 10s for conditioning and 6s for the prompt tokens, so
+        // those seconds reach no model and must not move a voice up the list.
+        { ...rawEntry, id: 'padded', name: 'Padded', snrDb: 36, seconds: 12 },
+        { ...rawEntry, id: 'cleanest', name: 'Cleanest', snrDb: 38, seconds: 9 },
+        { ...rawEntry, id: 'noisier', name: 'Noisier', snrDb: 30, seconds: 12 },
+      ]),
+    },
+  );
+
+  assert.deepEqual(
+    result.voices.map((voice) => voice.id),
+    ['cleanest', 'padded', 'noisier'],
+  );
+  // Nothing derived hangs off the removed score either.
+  assert.equal('qualityScore' in result.voices[0], false);
+});
+
 test('the catalog is revalidated, so a cached copy cannot outlive the code reading it', async () => {
   resetVoiceSampleCatalog();
   const calls = [];
@@ -401,8 +426,10 @@ test('catalog preserves live query text and globally reorders appended quality r
   const dom = installDom();
   try {
     let resolveInitial;
-    const low = { ...normalizeCatalogVoice(rawEntry), id: 'low', qualityScore: 10 };
-    const high = { ...normalizeCatalogVoice({ ...rawEntry, id: 'high', snrDb: 41 }), qualityScore: 90 };
+    // Ranked on measured SNR, so the fixtures carry a real one rather than a
+    // score handed to them.
+    const low = { ...normalizeCatalogVoice({ ...rawEntry, snrDb: 24 }), id: 'low' };
+    const high = { ...normalizeCatalogVoice({ ...rawEntry, id: 'high', snrDb: 41 }) };
     const catalogClient = {
       search(filters) {
         if (filters.page === 0) {

@@ -126,15 +126,20 @@ export function voiceSampleQualityLabel(voice) {
 }
 
 /**
- * Ranking signal. Cleaner recordings clone better than noisy ones, and a longer
- * reference gives the cloner more prosody to work from, so both feed the sort
- * with clarity dominating.
+ * Ranking is `snrDb`, directly. There is deliberately no composite score.
+ *
+ * There used to be one: `min(45, snr) * 2 + min(12, seconds)`. Every constant in
+ * it was invented — nothing measured says clarity is worth exactly twice a
+ * second of length, or that either should be capped where it was. The length
+ * term was worse than arbitrary, it was inert and misleading: Chatterbox slices
+ * a reference to 10 seconds for decoder conditioning and 6 for the prompt tokens
+ * carrying style, and the clips are built at exactly 10 seconds, so it ranked
+ * voices on audio no model ever hears.
+ *
+ * What was real is that a cleaner reference clones better, and SNR is measured
+ * off the shipped clip at build time. Sorting on it needs no wrapper, and the
+ * UI's "ranked by measured recording clarity" is now literally true.
  */
-export function voiceSampleQualityScore(voice) {
-  const snr = Math.min(45, Number(voice?.snrDb || 0));
-  const seconds = Math.min(12, Number(voice?.seconds || 0));
-  return snr * 2 + seconds;
-}
 
 export function normalizeCatalogVoice(entry, catalog = {}) {
   const register = clean(entry?.register, 'unmeasured');
@@ -182,7 +187,6 @@ export function normalizeCatalogVoice(entry, catalog = {}) {
     previewUrl: voiceSampleAssetUrl(clean(entry?.clip)),
   };
   voice.qualityLabel = voiceSampleQualityLabel(voice);
-  voice.qualityScore = voiceSampleQualityScore(voice);
   return voice;
 }
 
@@ -303,7 +307,7 @@ export async function searchVoiceSamples(filters = {}, { signal, fetchImpl = glo
 
   const matched = catalog.voices
     .filter((voice) => matchesVoiceFilters(voice, filters))
-    .sort((a, b) => b.qualityScore - a.qualityScore || a.name.localeCompare(b.name));
+    .sort((a, b) => b.snrDb - a.snrDb || a.name.localeCompare(b.name));
 
   const start = page * pageSize;
   return {

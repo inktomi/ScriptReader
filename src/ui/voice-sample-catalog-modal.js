@@ -280,7 +280,9 @@ export function createVoiceSampleCatalogModal({
           const known = new Set(state.voices.map((voice) => voice.id));
           const newVoices = result.voices.filter((voice) => !known.has(voice.id));
           const combined = shouldAppend ? [...state.voices, ...newVoices] : newVoices;
-          combined.sort((a, b) => b.qualityScore - a.qualityScore || a.name.localeCompare(b.name));
+          // Re-sorted across everything loaded so far, not per page: an appended
+          // page can contain a cleaner recording than one already on screen.
+          combined.sort((a, b) => b.snrDb - a.snrDb || a.name.localeCompare(b.name));
           state.capped =
             combined.length > MAX_VISIBLE_RESULTS || (result.hasMore && combined.length >= MAX_VISIBLE_RESULTS);
           state.voices = combined.slice(0, MAX_VISIBLE_RESULTS);
