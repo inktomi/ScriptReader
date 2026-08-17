@@ -2270,7 +2270,9 @@ button:disabled {
 .voice-catalog-filters {
   margin-top: 10px;
   display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+  /* Auto-fit rather than a fixed count so adding a filter does not strand one
+     select alone on a second row. */
+  grid-template-columns: repeat(auto-fit, minmax(118px, 1fr));
   gap: 9px;
 }
 

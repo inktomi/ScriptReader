@@ -9,10 +9,12 @@
  * Its `clean` subsets are studio-grade audiobook narration, which is the same
  * performance register a screenplay reader needs.
  *
- * Only facts the corpus states are stored as metadata. Gender and reader name
- * come from the corpus speaker table; register and pace are measured off the
- * rendered audio. Nothing here infers age, accent, or personality, because
- * LibriTTS-R does not record them and casting copy must not invent them.
+ * Nothing here is inferred from the audio. Gender and reader name come from the
+ * corpus speaker table; register and pace are measured off the rendered audio;
+ * age, accent and perceived gender come from published annotation sets keyed to
+ * the same speaker ids (see scripts/fetch-voice-traits.py and ATTRIBUTION.md).
+ * A trait with no source stays unspecified, because casting copy must not
+ * invent biography for a real person who volunteered a reading.
  *
  * Usage:
  *   node scripts/build-voice-catalog.mjs [--limit N] [--subsets a,b]
@@ -32,6 +34,8 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 import zlib from 'node:zlib';
+
+import { applyTraits, facetsFor, readTraits } from './apply-voice-traits.mjs';
 
 const run = promisify(execFile);
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -710,6 +714,10 @@ async function main() {
   }
 
   kept.sort((a, b) => a.name.localeCompare(b.name));
+  // Age and accent come from companion annotation sets keyed by the same
+  // speaker ids, applied through the module the relabel path uses, so a full
+  // rebuild and a plain `apply-voice-traits` run cannot produce different bands.
+  const voices = applyTraits(kept, await readTraits());
   const totalBytes = kept.reduce((sum, entry) => sum + entry.bytes, 0);
 
   // A clip left behind by an earlier run — a speaker since rejected, or one
@@ -722,14 +730,18 @@ async function main() {
   const failed = rejected.filter((item) => !/^(short clip|voiced|clipping|snr)/.test(item.reason));
 
   if (args.report) {
-    const bands = (key) =>
-      kept.reduce((counts, entry) => {
+    const bands = (key, entries = kept) =>
+      entries.reduce((counts, entry) => {
         counts[entry[key]] = (counts[entry[key]] || 0) + 1;
         return counts;
       }, {});
     console.log('\nregister:', bands('register'));
     console.log('pace:', bands('pace'));
     console.log('gender:', bands('gender'));
+    // Read off `voices` rather than `kept`: the trait fields only exist after
+    // applyTraits has run.
+    console.log('age:', bands('ageBand', voices));
+    console.log('accent:', bands('accent', voices));
     const wpms = kept.map((entry) => entry.wordsPerMinute).sort((a, b) => a - b);
     const pitches = kept
       .map((entry) => entry.pitchHz)
@@ -751,7 +763,8 @@ async function main() {
         licenseUrl: 'https://creativecommons.org/licenses/by/4.0/',
         attribution: 'LibriTTS-R corpus, Google LLC, derived from LibriVox public-domain audiobooks.',
         clipSeconds: CLIP_SECONDS,
-        voices: kept,
+        ...facetsFor(voices),
+        voices,
       },
       null,
       0,

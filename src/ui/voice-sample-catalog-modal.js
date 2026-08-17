@@ -4,11 +4,18 @@ import { createFocusPreservingRenderer } from '../utils/focus-preserving-render.
 import { getIconSvg } from '../utils/icons.js';
 import { LatestOperation, throwIfAborted } from '../utils/latest-operation.js';
 
-// The filters offer exactly the two axes the catalog can answer from
-// measurement. Age, accent and language selectors used to sit here because the
-// old remote provider tagged its voices with them; LibriTTS-R does not record
-// any of the three, and a filter that silently matches nothing is worse than no
-// filter at all.
+// Every filter here answers from something the catalog stores: gender from the
+// corpus speaker table, register and pace from measurements off the clip, age
+// and accent from the annotation sets credited in ATTRIBUTION.md. A selector
+// for anything else would silently match nothing, which is worse than no filter
+// at all — so this list only grows when the data does.
+const AGE_OPTIONS = [
+  ['', 'Any age'],
+  ['young', 'Young'],
+  ['adult', 'Adult'],
+  ['senior', 'Senior'],
+  ['unspecified', 'Unspecified'],
+];
 const REGISTER_OPTIONS = [
   ['', 'Any register'],
   ['deep', 'Deep'],
@@ -56,7 +63,10 @@ export function createVoiceSampleCatalogModal({
   modal.setAttribute('aria-labelledby', 'voice-catalog-title');
 
   const state = {
-    filters: { query: '', gender: '', register: '', pace: '' },
+    filters: { query: '', gender: '', age: '', accent: '', register: '', pace: '' },
+    // Populated from the first search that lands. Until then the accent select
+    // offers only "Any accent" rather than a guessed list.
+    accents: [],
     voices: [],
     page: 0,
     hasMore: false,
@@ -100,6 +110,18 @@ export function createVoiceSampleCatalogModal({
     },
   });
 
+  /**
+   * The accent list comes from the catalog, so it names only accents that
+   * actually occur. A selected value is kept even if it is missing from that
+   * list — dropping it would reset the select while the filter stayed applied,
+   * leaving the results narrowed with nothing on screen explaining why.
+   */
+  function accentOptions() {
+    const values = [...state.accents];
+    if (state.filters.accent && !values.includes(state.filters.accent)) values.unshift(state.filters.accent);
+    return [['', 'Any accent'], ...values.map((value) => [value, value])];
+  }
+
   function resultSummary() {
     if (state.loading && state.voices.length === 0) return 'Finding the strongest matches…';
     const count = state.totalCount || state.voices.length;
@@ -111,7 +133,19 @@ export function createVoiceSampleCatalogModal({
     const isAdded = state.addedIds.has(voice.id);
     const isImporting = state.importingId === voice.id;
     const isPreviewing = previewingId === voice.id;
-    const attributes = [voice.gender, voice.registerLabel, voice.paceLabel].filter(Boolean);
+    // The heading line names who the voice is; the tag row below holds what was
+    // measured off the recording. Keeping the split means the heading stays on
+    // one line — it ellipsises rather than wrapping — while the tags, which do
+    // wrap, absorb the register and pace bands that used to sit up here.
+    //
+    // `Unspecified` is dropped rather than displayed: the card reads as short as
+    // the data is, and the filter is where an unannotated reader stays
+    // reachable.
+    const attributes = [
+      voice.gender,
+      voice.ageLabel === 'Unspecified' ? '' : voice.ageLabel,
+      voice.accent === 'Unspecified' ? '' : voice.accent,
+    ].filter(Boolean);
     return `
       <article class="voice-sample-card" data-voice-id="${escapeHtml(voice.id)}">
         <div class="voice-sample-card-heading">
@@ -121,6 +155,9 @@ export function createVoiceSampleCatalogModal({
         </div>
         <p class="voice-sample-description">${escapeHtml(voice.description)}</p>
         <div class="voice-sample-tags">
+          ${voice.perceivedGender ? `<span>Reads ${escapeHtml(voice.perceivedGender)}</span>` : ''}
+          <span>${escapeHtml(voice.registerLabel)}</span>
+          <span>${escapeHtml(voice.paceLabel)}</span>
           ${voice.pitchHz ? `<span>${escapeHtml(String(voice.pitchHz))} Hz</span>` : ''}
           ${voice.wordsPerMinute ? `<span>${escapeHtml(String(voice.wordsPerMinute))} wpm</span>` : ''}
           <span>${escapeHtml(clipLabel(voice.seconds))}</span>
@@ -155,6 +192,13 @@ export function createVoiceSampleCatalogModal({
               <option value="" ${selected(state.filters.gender, '')}>Any voice</option><option value="female" ${selected(state.filters.gender, 'female')}>Female</option>
               <option value="male" ${selected(state.filters.gender, 'male')}>Male</option><option value="neutral" ${selected(state.filters.gender, 'neutral')}>Neutral</option>
             </select></label>
+            <label><span>Age</span><select id="voice-catalog-age">${AGE_OPTIONS.map(([value, label]) => `<option value="${value}" ${selected(state.filters.age, value)}>${label}</option>`).join('')}</select></label>
+            <label><span>Accent</span><select id="voice-catalog-accent">${accentOptions()
+              .map(
+                ([value, label]) =>
+                  `<option value="${escapeHtml(value)}" ${selected(state.filters.accent, value)}>${escapeHtml(label)}</option>`,
+              )
+              .join('')}</select></label>
             <label><span>Register</span><select id="voice-catalog-register">${REGISTER_OPTIONS.map(([value, label]) => `<option value="${value}" ${selected(state.filters.register, value)}>${label}</option>`).join('')}</select></label>
             <label><span>Pace</span><select id="voice-catalog-pace">${PACE_OPTIONS.map(([value, label]) => `<option value="${value}" ${selected(state.filters.pace, value)}>${label}</option>`).join('')}</select></label>
           </div>
@@ -194,6 +238,8 @@ export function createVoiceSampleCatalogModal({
     state.filters = {
       query: modal.querySelector('#voice-catalog-query')?.value.trim() || '',
       gender: modal.querySelector('#voice-catalog-gender')?.value || '',
+      age: modal.querySelector('#voice-catalog-age')?.value || '',
+      accent: modal.querySelector('#voice-catalog-accent')?.value || '',
       register: modal.querySelector('#voice-catalog-register')?.value || '',
       pace: modal.querySelector('#voice-catalog-pace')?.value || '',
     };
@@ -230,6 +276,7 @@ export function createVoiceSampleCatalogModal({
       },
       {
         onCommit: ({ result, append: shouldAppend, nextPage: committedPage }) => {
+          if (result.accents?.length) state.accents = result.accents;
           const known = new Set(state.voices.map((voice) => voice.id));
           const newVoices = result.voices.filter((voice) => !known.has(voice.id));
           const combined = shouldAppend ? [...state.voices, ...newVoices] : newVoices;

@@ -16,6 +16,8 @@ const rawEntry = {
   id: 'libritts-r-1272',
   name: 'Maya Ellery',
   gender: 'Female',
+  ageBand: 'young',
+  accent: 'Irish',
   register: 'bright',
   pitchHz: 196,
   pace: 'brisk',
@@ -31,6 +33,7 @@ function catalogPayload(entries) {
   return {
     source: 'LibriTTS-R',
     license: 'CC BY 4.0',
+    accents: ['Irish', 'Unspecified'],
     voices: entries,
   };
 }
@@ -61,23 +64,57 @@ function deferred() {
   return { promise, resolve, reject };
 }
 
-test('catalog entries become casting metadata without inventing biography', () => {
+test('catalog entries become casting metadata from sourced facts only', () => {
   const voice = normalizeCatalogVoice(rawEntry, catalogPayload([]));
 
   assert.equal(voice.name, 'Maya Ellery');
   assert.equal(voice.gender, 'Female');
+  assert.equal(voice.ageBand, 'young');
+  assert.equal(voice.ageLabel, 'Young');
+  assert.equal(voice.accent, 'Irish');
   assert.equal(voice.registerLabel, 'Bright');
   assert.equal(voice.paceLabel, 'Brisk pace');
   assert.equal(voice.previewUrl, '/voice-samples/1272.mp3');
   assert.equal(voiceSampleQualityLabel(voice), 'Studio clean');
   assert.match(voice.description, /Maya Ellery/);
+  assert.match(voice.description, /Young, Irish/);
   assert.match(voice.description, /196 Hz/);
   assert.match(voice.description, /205 words per minute/);
 
-  // The corpus records none of these, so the catalog must not surface them —
-  // a filter or a card that claims an age or an accent would be fabricating it.
-  assert.equal(voice.age, undefined);
-  assert.equal(voice.accent, undefined);
+  // The annotation sets agree with the corpus for this reader, so there is
+  // nothing to warn about; only a contradiction is worth putting on a card.
+  assert.equal(voice.perceivedGender, '');
+});
+
+test('a reader outside the annotation sets is unspecified, never guessed', () => {
+  const { ageBand, accent, ...unannotated } = rawEntry;
+  const voice = normalizeCatalogVoice({ ...unannotated, id: 'bare' }, catalogPayload([]));
+
+  // An uncovered reader must not be quietly filed under the commonest band.
+  assert.equal(voice.ageBand, 'unspecified');
+  assert.equal(voice.ageLabel, 'Unspecified');
+  assert.equal(voice.accent, 'Unspecified');
+
+  // ...and the blurb says nothing rather than something invented.
+  assert.equal(
+    voice.description,
+    'Audiobook narration read by Maya Ellery. Median pitch 196 Hz, 205 words per minute.',
+  );
+
+  // The filter still reaches them, so they are never dropped without a trace.
+  assert.equal(matchesVoiceFilters(voice, { age: 'unspecified' }), true);
+  assert.equal(matchesVoiceFilters(voice, { accent: 'Unspecified' }), true);
+  assert.equal(matchesVoiceFilters(voice, { age: 'young' }), false);
+
+  // But an unspecified reader answers to no age or accent search term, or an
+  // unannotated voice would surface as a match for a trait nobody recorded.
+  assert.equal(matchesVoiceFilters(voice, { query: 'irish' }), false);
+  assert.equal(matchesVoiceFilters(voice, { query: 'young' }), false);
+});
+
+test('a bare entry with no measurements still reads as one clean sentence', () => {
+  const voice = normalizeCatalogVoice({ id: 'sparse', name: 'Ada Vane', clip: 'x.mp3' }, catalogPayload([]));
+  assert.equal(voice.description, 'Audiobook narration read by Ada Vane.');
 });
 
 test('catalog search ranks clearer recordings first and paginates locally', async () => {
@@ -168,13 +205,15 @@ test('a failed catalog load does not poison later attempts', async () => {
   assert.equal(catalog.voices.length, 1);
 });
 
-test('filters narrow by the axes the catalog measures, and unknown traits match nothing', () => {
+test('filters narrow by every axis the catalog stores, and unknown traits match nothing', () => {
   const bright = normalizeCatalogVoice(rawEntry);
   const deep = normalizeCatalogVoice({
     ...rawEntry,
     id: 'deep',
     name: 'Gordon Vale',
     gender: 'Male',
+    ageBand: 'senior',
+    accent: 'Scottish',
     register: 'deep',
     pitchHz: 92,
     pace: 'measured',
@@ -185,17 +224,94 @@ test('filters narrow by the axes the catalog measures, and unknown traits match 
   assert.equal(matchesVoiceFilters(bright, { gender: 'male' }), false);
   assert.equal(matchesVoiceFilters(deep, { register: 'deep' }), true);
   assert.equal(matchesVoiceFilters(deep, { pace: 'brisk' }), false);
+  assert.equal(matchesVoiceFilters(deep, { age: 'senior' }), true);
+  assert.equal(matchesVoiceFilters(bright, { age: 'senior' }), false);
+  assert.equal(matchesVoiceFilters(deep, { accent: 'Scottish' }), true);
+  assert.equal(matchesVoiceFilters(bright, { accent: 'Scottish' }), false);
 
-  // Free text reaches the reader's name and the measured axes by their common
-  // synonyms.
+  // Free text reaches the reader's name, the measured axes, and the sourced
+  // traits by their common synonyms — the whole point of the annotation sets is
+  // that "older scottish man" is now a question the catalog can answer.
   assert.equal(matchesVoiceFilters(deep, { query: 'gordon' }), true);
   assert.equal(matchesVoiceFilters(deep, { query: 'gravelly slow' }), true);
   assert.equal(matchesVoiceFilters(bright, { query: 'gravelly' }), false);
+  assert.equal(matchesVoiceFilters(deep, { query: 'older scottish man' }), true);
+  assert.equal(matchesVoiceFilters(bright, { query: 'young irish woman' }), true);
+  assert.equal(matchesVoiceFilters(bright, { query: 'scottish' }), false);
+  assert.equal(matchesVoiceFilters(deep, { query: 'young' }), false);
 
-  // A trait the catalog does not record must return nothing rather than
-  // quietly ignoring the word and returning everything.
-  assert.equal(matchesVoiceFilters(deep, { query: 'scottish' }), false);
-  assert.equal(matchesVoiceFilters(bright, { query: 'elderly' }), false);
+  // A trait no source records must still return nothing rather than quietly
+  // ignoring the word and returning everything.
+  assert.equal(matchesVoiceFilters(deep, { query: 'sardonic' }), false);
+  assert.equal(matchesVoiceFilters(bright, { query: 'nasal' }), false);
+});
+
+test('the age and accent filters populate from the catalog and keep keyboard focus', async () => {
+  const dom = installDom();
+  try {
+    const searches = [];
+    const voice = normalizeCatalogVoice(rawEntry);
+    const modal = createVoiceSampleCatalogModal({
+      catalogClient: {
+        async search(filters) {
+          searches.push(filters);
+          return {
+            voices: [voice],
+            hasMore: false,
+            totalCount: 1,
+            accents: ['American', 'Irish', 'Unspecified'],
+          };
+        },
+        async download() {
+          throw new Error('not used');
+        },
+      },
+    });
+    document.body.appendChild(modal);
+    await nextTurn();
+
+    const accent = modal.querySelector('#voice-catalog-accent');
+    const age = modal.querySelector('#voice-catalog-age');
+
+    // The accent list is data-driven, so it can only offer accents that exist.
+    assert.deepEqual(
+      [...accent.options].map((option) => option.value),
+      ['', 'American', 'Irish', 'Unspecified'],
+    );
+    // `Unspecified` stays reachable: four readers sit outside the annotation
+    // sets, and a filter that could not select them would hide voices silently.
+    assert.deepEqual(
+      [...age.options].map((option) => option.value),
+      ['', 'young', 'adult', 'senior', 'unspecified'],
+    );
+
+    // Changing a filter re-renders the whole modal; focus has to survive it, or
+    // a keyboard user is dropped to the document body mid-search.
+    accent.focus();
+    accent.value = 'Irish';
+    accent.dispatchEvent(new dom.window.Event('change', { bubbles: true }));
+    await nextTurn();
+
+    assert.equal(searches.at(-1).accent, 'Irish');
+    assert.equal(document.activeElement.id, 'voice-catalog-accent');
+    assert.equal(modal.querySelector('#voice-catalog-accent').value, 'Irish');
+
+    // Re-query: the previous render replaced every node in the modal, so the
+    // handle taken before it is detached and focusing it would do nothing.
+    const nextAge = modal.querySelector('#voice-catalog-age');
+    nextAge.focus();
+    nextAge.value = 'senior';
+    nextAge.dispatchEvent(new dom.window.Event('change', { bubbles: true }));
+    await nextTurn();
+
+    assert.equal(searches.at(-1).age, 'senior');
+    assert.equal(searches.at(-1).accent, 'Irish', 'the two filters are independent');
+    assert.equal(document.activeElement.id, 'voice-catalog-age');
+
+    modal.close();
+  } finally {
+    removeDom(dom);
+  }
 });
 
 test('voice browser searches, escapes remote metadata, and imports a selected preview', async () => {

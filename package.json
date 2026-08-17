@@ -9,6 +9,7 @@
     "preview": "vite preview",
     "test": "node --test",
     "build:voice-catalog": "node scripts/build-voice-catalog.mjs",
+    "voice-catalog:traits": "node scripts/apply-voice-traits.mjs --report",
     "lint": "biome lint .",
     "lint:fix": "biome lint --write .",
     "format": "biome format --write .",

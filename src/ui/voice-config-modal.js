@@ -708,10 +708,12 @@ export function createVoiceConfigModal({
             voice.name,
             {
               sex: voice.gender,
-              // Age and accent are deliberately left to the store's defaults. The
-              // bundled catalog measures register and pace; it does not know how
-              // old the reader is or where they are from, and guessing would put
-              // invented biography on a real person's voice.
+              // Age and accent come from the catalog's annotation sets. Where a
+              // reader is outside them the value is 'Unspecified', which is left
+              // to the store's default rather than shown as a fact — the cast
+              // dropdown says nothing instead of guessing.
+              ageGroup: voice.ageLabel === 'Unspecified' ? '' : voice.ageLabel,
+              accent: voice.accent === 'Unspecified' ? '' : voice.accent,
               tone: [voice.registerLabel, voice.paceLabel].filter(Boolean).join(' · '),
               description: voice.description,
               source: 'Voice catalog',

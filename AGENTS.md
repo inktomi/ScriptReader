@@ -33,10 +33,26 @@ These instructions apply to the entire repository.
   `scripts/build-voice-catalog.mjs`. It replaced a live ElevenLabs search that
   now rejects anonymous callers outright; do not reintroduce a dependency that
   can revoke the feature, and do not ship an API key to the browser.
-- Only two kinds of fact may reach a voice card: metadata the corpus itself
-  records, and measurements taken off the shipped clip. Age, accent, mood and
-  character are none of these — never infer them, and never offer a filter for
-  an attribute the catalog cannot answer.
+- Exactly three kinds of fact may reach a voice card. Anything else is invented
+  biography about a real person who volunteered a reading, and must not ship:
+  1. metadata the corpus speaker table itself records;
+  2. a measurement taken off the shipped clip;
+  3. a published annotation set that is keyed to the same speaker ids, is
+     redistributable under a licence compatible with the clips, and is credited
+     in `public/voice-samples/ATTRIBUTION.md`.
+- Never infer an attribute from the audio — not with a classifier, not with a
+  heuristic. Age, accent and perceived gender are on the cards because
+  LibriTTS-P and the parler-tts speaker descriptions state them per speaker, not
+  because anything listened to the clip and guessed.
+- Every sourced attribute needs an honest unspecified value for the speakers its
+  source does not cover, and that value must be selectable in the filter.
+  Folding an uncovered speaker into the commonest band states something nobody
+  recorded, and dropping them from the filter hides voices without saying so.
+- Band cut points belong in `scripts/voice-trait-bands.mjs` beside the existing
+  ones, and must stay retunable from committed data. Relabelling the shipped
+  catalog must never require refetching a corpus or rerunning inference.
+- Filter option lists are built from the values the catalog actually holds, so
+  the UI cannot offer a choice that matches nothing.
 - A search term the catalog cannot evaluate must narrow the results to nothing
   rather than being dropped, so an unmatchable request never looks like a match.
 - Apply quality ranking across the whole matched set, not independently within a
@@ -45,8 +61,9 @@ These instructions apply to the entire repository.
   displayed; do not imply a global optimum when only a bounded subset is shown.
 - Preserve stable local identifiers when refreshing or replacing a voice so
   existing casting assignments remain valid.
-- The corpus is CC BY 4.0. Attribution has to stay visible in the UI and in
-  `public/voice-samples/ATTRIBUTION.md` for any redistribution of the clips.
+- The corpus and both annotation sets are CC BY 4.0. Attribution has to stay
+  visible in the UI and in `public/voice-samples/ATTRIBUTION.md` for any
+  redistribution of the clips or the metadata derived from them.
 
 ## Protect multi-store persistence
 

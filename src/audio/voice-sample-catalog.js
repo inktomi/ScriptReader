@@ -11,37 +11,87 @@ const CATALOG_PATH = 'voice-samples/catalog.json';
 const DEFAULT_PAGE_SIZE = 24;
 const MAX_SAMPLE_BYTES = 25 * 1024 * 1024;
 
-const REGISTER_LABELS = {
+/**
+ * Band lookups are also membership tests — `LABELS[band] ? band : fallback` is
+ * how a malformed catalog entry gets rejected. A plain object literal inherits
+ * Object.prototype, so `"constructor"` and `"toString"` would pass that test and
+ * put a function where a label belongs. A null prototype makes the lookup mean
+ * only what the map declares.
+ */
+function lookup(map) {
+  return Object.assign(Object.create(null), map);
+}
+
+const REGISTER_LABELS = lookup({
   deep: 'Deep',
   low: 'Low',
   mid: 'Mid',
   bright: 'Bright',
   high: 'High',
   unmeasured: 'Unmeasured',
-};
+});
 
-const PACE_LABELS = {
+const PACE_LABELS = lookup({
   measured: 'Measured pace',
   steady: 'Steady pace',
   brisk: 'Brisk pace',
-};
+});
 
-// Words a director actually types, mapped onto the two axes the catalog can
+// Bands assigned by scripts/voice-trait-bands.mjs from the LibriTTS-P speaker
+// annotations. `unspecified` is a real value, not a placeholder: four readers
+// are outside the annotation set, and folding them into `adult` would state
+// something nobody recorded.
+const AGE_LABELS = lookup({
+  young: 'Young',
+  adult: 'Adult',
+  senior: 'Senior',
+  unspecified: 'Unspecified',
+});
+
+export const UNSPECIFIED_ACCENT = 'Unspecified';
+
+// Words a director actually types, mapped onto the axes the catalog can
 // honestly answer. Anything outside this list falls through to plain text
 // matching rather than being silently reinterpreted.
-const REGISTER_SYNONYMS = {
+const REGISTER_SYNONYMS = lookup({
   deep: ['deep', 'bass', 'gravelly', 'low', 'dark', 'booming', 'baritone'],
   low: ['low', 'warm', 'rich', 'baritone', 'husky'],
   mid: ['mid', 'middle', 'neutral', 'even', 'natural'],
   bright: ['bright', 'light', 'clear', 'lifted'],
   high: ['high', 'bright', 'airy', 'young', 'light'],
-};
+});
 
-const PACE_SYNONYMS = {
+const PACE_SYNONYMS = lookup({
   measured: ['measured', 'slow', 'deliberate', 'calm', 'unhurried', 'steady'],
   steady: ['steady', 'even', 'natural', 'conversational'],
   brisk: ['brisk', 'fast', 'quick', 'urgent', 'energetic', 'lively'],
-};
+});
+
+const AGE_SYNONYMS = lookup({
+  young: ['young', 'younger', 'youthful', 'juvenile'],
+  adult: ['adult', 'middle', 'grown'],
+  senior: ['senior', 'old', 'older', 'elderly', 'aged', 'mature', 'veteran'],
+});
+
+// The catalog's accent values are single words apart from two, so the tokeniser
+// needs the second word of each to be matchable on its own — nobody types "new
+// zealand" and expects "zealand" to be the part that fails.
+const ACCENT_SYNONYMS = lookup({
+  American: ['american', 'america', 'us', 'usa'],
+  Canadian: ['canadian', 'canada'],
+  Irish: ['irish', 'ireland'],
+  'New zealand': ['new', 'zealand', 'kiwi'],
+  English: ['english', 'england', 'british', 'britain', 'uk'],
+  Scottish: ['scottish', 'scotland', 'scots'],
+  Chinese: ['chinese', 'china'],
+  German: ['german', 'germany'],
+  Australian: ['australian', 'australia', 'aussie'],
+  Indian: ['indian', 'india'],
+  Welsh: ['welsh', 'wales'],
+  French: ['french', 'france'],
+  'Latin american': ['latin', 'american', 'latino'],
+  Dutch: ['dutch', 'netherlands', 'holland'],
+});
 
 function clean(value, fallback = '') {
   const text = typeof value === 'string' ? value.trim() : '';
@@ -89,14 +139,35 @@ export function voiceSampleQualityScore(voice) {
 export function normalizeCatalogVoice(entry, catalog = {}) {
   const register = clean(entry?.register, 'unmeasured');
   const pace = clean(entry?.pace, 'steady');
+  const ageBand = clean(entry?.ageBand, 'unspecified');
+  const accent = clean(entry?.accent, UNSPECIFIED_ACCENT);
   const pitchHz = Number(entry?.pitchHz) || null;
   const wpm = Number(entry?.wordsPerMinute) || 0;
   const name = clean(entry?.name, 'Untitled voice');
+  // Every clause below is sourced: the reader's name and gender from the corpus
+  // speaker table, pitch and pace from the shipped clip, age and accent from the
+  // annotation sets credited in ATTRIBUTION.md. Nothing is inferred from the
+  // audio, and a trait no source records is left off the card entirely rather
+  // than guessed for a real person who volunteered a reading.
+  const sentences = [`Audiobook narration read by ${name}.`];
+  const traits = [ageBand !== 'unspecified' ? AGE_LABELS[ageBand] : '', accent !== UNSPECIFIED_ACCENT ? accent : ''];
+  if (traits.some(Boolean)) sentences.push(`${traits.filter(Boolean).join(', ')}.`);
+  const measured = [pitchHz ? `median pitch ${pitchHz} Hz` : '', wpm ? `${wpm} words per minute` : ''];
+  if (measured.some(Boolean)) {
+    const joined = measured.filter(Boolean).join(', ');
+    sentences.push(`${joined.charAt(0).toUpperCase()}${joined.slice(1)}.`);
+  }
 
   const voice = {
     id: clean(entry?.id),
     name,
     gender: clean(entry?.gender, 'Neutral'),
+    // Empty unless the annotators heard the recording as the opposite of what
+    // the corpus records, which is the only case worth putting on a card.
+    perceivedGender: clean(entry?.perceivedGender),
+    ageBand: AGE_LABELS[ageBand] ? ageBand : 'unspecified',
+    ageLabel: AGE_LABELS[ageBand] || AGE_LABELS.unspecified,
+    accent,
     register,
     registerLabel: REGISTER_LABELS[register] || REGISTER_LABELS.unmeasured,
     pace,
@@ -105,11 +176,7 @@ export function normalizeCatalogVoice(entry, catalog = {}) {
     wordsPerMinute: wpm,
     seconds: Number(entry?.seconds) || 0,
     snrDb: Number(entry?.snrDb) || 0,
-    // Everything in the blurb is either corpus metadata or a measurement. The
-    // catalog deliberately claims nothing about age, accent, or character,
-    // because LibriTTS-R records none of them and casting copy must not invent
-    // biography for a real person who volunteered a reading.
-    description: `Audiobook narration read by ${name}.${pitchHz ? ` Median pitch ${pitchHz} Hz` : ''}${wpm ? `, ${wpm} words per minute` : ''}.`,
+    description: sentences.join(' '),
     source: clean(catalog.source, 'LibriTTS-R'),
     license: clean(catalog.license, 'CC BY 4.0'),
     previewUrl: voiceSampleAssetUrl(clean(entry?.clip)),
@@ -176,15 +243,22 @@ function tokensOf(query) {
 
 /**
  * A token matches when it names something the catalog actually knows: the
- * reader, the gender, or one of the two measured axes. Unknown words still have
- * to match somewhere, so a search for a trait we do not record returns nothing
- * instead of quietly returning everything.
+ * reader, the gender, the age band, the accent, or one of the two measured
+ * axes. Unknown words still have to match somewhere, so a search for a trait we
+ * do not record returns nothing instead of quietly returning everything.
+ *
+ * A voice whose age or accent is `unspecified` matches no term for either, so
+ * an unannotated reader never answers to a request the catalog cannot verify
+ * for them.
  */
 function matchesToken(voice, token) {
   if (voice.name.toLowerCase().includes(token)) return true;
   if (voice.gender.toLowerCase() === token) return true;
   if ((token === 'man' || token === 'men') && voice.gender === 'Male') return true;
   if ((token === 'woman' || token === 'women') && voice.gender === 'Female') return true;
+  if (AGE_SYNONYMS[voice.ageBand]?.includes(token)) return true;
+  if (ACCENT_SYNONYMS[voice.accent]?.includes(token)) return true;
+  if (voice.accent !== UNSPECIFIED_ACCENT && voice.accent.toLowerCase().includes(token)) return true;
   if (REGISTER_SYNONYMS[voice.register]?.includes(token)) return true;
   if (PACE_SYNONYMS[voice.pace]?.includes(token)) return true;
   return false;
@@ -193,6 +267,15 @@ function matchesToken(voice, token) {
 export function matchesVoiceFilters(voice, filters = {}) {
   const gender = clean(filters.gender).toLowerCase();
   if (gender && voice.gender.toLowerCase() !== gender) return false;
+
+  // Age and accent are selected by their exact stored value, `unspecified`
+  // included: a reader the annotation sets do not cover has to stay reachable,
+  // or the filter would hide voices without ever saying so.
+  const age = clean(filters.age).toLowerCase();
+  if (age && voice.ageBand !== age) return false;
+
+  const accent = clean(filters.accent);
+  if (accent && voice.accent.toLowerCase() !== accent.toLowerCase()) return false;
 
   const register = clean(filters.register).toLowerCase();
   if (register && voice.register !== register) return false;
@@ -220,6 +303,10 @@ export async function searchVoiceSamples(filters = {}, { signal, fetchImpl = glo
     hasMore: matched.length > start + pageSize,
     totalCount: matched.length,
     page,
+    // The accent list is built at catalog build time from the values actually
+    // present, so the filter can only ever offer choices that exist. It rides
+    // along with the search rather than needing its own load.
+    accents: Array.isArray(catalog.accents) ? catalog.accents : [],
   };
 }
 
@@ -271,4 +358,8 @@ export const VOICE_SAMPLE_CATALOG = Object.freeze({
   pageSize: DEFAULT_PAGE_SIZE,
   registers: Object.keys(REGISTER_LABELS).filter((key) => key !== 'unmeasured'),
   paces: Object.keys(PACE_LABELS),
+  // `unspecified` stays in the list. Four readers sit outside the annotation
+  // sets, and a filter that cannot reach them would drop voices silently.
+  ages: Object.keys(AGE_LABELS),
+  ageLabels: AGE_LABELS,
 });
