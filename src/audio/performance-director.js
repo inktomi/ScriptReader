@@ -59,6 +59,20 @@ const PITCH_MAX = 1.12;
 const SYNTH_SPEED_MIN = 0.8;
 const SYNTH_SPEED_MAX = 2.0;
 
+// A tempo change smaller than this is below the ear's discrimination threshold
+// for speech rate, and it is not free. An engine whose `speed` is native ignores
+// it harmlessly, but Chatterbox has no speed control at all — the worker fakes
+// one by time-scaling the rendered waveform, and that pass is audible where the
+// 1% it was asked to buy is not. Ordinary narration lands on 0.99, so without
+// this snap essentially every line was time-scaled for nothing. It also stops a
+// line from minting its own render-cache key for a delivery identical to its
+// neighbour's.
+const SPEED_DEADBAND = 0.03;
+
+function snapSpeed(value) {
+  return Math.abs(value - 1) < SPEED_DEADBAND ? 1 : value;
+}
+
 // Gap *between* lines, before the line's own emotional lead-in is added.
 const CUE_GAPS_MS = {
   beforeSceneHeading: 620,
@@ -148,7 +162,14 @@ export function chunkSpeech(text, maxChars = MAX_CHUNK_CHARS) {
     }
     current = current ? `${current} ${piece}` : piece;
 
-    if (maxChars < 500 || current.length >= maxChars - MIN_CHUNK_CHARS) {
+    // Only stop packing once there is no room left for another sentence worth
+    // having. Flushing on every sentence regardless — which `maxChars < 500`
+    // did, since no engine declares a limit near that — turned a paragraph into
+    // one render per sentence: a separate model pass that resets intonation, a
+    // fresh full stop at every boundary, and a gap between each. That is the
+    // line-by-line delivery, and it is why this function's own description of
+    // itself as greedy was not true of any engine in the app.
+    if (current.length >= maxChars - MIN_CHUNK_CHARS) {
       flush();
     }
   }
@@ -262,12 +283,13 @@ function resolveDelivery({ nuance, voiceProfile, tuning, masterSpeed, paceTempo 
     if (caps && caps.usesInstructionPitch) {
       // OpenAI changes tempo without shifting pitch. Keep its render untouched
       // by Web Audio resampling and express register as acting direction.
-      return { ...common, synthSpeed: clamp(tempo, 0.25, 4), playbackRate: 1.0, tempo };
+      const openAiSpeed = snapSpeed(clamp(tempo, 0.25, 4));
+      return { ...common, synthSpeed: openAiSpeed, playbackRate: 1.0, tempo: openAiSpeed };
     }
     // Kokoro: `speed` moves tempo while preserving pitch, `playbackRate` moves
     // both. Synthesise at tempo/pitch and play at pitch — they cancel on tempo
     // and compound on pitch.
-    const synthSpeed = clamp(tempo / pitch, SYNTH_SPEED_MIN, SYNTH_SPEED_MAX);
+    const synthSpeed = snapSpeed(clamp(tempo / pitch, SYNTH_SPEED_MIN, SYNTH_SPEED_MAX));
     // What the listener will actually hear, which is not what was asked for
     // whenever either clamp engaged. The lookahead budget is built from this, so
     // reporting the *requested* tempo made the runway estimate wrong in exactly

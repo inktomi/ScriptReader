@@ -12,7 +12,12 @@ import numpy as np
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from _test_stubs import FakeSoundFile, FakeTensor  # noqa: E402  (installs the stubs)
-from engine_chatterbox import ChatterboxEngine, LRUSpeakerCache  # noqa: E402
+from engine_chatterbox import (  # noqa: E402
+    WSOLA_FRAME,
+    ChatterboxEngine,
+    LRUSpeakerCache,
+    time_stretch_wsola,
+)
 
 
 class FakeChatterboxModel:
@@ -184,10 +189,27 @@ class ChatterboxEngineTests(unittest.TestCase):
         engine = self._build_engine()
         engine.speakers_cache["voice_good"] = ("mock_conds",)
 
-        with mock.patch("librosa.effects.time_stretch", return_value=np.full(80, 0.25, dtype=np.float32)) as stretch:
+        with mock.patch(
+            "engine_chatterbox.time_stretch_wsola", return_value=np.full(80, 0.25, dtype=np.float32)
+        ) as stretch:
             audio = engine.generate("Line text.", voice_id="voice_good", speed=1.25)
             self.assertEqual(len(audio), 80)
             stretch.assert_called_once()
+
+    def test_speed_inside_the_deadband_leaves_the_render_untouched(self):
+        """An inaudible rate request must not cost a time-scaling pass.
+
+        The browser's director lands ordinary narration on 0.99. Scaling for that
+        is all artifact and no benefit, which is what made every line ring.
+        """
+        engine = self._build_engine()
+        engine.speakers_cache["voice_good"] = ("mock_conds",)
+
+        with mock.patch("engine_chatterbox.time_stretch_wsola") as stretch:
+            for speed in (0.99, 1.0, 1.01, 1.015):
+                audio = engine.generate("Line text.", voice_id="voice_good", speed=speed)
+                self.assertEqual(len(audio), 100)
+        stretch.assert_not_called()
 
     def test_gpu_requirement_enforcement(self):
         engine = ChatterboxEngine(require_gpu=True)
@@ -753,17 +775,15 @@ class ChatterboxEngineTests(unittest.TestCase):
         self.assertEqual(model.calls[0], {"text": "Plain.", "exaggeration": 0.7})
 
     def test_short_audio_skips_time_stretch_without_raising(self):
-        """Under 32 samples there is no window to stretch; speed is dropped, not fatal."""
+        """Too short to hold two overlap frames: speed is dropped, not fatal."""
         engine = self._build_engine()
         engine.speakers_cache["voice_short"] = ("mock_conds",)
         engine.model.generate = mock.MagicMock(
             return_value=FakeTensor(np.full(16, 0.25, dtype=np.float32))
         )
 
-        with mock.patch("librosa.effects.time_stretch") as stretch:
-            audio = engine.generate("Tiny.", voice_id="voice_short", speed=1.5)
+        audio = engine.generate("Tiny.", voice_id="voice_short", speed=1.5)
 
-        stretch.assert_not_called()
         self.assertEqual(len(audio), 16)
 
     def test_render_row_clamps_overshoot_and_sanitizes_nans(self):
@@ -789,13 +809,12 @@ class ChatterboxEngineTests(unittest.TestCase):
         self.assertEqual(audio[7], -1.0, "-Inf should be clamped to -1.0")
 
     def test_speed_stretch_output_is_clamped_and_sanitized(self):
-        """Verify that phase-vocoder time-stretch output exceeding [-1.0, 1.0] is clamped."""
+        """Overlap-add sums two windowed frames, so its output can leave [-1, 1]."""
         engine = self._build_engine()
         engine.speakers_cache["voice_test"] = ("mock_conds",)
 
-        # Mock librosa.effects.time_stretch to return out-of-bounds array
         stretched_out_of_bounds = np.array([-1.2, 0.5, 1.3, np.nan], dtype=np.float32)
-        with mock.patch("librosa.effects.time_stretch", return_value=stretched_out_of_bounds):
+        with mock.patch("engine_chatterbox.time_stretch_wsola", return_value=stretched_out_of_bounds):
             audio = engine.generate("Speed test.", voice_id="voice_test", speed=1.2)
             self.assertFalse(np.isnan(audio).any())
             self.assertTrue(np.all(audio >= -1.0))
@@ -804,81 +823,58 @@ class ChatterboxEngineTests(unittest.TestCase):
             self.assertEqual(audio[2], 1.0)
             self.assertEqual(audio[3], 0.0)
 
-    def test_speed_modification_dynamic_nfft_for_short_audio(self):
-        """Verify dynamic n_fft calculation prevents ParameterError for sub-2048 audio."""
-        engine = self._build_engine()
-        engine.speakers_cache["voice_good"] = ("mock_conds",)
+    def test_audio_too_short_to_overlap_is_returned_unchanged(self):
+        """Below two overlap frames there is no window to slide."""
+        for length in (20, 500, 2047):
+            source = np.sin(np.linspace(0, 100, length)).astype(np.float32)
+            stretched = time_stretch_wsola(source, 1.25)
+            np.testing.assert_array_equal(stretched, source)
 
-        test_cases = [
-            # (signal_length, expected_n_fft)
-            (3000, 2048),
-            (2048, 2048),
-            (1500, 1024),
-            (600, 512),
-            (200, 128),
-            (50, 32),
-        ]
+    def test_wsola_scales_duration_and_leaves_pitch_where_it_was(self):
+        """The whole point: change the length, move nothing else.
 
-        for length, expected_n_fft in test_cases:
-            self.fake_model.recorded_calls.clear()
-            # Configure fake model to return an array of the test length
-            with mock.patch.object(
-                self.fake_model,
-                "generate",
-                return_value=FakeTensor(np.full(length, 0.2, dtype=np.float32)),
-            ):
-                with mock.patch("librosa.effects.time_stretch") as mock_stretch:
-                    mock_stretch.side_effect = lambda y, rate=1.0, n_fft=2048: np.full(
-                        int(len(y) / rate), 0.2, dtype=np.float32
-                    )
+        Resampling would move the fundamental; this must not. Lengths that are
+        not an exact multiple of the hop land within one frame of the target,
+        which is inaudible against a line several seconds long.
+        """
+        sample_rate = 24000
+        time = np.arange(int(sample_rate * 0.5)) / sample_rate
+        # A voiced signal — a fundamental with harmonics — is exactly what a
+        # phase vocoder smears and what a waveform-similarity stretch keeps.
+        voiced = sum(np.sin(2 * np.pi * 120.0 * h * time) / h for h in (1, 2, 3, 4))
+        voiced = (voiced / np.max(np.abs(voiced))).astype(np.float32)
 
-                    audio = engine.generate("Short exclamation.", voice_id="voice_good", speed=1.2)
+        def dominant_hz(signal):
+            spectrum = np.abs(np.fft.rfft(signal))
+            return np.fft.rfftfreq(len(signal), 1.0 / sample_rate)[int(np.argmax(spectrum))]
 
-                    self.assertIsInstance(audio, np.ndarray)
-                    mock_stretch.assert_called_once()
-                    _, kwargs = mock_stretch.call_args
-                    self.assertEqual(
-                        kwargs.get("n_fft"),
-                        expected_n_fft,
-                        f"Failed n_fft match for input length {length}",
-                    )
+        for rate in (0.85, 1.2):
+            stretched = time_stretch_wsola(voiced, rate)
 
-    def test_speed_modification_sub_32_samples_bypasses_vocoder(self):
-        """Audio under 32 samples should not invoke librosa time_stretch."""
-        engine = self._build_engine()
-        engine.speakers_cache["voice_good"] = ("mock_conds",)
+            self.assertTrue(np.all(np.isfinite(stretched)))
+            self.assertLess(abs(len(stretched) - len(voiced) / rate), WSOLA_FRAME)
+            self.assertLess(abs(dominant_hz(stretched) - 120.0), 5.0, f"pitch moved at rate {rate}")
 
-        with mock.patch.object(
-            self.fake_model,
-            "generate",
-            return_value=FakeTensor(np.full(20, 0.15, dtype=np.float32)),
-        ):
-            with mock.patch("librosa.effects.time_stretch") as mock_stretch:
-                audio = engine.generate("Tiny clip.", voice_id="voice_good", speed=1.25)
-                self.assertEqual(len(audio), 20)
-                mock_stretch.assert_not_called()
+    def test_wsola_overlap_add_does_not_cancel_the_waveform(self):
+        """Frames must be matched, not merely butted together.
 
-    def test_real_librosa_time_stretch_short_signals_without_error(self):
-        """Directly test real librosa.effects.time_stretch using dynamic n_fft calculation."""
-        try:
-            import librosa
-        except (ImportError, AttributeError):
-            self.skipTest("librosa not installed in local test environment")
+        Overlap-adding at an arbitrary offset puts two copies of a periodic
+        signal out of phase, and the sum collapses. Surviving amplitude is the
+        evidence that the similarity search is doing its job — and the difference
+        between a voice and a voice in a metal box.
+        """
+        sample_rate = 24000
+        time = np.arange(int(sample_rate * 0.4)) / sample_rate
+        tone = np.sin(2 * np.pi * 130.0 * time).astype(np.float32)
 
-        speeds = [0.8, 1.25]
-        lengths = [40, 100, 500, 1200, 2048, 4000]
+        stretched = time_stretch_wsola(tone, 1.15)
+        interior = stretched[WSOLA_FRAME : len(stretched) - WSOLA_FRAME]
 
-        for L in lengths:
-            for speed in speeds:
-                synthetic_audio = np.sin(np.linspace(0, 100, L)).astype(np.float32)
-                audio_len = len(synthetic_audio)
-                if audio_len >= 32:
-                    n_fft = min(2048, max(32, int(2 ** int(np.log2(audio_len)))))
-                    stretched = librosa.effects.time_stretch(
-                        synthetic_audio, rate=speed, n_fft=n_fft
-                    ).astype(np.float32)
-                    self.assertIsInstance(stretched, np.ndarray)
-                    self.assertGreater(len(stretched), 0)
+        self.assertGreater(np.max(np.abs(interior)), 0.9)
+        self.assertLess(np.max(np.abs(stretched)), 1.35)
+        # Envelope stays put rather than pumping frame by frame.
+        envelope = [np.max(np.abs(interior[i : i + 512])) for i in range(0, len(interior) - 512, 512)]
+        self.assertGreater(min(envelope), 0.85)
 
     def test_register_speaker_reference_clears_stale_conds_on_failure(self):
         engine = self._build_engine()

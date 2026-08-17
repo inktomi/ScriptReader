@@ -19,8 +19,9 @@ test('uppercase action ending in punctuation is not treated as a character cue',
   const parsed = parseFountainScript('THE DOOR EXPLODES.\nSmoke fills the room.');
   assert.deepEqual(
     parsed.elements.map((element) => element.type),
-    ['ACTION', 'ACTION'],
+    ['ACTION'],
   );
+  assert.equal(parsed.elements[0].text, 'THE DOOR EXPLODES. Smoke fills the room.');
   assert.equal(parsed.characters.length, 0);
 });
 
@@ -50,9 +51,76 @@ test('uppercase action ending in a street abbreviation is not a cue', () => {
   const parsed = parseFountainScript('THEY ARRIVE AT MAIN ST.\nThen wait.');
   assert.deepEqual(
     parsed.elements.map((element) => element.type),
-    ['ACTION', 'ACTION'],
+    ['ACTION'],
   );
+  assert.equal(parsed.elements[0].text, 'THEY ARRIVE AT MAIN ST. Then wait.');
   assert.equal(parsed.characters.length, 0);
+});
+
+// A hard-wrapped action block is one paragraph the narrator should read straight
+// through. One element per physical line put a full stop at every margin break.
+test('wrapped Fountain action lines become one paragraph, and a blank line ends it', () => {
+  const parsed = parseFountainScript(
+    [
+      'INT. ROOM - DAY',
+      'The wind claws at the tent flaps as Marisol',
+      'tightens the last strap and looks east.',
+      '',
+      'Nothing moves out there.',
+      '',
+      'BOB',
+      'Hello.',
+    ].join('\n'),
+  );
+
+  assert.deepEqual(
+    parsed.elements.map((element) => [element.type, element.text]),
+    [
+      ['SCENE_HEADING', 'INT. ROOM - DAY'],
+      ['ACTION', 'The wind claws at the tent flaps as Marisol tightens the last strap and looks east.'],
+      ['ACTION', 'Nothing moves out there.'],
+      ['DIALOGUE', 'Hello.'],
+    ],
+  );
+});
+
+test('a paragraph keeps the pace that was in force while it was read', () => {
+  const parsed = parseFountainScript(['[[pace: urgent]]', 'She runs', 'for the door.', '[[pace: relaxed]]'].join('\n'));
+  const action = parsed.elements.find((element) => element.type === 'ACTION');
+  assert.equal(action.text, 'She runs for the door.');
+  assert.equal(action.pace, 'rapid');
+});
+
+test('PDF action rows merge by line advance and split on a block break', async () => {
+  const processExtractedLines = await loadPdfLineProcessor();
+  const base = { page: 1, pageWidth: 612, pageHeight: 792 };
+  const parsed = processExtractedLines(
+    [
+      { ...base, y: 700, minX: 72, maxX: 400, text: 'The wind claws at the tent flaps as Marisol' },
+      { ...base, y: 688, minX: 72, maxX: 380, text: 'tightens the last strap and looks east.' },
+      { ...base, y: 652, minX: 72, maxX: 300, text: 'Nothing moves out there.' },
+    ],
+    'Wrapped',
+  );
+
+  assert.deepEqual(
+    parsed.elements.map((element) => element.text),
+    ['The wind claws at the tent flaps as Marisol tightens the last strap and looks east.', 'Nothing moves out there.'],
+  );
+});
+
+// Every sentence rendered separately is a separate model pass: intonation resets,
+// the reading lands a full stop at each boundary, and a gap opens between them.
+test('chunkSpeech packs whole sentences up to the engine limit', () => {
+  const paragraph =
+    'The wind claws at the tent flaps. Marisol tightens the last strap and looks east. Nothing moves out there. She waits anyway.';
+
+  assert.deepEqual(chunkSpeech(paragraph, 350), [paragraph]);
+
+  const packed = chunkSpeech(paragraph, 80);
+  assert.ok(packed.length > 1);
+  assert.ok(packed.every((chunk) => chunk.length <= 80));
+  assert.equal(packed.join(' '), paragraph);
 });
 
 test('speech chunks never exceed the engine limit, even without punctuation or commas', () => {
@@ -326,7 +394,13 @@ test('PDF uppercase dialogue and action do not become phantom speakers', async (
   assert.equal(parsed.characters.length, 1);
   assert.equal(parsed.characters[0].name, 'BOB');
   assert.equal(parsed.elements[0].text, 'RUN before it sees us.');
-  assert.ok(parsed.elements.some((element) => element.type === 'ACTION' && element.text === 'THE CAR EXPLODES'));
+  // Both action rows are a single line advance apart, so they are one paragraph
+  // and the narrator reads them as one — not two sentences with a stop between.
+  assert.ok(
+    parsed.elements.some(
+      (element) => element.type === 'ACTION' && element.text === 'THE CAR EXPLODES Flames fill the road.',
+    ),
+  );
 });
 
 // The cue detector is geometric — centred, upper case, short, text underneath —

@@ -65,6 +65,36 @@ export function parseFountainScript(text) {
 
   let inDialogueBlock = false;
   let pendingDialogueLines = [];
+  // Action is a paragraph, not a line. Fountain ends one at a blank line and at
+  // nothing else, so every hard wrap inside a block is the author's text editor
+  // talking, not the author. Emitting one element per physical line made the
+  // narrator stop at each wrap — mid-sentence, wherever the margin happened to
+  // fall — and asked the emotion analyzer to read a fragment as if it were a
+  // whole thought.
+  let pendingActionLines = [];
+
+  function flushAction() {
+    if (pendingActionLines.length === 0) return;
+    const paragraph = pendingActionLines.join(' ').trim();
+    pendingActionLines = [];
+    if (!paragraph) return;
+
+    elements.push({
+      id: `line-${lineIndex++}`,
+      type: 'ACTION',
+      sceneNumber: currentSceneNumber || 1,
+      sceneTitle: currentSceneTitle,
+      character: 'NARRATOR',
+      characterOriginal: 'NARRATOR',
+      text: paragraph,
+      parenthetical: '',
+      pace: activePace,
+      linePace: null,
+      overlap: null,
+      cutOff: false,
+      nuance: analyzeLineNuance({ text: paragraph, speakerType: 'ACTION' }),
+    });
+  }
 
   function flushDialogue({ preserveCue = false } = {}) {
     if (pendingDialogueLines.length > 0 && currentSpeaker) {
@@ -121,6 +151,7 @@ export function parseFountainScript(text) {
 
     // Skip empty lines
     if (!trimmed) {
+      flushAction();
       flushDialogue();
       inDialogueBlock = false;
       continue;
@@ -136,6 +167,9 @@ export function parseFountainScript(text) {
     if (trimmed.startsWith('[[') && trimmed.endsWith(']]')) {
       const pace = parsePaceDirective(trimmed.slice(2, -2));
       if (pace) {
+        // Before `activePace` moves: the paragraph that just ended ran at the
+        // pace in force while it was being read, not the one starting here.
+        flushAction();
         flushDialogue();
         inDialogueBlock = false;
         activePace = pace;
@@ -145,6 +179,7 @@ export function parseFountainScript(text) {
 
     // 1. Scene Headings (e.g. EXT. OMNICORP SPIRE - 80TH FLOOR LEDGE - NIGHT)
     if (SCENE_REGEX.test(trimmed) || (trimmed.startsWith('.') && trimmed.length > 1 && !trimmed.startsWith('..'))) {
+      flushAction();
       flushDialogue();
       inDialogueBlock = false;
       currentSpeaker = null;
@@ -182,6 +217,7 @@ export function parseFountainScript(text) {
 
     // 2. Transitions (e.g. CUT TO:)
     if (TRANSITION_REGEX.test(trimmed)) {
+      flushAction();
       flushDialogue();
       inDialogueBlock = false;
       currentSpeaker = null;
@@ -241,6 +277,7 @@ export function parseFountainScript(text) {
       !TRANSITION_REGEX.test(cueText);
 
     if (isLikelyCharacter) {
+      flushAction();
       flushDialogue();
       inDialogueBlock = true;
       // The caret is a staging instruction, not part of the name — keep it out
@@ -257,33 +294,16 @@ export function parseFountainScript(text) {
     if (inDialogueBlock && currentSpeaker) {
       pendingDialogueLines.push(trimmed);
     } else {
-      // Action / Description block (read by Narrator)
+      // Action / Description block (read by Narrator). Held until something
+      // ends the paragraph rather than emitted here, so a wrapped block reaches
+      // the narrator as the one continuous passage it is on the page.
       flushDialogue();
       currentSpeaker = null;
-
-      const nuance = analyzeLineNuance({
-        text: trimmed,
-        speakerType: 'ACTION',
-      });
-
-      elements.push({
-        id: `line-${lineIndex++}`,
-        type: 'ACTION',
-        sceneNumber: currentSceneNumber || 1,
-        sceneTitle: currentSceneTitle,
-        character: 'NARRATOR',
-        characterOriginal: 'NARRATOR',
-        text: trimmed,
-        parenthetical: '',
-        pace: activePace,
-        linePace: null,
-        overlap: null,
-        cutOff: false,
-        nuance,
-      });
+      pendingActionLines.push(trimmed);
     }
   }
 
+  flushAction();
   flushDialogue();
 
   // Always ensure Narrator is in character list

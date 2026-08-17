@@ -17,6 +17,15 @@ def _requires_gpu():
 
 DEFAULT_MAX_SPEAKER_CACHE_SIZE = 64
 
+# Chatterbox has no speed control of its own, so a `speed` request is served by
+# time-scaling the rendered waveform. Below this the change is under the ear's
+# discrimination threshold for speech rate and the scaling pass is pure cost —
+# a browser asking for 0.99 is asking for nothing.
+SPEED_DEADBAND = 0.02
+# WSOLA frame, at 24 kHz: 42.7 ms, comfortably more than two pitch periods even
+# for a 70 Hz voice, which is what the similarity search needs to lock onto.
+WSOLA_FRAME = 1024
+
 
 def _speaker_cache_size(explicit=None):
     """Resolve the speaker-cache bound, preferring an explicit constructor value.
@@ -38,6 +47,83 @@ def _speaker_cache_size(explicit=None):
             f"using {DEFAULT_MAX_SPEAKER_CACHE_SIZE}."
         )
         return DEFAULT_MAX_SPEAKER_CACHE_SIZE
+
+
+def time_stretch_wsola(audio: np.ndarray, rate: float, frame: int = WSOLA_FRAME) -> np.ndarray:
+    """Scale `audio` in time by `rate` without moving its pitch.
+
+    This replaces a phase vocoder, which is where "the voices sound like they are
+    speaking through a metal box" came from. A phase vocoder discards the real
+    phase of every frame and integrates an estimated one instead; on speech the
+    estimate drifts between overlapping frames, the harmonics stop lining up, and
+    the result rings — audibly, at any rate, including the 1% ordinary narration
+    was being stretched by.
+
+    WSOLA never leaves the time domain. Each output frame is copied from the
+    input at whichever offset within a small search window best matches the
+    waveform already written, so overlapping frames stay phase-coherent and the
+    timbre survives intact.
+    """
+    audio = np.asarray(audio, dtype=np.float32)
+    hop_syn = frame // 2
+    # Two frames is the least that can overlap-add into anything; below it there
+    # is no window to slide and the speed request is simply dropped.
+    if not np.isfinite(rate) or rate <= 0 or audio.size < frame * 2:
+        return audio
+
+    from scipy.signal import correlate
+
+    hop_ana = hop_syn * rate
+    tolerance = hop_syn  # ±21 ms covers a full pitch period at any speaking F0
+    # Periodic Hann sums to exactly 1.0 at 50% overlap, so the interior needs no
+    # normalisation and only the two ramped edges do.
+    window = (0.5 - 0.5 * np.cos(2.0 * np.pi * np.arange(frame) / frame)).astype(np.float32)
+
+    out_len = int(np.ceil(audio.size / rate)) + frame
+    out = np.zeros(out_len, dtype=np.float32)
+    weight = np.zeros(out_len, dtype=np.float32)
+
+    selected = 0
+    index = 0
+    while True:
+        out_start = index * hop_syn
+        ideal = int(round(index * hop_ana))
+        if out_start + frame > out_len or ideal + frame > audio.size:
+            break
+
+        if index > 0:
+            low = max(0, ideal - tolerance)
+            high = min(audio.size - frame, ideal + tolerance)
+            if high <= low:
+                selected = max(0, min(audio.size - frame, ideal))
+            else:
+                # The samples that would have followed naturally had the previous
+                # frame simply played on: the candidate most like this is the one
+                # that continues the waveform instead of interrupting it.
+                target = audio[selected + hop_syn : selected + hop_syn + frame]
+                if target.size < frame:
+                    target = np.pad(target, (0, frame - target.size))
+                search = audio[low : high + frame]
+                similarity = correlate(search, target, mode="valid")
+                # Normalise by candidate energy, or the search locks onto
+                # whichever offset is merely loudest rather than the best match.
+                squares = np.concatenate(([0.0], np.cumsum(search.astype(np.float64) ** 2)))
+                count = similarity.size
+                energy = squares[frame : frame + count] - squares[:count]
+                selected = low + int(np.argmax(similarity / np.sqrt(energy + 1e-9)))
+
+        out[out_start : out_start + frame] += audio[selected : selected + frame] * window
+        weight[out_start : out_start + frame] += window
+        index += 1
+
+    if index == 0:
+        return audio
+
+    used = min(out_len, (index - 1) * hop_syn + frame)
+    out = out[:used]
+    weight = weight[:used]
+    np.divide(out, weight, out=out, where=weight > 1e-6)
+    return out
 
 
 class LRUSpeakerCache(collections.OrderedDict):
@@ -329,19 +415,13 @@ class ChatterboxEngine:
         if audio is None or audio.size == 0 or np.all(audio == 0):
             raise RuntimeError(f"Chatterbox voice generation failed for voice '{row['voice_id']}'")
 
-        # Below 32 samples — about 1.3 ms at 24 kHz — there is no window left to
-        # stretch, so the speed request is dropped. Nothing audible is lost:
-        # audio that short is rejected as silent before it reaches a caller.
-        if abs(row["speed"] - 1.0) > 0.01 and len(audio) >= 32:
-            # Librosa phase vocoder for clean time-stretching without pitch shifts
-            import librosa
-            # Dynamically scale n_fft for short utterances to prevent Librosa ParameterError
-            # while preserving power-of-2 efficiency for FFT kernels.
-            n_fft = min(2048, max(32, int(2 ** int(np.log2(len(audio))))))
-            audio = librosa.effects.time_stretch(
-                audio, rate=row["speed"], n_fft=n_fft
-            ).astype(np.float32)
-            # Overlap-add in phase vocoder can cause constructive interference peaks > 1.0 or NaNs
+        # A request inside the deadband, or audio too short to hold two overlap
+        # frames, keeps the render exactly as the model produced it. Nothing
+        # audible is lost either way, and an untouched waveform is the best one.
+        if abs(row["speed"] - 1.0) > SPEED_DEADBAND:
+            audio = time_stretch_wsola(audio, row["speed"]).astype(np.float32)
+            # Overlap-add sums two windowed frames, so a coherent match can peak
+            # above the input's own range.
             audio = np.nan_to_num(audio, copy=False, nan=0.0, posinf=1.0, neginf=-1.0)
             audio = np.clip(audio, -1.0, 1.0, out=audio)
 

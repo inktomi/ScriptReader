@@ -237,9 +237,39 @@ export function processExtractedLines(lines, scriptTitle) {
   const TRANSITION_REGEX =
     /^(CUT TO:|FADE IN:|FADE OUT\.|FADE TO BLACK\.|DISSOLVE TO:|SMASH CUT TO:|MATCH CUT TO:|JUMP CUT TO:|>.*<)$/i;
   const PARENTHETICAL_REGEX = /^\s*\((.+)\)\s*$/;
+  // The same threshold `startsDialogueBlock` uses below: single-spaced 12pt
+  // Courier advances 12–15pt per line, and a new block leaves a blank one.
+  const ACTION_PARAGRAPH_GAP = 16;
 
   let inDialogueBlock = false;
   let pendingDialogueLines = [];
+  // A PDF has no blank lines to end a paragraph with — extraction returns one
+  // geometric row per printed line, so an action block arrives already broken at
+  // the page margin, routinely mid-sentence. Rows are held and rejoined here on
+  // the same signal the cue detector already trusts: a normal line advance means
+  // the same paragraph, a larger jump means a new block.
+  let pendingActionLines = [];
+  let lastActionRow = null;
+
+  function flushAction() {
+    if (pendingActionLines.length === 0) return;
+    const paragraph = pendingActionLines.join(' ').trim();
+    pendingActionLines = [];
+    lastActionRow = null;
+    if (!paragraph) return;
+
+    elements.push({
+      id: `line-${lineIndex++}`,
+      type: 'ACTION',
+      sceneNumber: currentSceneNumber,
+      sceneTitle: currentSceneTitle,
+      character: 'NARRATOR',
+      characterOriginal: 'NARRATOR',
+      text: paragraph,
+      parenthetical: '',
+      nuance: analyzeLineNuance({ text: paragraph, speakerType: 'ACTION' }),
+    });
+  }
 
   function flushDialogue() {
     if (pendingDialogueLines.length > 0 && currentSpeaker) {
@@ -282,6 +312,7 @@ export function processExtractedLines(lines, scriptTitle) {
     const item = lines[i];
     const text = item.text.trim();
     if (!text) {
+      flushAction();
       flushDialogue();
       inDialogueBlock = false;
       continue;
@@ -309,6 +340,7 @@ export function processExtractedLines(lines, scriptTitle) {
 
     // 1. Scene Heading (Left aligned, INT./EXT.)
     if (SCENE_REGEX.test(text)) {
+      flushAction();
       flushDialogue();
       inDialogueBlock = false;
       currentSpeaker = null;
@@ -334,6 +366,7 @@ export function processExtractedLines(lines, scriptTitle) {
 
     // 2. Transitions (e.g. CUT TO:, right-aligned or regex)
     if (TRANSITION_REGEX.test(text) || (normalizedXRatio > 0.65 && text.endsWith(':'))) {
+      flushAction();
       flushDialogue();
       inDialogueBlock = false;
       currentSpeaker = null;
@@ -356,6 +389,7 @@ export function processExtractedLines(lines, scriptTitle) {
     // 3. Parentheticals: (whispering) or (beat)
     const parenMatch = text.match(PARENTHETICAL_REGEX);
     if (parenMatch && (inDialogueBlock || currentSpeaker || (normalizedXRatio >= 0.28 && normalizedXRatio <= 0.55))) {
+      flushAction();
       if (shouldSplitPdfDialogueAtParenthetical(pendingDialogueLines)) {
         flushDialogue();
         inDialogueBlock = true;
@@ -390,6 +424,7 @@ export function processExtractedLines(lines, scriptTitle) {
       !SCENE_REGEX.test(text);
 
     if (isIndentedCharacter || isExplicitCharacter) {
+      flushAction();
       flushDialogue();
       inDialogueBlock = true;
       currentSpeakerOriginal = text;
@@ -409,21 +444,17 @@ export function processExtractedLines(lines, scriptTitle) {
       currentSpeaker = null;
       inDialogueBlock = false;
 
-      const nuance = analyzeLineNuance({ text, speakerType: 'ACTION' });
-      elements.push({
-        id: `line-${lineIndex++}`,
-        type: 'ACTION',
-        sceneNumber: currentSceneNumber,
-        sceneTitle: currentSceneTitle,
-        character: 'NARRATOR',
-        characterOriginal: 'NARRATOR',
-        text,
-        parenthetical: '',
-        nuance,
-      });
+      const continuesParagraph =
+        !!lastActionRow &&
+        lastActionRow.page === item.page &&
+        Math.abs(lastActionRow.y - item.y) < ACTION_PARAGRAPH_GAP;
+      if (!continuesParagraph) flushAction();
+      pendingActionLines.push(text);
+      lastActionRow = item;
     }
   }
 
+  flushAction();
   flushDialogue();
 
   const characters = Array.from(characterSet.values()).map((c) => ({
