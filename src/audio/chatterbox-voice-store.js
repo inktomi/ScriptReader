@@ -232,6 +232,9 @@ export function listChatterboxVoices() {
     sex: ['Female', 'Male', 'Neutral'].includes(item.sex) ? item.sex : 'Neutral',
     ageGroup: metadataText(item.ageGroup, 'Reference performance', 40),
     accent: metadataText(item.accent, 'Cloned', 60),
+    // No fallback: an absent register means "not measured", and inventing one
+    // would make two unrelated voices look like the same band to the caster.
+    register: metadataText(item.register, '', 24),
     tone: metadataText(item.tone, 'Natural character voice from a private reference recording', 120),
     description: metadataText(item.description, '', 240)
       ? `${metadataText(item.description, '', 240)} · ${Number(item.duration || 0).toFixed(1)} second local reference`
@@ -344,6 +347,9 @@ export async function saveChatterboxVoice(
       sex: metadataText(profile.sex, 'Neutral', 24),
       ageGroup: metadataText(profile.ageGroup, 'Reference performance', 40),
       accent: metadataText(profile.accent, 'Cloned', 60),
+      // Measured pitch band, kept so casting can spread an ensemble across
+      // registers. Empty for a private upload, which nothing measured.
+      register: metadataText(profile.register, '', 24),
       tone: metadataText(profile.tone, 'Natural character voice from a private reference recording', 120),
       description: metadataText(profile.description, '', 240),
       source: metadataText(profile.source, 'Private upload', 80),

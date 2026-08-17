@@ -365,6 +365,89 @@ test('the age and accent filters populate from the catalog and keep keyboard foc
   }
 });
 
+test('opened for a role, the browser names it, seeds its filters, and can be widened', async () => {
+  const dom = installDom();
+  try {
+    const searches = [];
+    const voice = normalizeCatalogVoice(rawEntry);
+    const modal = createVoiceSampleCatalogModal({
+      role: { name: 'EVELYN' },
+      initialFilters: { gender: 'female', age: 'young', accent: '' },
+      catalogClient: {
+        async search(filters) {
+          searches.push({ ...filters });
+          return { voices: [voice], hasMore: false, totalCount: 1, accents: ['Irish'] };
+        },
+        async download() {
+          return new File(['audio'], 'v.mp3', { type: 'audio/mpeg' });
+        },
+      },
+    });
+    document.body.appendChild(modal);
+    await nextTurn();
+
+    // The role names the dialog and the action, so the writer can see which
+    // character a click will cast rather than inferring it from context.
+    assert.match(modal.querySelector('#voice-catalog-title').textContent, /EVELYN/);
+    assert.match(modal.querySelector('.btn-catalog-add').textContent, /Cast as EVELYN/);
+
+    // Filters arrive already carrying what the screenplay said.
+    assert.equal(searches[0].gender, 'female');
+    assert.equal(searches[0].age, 'young');
+    assert.equal(modal.querySelector('#voice-catalog-age').value, 'young');
+    // ...and the count says the list is narrowed, so it does not read as a
+    // smaller catalog than the one that exists.
+    assert.match(modal.querySelector('.voice-catalog-status').textContent, /matching this role/);
+
+    modal.close();
+  } finally {
+    removeDom(dom);
+  }
+});
+
+test('a role-seeded search that matches nothing offers a way back out', async () => {
+  const dom = installDom();
+  try {
+    const searches = [];
+    const modal = createVoiceSampleCatalogModal({
+      role: { name: 'GRETA' },
+      initialFilters: { gender: 'female', age: 'senior', accent: 'Welsh' },
+      catalogClient: {
+        async search(filters) {
+          searches.push({ ...filters });
+          // Narrow seed matches nothing; cleared filters match everything.
+          const empty = Boolean(filters.gender || filters.age || filters.accent);
+          return { voices: empty ? [] : [normalizeCatalogVoice(rawEntry)], hasMore: false, totalCount: empty ? 0 : 1 };
+        },
+        async download() {
+          throw new Error('not used');
+        },
+      },
+    });
+    document.body.appendChild(modal);
+    await nextTurn();
+
+    // Seeding from the script can over-narrow — a Welsh senior woman may simply
+    // not be in the catalog. A dead end with no exit would strand the writer in
+    // a filter they did not set themselves.
+    assert.equal(modal.querySelectorAll('.voice-sample-card').length, 0);
+    const clear = modal.querySelector('.btn-catalog-clear');
+    assert.ok(clear, 'an over-narrow seeded search offers to clear its filters');
+
+    clear.click();
+    await nextTurn();
+    assert.deepEqual(
+      { gender: searches.at(-1).gender, age: searches.at(-1).age, accent: searches.at(-1).accent },
+      { gender: '', age: '', accent: '' },
+    );
+    assert.equal(modal.querySelectorAll('.voice-sample-card').length, 1);
+
+    modal.close();
+  } finally {
+    removeDom(dom);
+  }
+});
+
 test('voice browser searches, escapes remote metadata, and imports a selected preview', async () => {
   const dom = installDom();
   try {

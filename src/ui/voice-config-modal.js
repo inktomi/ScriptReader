@@ -5,6 +5,7 @@ import {
 } from '../audio/chatterbox-voice-store.js';
 import { ENGINE_IDS } from '../audio/engine-contract.js';
 import { formatPitchOffset } from '../audio/performance-director.js';
+import { castRoles, catalogFiltersForRole, pickEngineVoiceForCharacter } from '../audio/voice-casting.js';
 import {
   getDefaultNarratorVoice,
   getSuggestedVoiceForCharacter,
@@ -14,9 +15,11 @@ import {
   mapVoiceAcrossEngines,
 } from '../audio/voice-catalog.js';
 import { gradeColor, gradeLabel, KOKORO_GRADES } from '../audio/voice-grades.js';
+import { downloadVoiceSample, loadVoiceSampleCatalog } from '../audio/voice-sample-catalog.js';
 import { escapeHtml } from '../utils/escape-html.js';
 import { createFocusPreservingRenderer } from '../utils/focus-preserving-render.js';
 import { getIconSvg } from '../utils/icons.js';
+import { LatestOperation, throwIfAborted } from '../utils/latest-operation.js';
 import { createVoiceSampleCatalogModal } from './voice-sample-catalog-modal.js';
 
 export function createVoiceConfigModal({
@@ -74,7 +77,10 @@ export function createVoiceConfigModal({
   let addingStudioVoice = false;
   let catalogDialog = null;
   let openingCatalog = false;
+  let bulkCasting = false;
+  let bulkCastError = '';
   let closed = false;
+  const bulkCastOperation = new LatestOperation();
 
   const focusRenderer = createFocusPreservingRenderer(modal, {
     scrollSelectors: ['.voice-config-body', '.modal-body', ':scope'],
@@ -246,7 +252,15 @@ export function createVoiceConfigModal({
       });
       usedLocalVoices.add(localVoiceId);
       const suggestedVoiceId =
-        engineId === ENGINE_IDS.KOKORO ? localVoiceId : mapVoiceAcrossEngines(localVoiceId, engineId, usedEngineVoices);
+        engineId === ENGINE_IDS.KOKORO
+          ? localVoiceId
+          : pickEngineVoiceForCharacter(char.name, {
+              introduction: char.introduction,
+              sampleLine: char.sampleLine,
+              engineId,
+              usedVoices: usedEngineVoices,
+              fallbackVoiceId: localVoiceId,
+            });
       usedEngineVoices.add(suggestedVoiceId);
       const key = char.name.toUpperCase().trim();
       const existing = workingAssignments.get(key) || makeDefaultAssignment(localVoiceId);
@@ -262,11 +276,44 @@ export function createVoiceConfigModal({
     }
   }
 
+  /**
+   * Voices carrying more than one speaking role, and who shares each.
+   *
+   * Auto-cast already avoids collisions, but a writer reassigning by hand has
+   * had nothing telling them two characters now sound identical — which in a
+   * readthrough is the single most confusing outcome, and the hardest to
+   * diagnose by ear after the fact. Recomputed per render rather than tracked,
+   * because assignments change from a dozen places and a stale warning about
+   * the wrong pair is worse than none.
+   */
+  function voiceSharing() {
+    const rolesByVoice = new Map();
+    for (const char of characters) {
+      const key = char.name.toUpperCase().trim();
+      const voiceId = voiceIdOf(workingAssignments.get(key) || {});
+      if (!voiceId) continue;
+      if (!rolesByVoice.has(voiceId)) rolesByVoice.set(voiceId, []);
+      rolesByVoice.get(voiceId).push({ key, name: char.name });
+    }
+    const duplicates = new Set();
+    for (const [voiceId, roles] of rolesByVoice) if (roles.length > 1) duplicates.add(voiceId);
+    return { rolesByVoice, duplicates };
+  }
+
+  let duplicateVoiceIds = new Set();
+  let rolesByVoiceId = new Map();
+
+  function sharedRolesFor(voiceId, exceptKey) {
+    return (rolesByVoiceId.get(voiceId) || []).filter((role) => role.key !== exceptKey).map((role) => role.name);
+  }
+
   function renderContent() {
     if (closed) return;
     focusRenderer.render(() => {
       syncLiveInputs();
       enginePool = getVoicesForEngine(engineId);
+      // Before the cards render, so each one knows whether it is sharing.
+      ({ duplicates: duplicateVoiceIds, rolesByVoice: rolesByVoiceId } = voiceSharing());
       const activeIsHybrid = isStudio && audioManager.hybridCasting;
       const activeNarratorEngine = activeIsHybrid ? ENGINE_IDS.KOKORO : engineId;
       narratorPool = getVoicesForEngine(activeNarratorEngine);
@@ -427,16 +474,33 @@ export function createVoiceConfigModal({
                   <p>Both paths can be adjusted later from the listening room.</p>
                 </div>
                 <div class="casting-choice-grid">
-                  <button class="casting-path is-recommended" id="casting-path-recommended" type="button" ${isStudio && enginePool.length === 0 ? 'disabled' : ''}>
-                    <span class="path-icon">${getIconSvg('sparkles', 20)}</span>
-                    <span><strong>Use recommended cast</strong><small>${
-                      isStudio && enginePool.length === 0
-                        ? 'Add at least one reference voice to create a Studio cast.'
-                        : 'Assign distinct voices automatically, then review them before listening.'
+                  ${
+                    // Studio Local specifically: its pool is only what the
+                    // writer cloned, so an empty library used to render this
+                    // path as a disabled dead-end and the highest-quality
+                    // engine had the worst cold start. RunPod is excluded
+                    // because its pool also carries the Kokoro voices, so it is
+                    // never empty and recommended casting already works there.
+                    isStudio && enginePool.length === 0
+                      ? `<button class="casting-path is-recommended" id="casting-path-catalog" type="button" ${bulkCasting ? 'disabled' : ''}>
+                    <span class="path-icon">${getIconSvg(bulkCasting ? 'replay' : 'sparkles', 20, bulkCasting ? 'spin-icon' : '')}</span>
+                    <span><strong>${bulkCasting ? 'Casting from the catalog…' : 'Cast from the voice catalog'}</strong><small>${
+                      bulkCastError
+                        ? escapeHtml(bulkCastError)
+                        : bulkCasting
+                          ? 'Matching each role, then downloading only the voices it needs.'
+                          : `Match all ${characters.length} role${characters.length === 1 ? '' : 's'} to bundled narrators by age, accent, and voice, and download just those.`
                     }</small></span>
                     <em>Fastest</em>
                     ${getIconSvg('chevronRight', 18)}
-                  </button>
+                  </button>`
+                      : `<button class="casting-path is-recommended" id="casting-path-recommended" type="button">
+                    <span class="path-icon">${getIconSvg('sparkles', 20)}</span>
+                    <span><strong>Use recommended cast</strong><small>Assign distinct voices automatically, then review them before listening.</small></span>
+                    <em>Fastest</em>
+                    ${getIconSvg('chevronRight', 18)}
+                  </button>`
+                  }
                   <button class="casting-path" id="casting-path-custom" type="button">
                     <span class="path-icon">${getIconSvg('sliders', 20)}</span>
                     <span><strong>Customize every role</strong><small>Audition voices and fine-tune pitch, pace, tone, and direction.</small></span>
@@ -593,7 +657,24 @@ export function createVoiceConfigModal({
                               : `${getIconSvg('volume', 14)} Listen`
                           }
                         </button>
+                        ${
+                          hasReferenceVoices
+                            ? `<button class="btn btn-secondary btn-cast-from-catalog" type="button"
+                                       data-char="${charAttr}" data-focus-key="char-catalog:${charAttr}"
+                                       style="padding: 7px 12px; white-space: nowrap;"
+                                       title="Browse the catalog filtered to what the script says about ${charAttr}">
+                                 ${getIconSvg('search', 14)} Find voice
+                               </button>`
+                            : ''
+                        }
                       </div>
+                      ${
+                        duplicateVoiceIds.has(voiceIdOf(assignment))
+                          ? `<p class="cast-duplicate-warning">${getIconSvg('sparkles', 12)} Also voicing ${escapeHtml(
+                              sharedRolesFor(voiceIdOf(assignment), charKey).join(', '),
+                            )} — two characters with one voice are hard to tell apart in a readthrough.</p>`
+                          : ''
+                      }
 
                       <details class="voice-advanced" ${openAdvanced.has(charKey) ? 'open' : ''} data-char="${charAttr}">
                         <summary data-focus-key="char-advanced:${charAttr}">${getIconSvg('sliders', 13)} Advanced performance controls</summary>
@@ -680,40 +761,148 @@ export function createVoiceConfigModal({
     });
   }
 
-  function attachEventListeners() {
-    modal.querySelector('#btn-find-studio-voice')?.addEventListener('click', async () => {
-      if (catalogDialog || openingCatalog) return;
-      openingCatalog = true;
-      const catalogButton = modal.querySelector('#btn-find-studio-voice');
-      catalogButton.disabled = true;
-      const importedVoiceIds = (
-        await Promise.all(
-          enginePool
-            .filter((voice) => voice.sourceVoiceId)
-            .map(async (voice) => ((await hasChatterboxVoiceSample(voice.id)) ? voice.sourceVoiceId : '')),
-        )
-      ).filter(Boolean);
-      openingCatalog = false;
-      if (!modal.isConnected || catalogDialog) return;
-      catalogDialog = createVoiceSampleCatalogModal({
-        importedVoiceIds,
-        getAudioSettings: () => ({ volume: audioManager.volume, isMuted: audioManager.isMuted }),
-        async onAdd(file, voice, { signal } = {}) {
-          const wasEmpty = enginePool.length === 0;
-          const replacedVoiceIds = new Set(
-            enginePool.filter((profile) => profile.sourceVoiceId === voice.id).map((profile) => profile.id),
-          );
+  /**
+   * Opens the bundled catalog, optionally scoped to one role.
+   *
+   * With a `character`, the browser opens pre-filtered to what the screenplay
+   * says about them and the imported voice is assigned to that role directly.
+   * Without one it browses the whole catalog into the library, which is what
+   * the "Find a voice" button above the cast list has always done.
+   *
+   * `returnFocusTo` names the control to hand focus back to on close, because
+   * the launcher is now sometimes a per-character button that a keyboard user
+   * must not be dropped away from.
+   */
+  async function openCatalog({ character = null, returnFocusTo = '#btn-find-studio-voice' } = {}) {
+    if (catalogDialog || openingCatalog) return;
+    openingCatalog = true;
+    const launcher = modal.querySelector(returnFocusTo);
+    if (launcher) launcher.disabled = true;
+    const importedVoiceIds = (
+      await Promise.all(
+        enginePool
+          .filter((voice) => voice.sourceVoiceId)
+          .map(async (voice) => ((await hasChatterboxVoiceSample(voice.id)) ? voice.sourceVoiceId : '')),
+      )
+    ).filter(Boolean);
+    openingCatalog = false;
+    if (!modal.isConnected || catalogDialog) {
+      if (launcher) launcher.disabled = false;
+      return;
+    }
+    const roleKey = character ? character.name.toUpperCase().trim() : '';
+    catalogDialog = createVoiceSampleCatalogModal({
+      importedVoiceIds,
+      role: character ? { name: character.name } : null,
+      initialFilters: character
+        ? catalogFiltersForRole(character.name, {
+            introduction: character.introduction,
+            sampleLine: character.sampleLine,
+          })
+        : null,
+      getAudioSettings: () => ({ volume: audioManager.volume, isMuted: audioManager.isMuted }),
+      async onAdd(file, voice, { signal } = {}) {
+        const wasEmpty = enginePool.length === 0;
+        const replacedVoiceIds = new Set(
+          enginePool.filter((profile) => profile.sourceVoiceId === voice.id).map((profile) => profile.id),
+        );
+        const saved = await saveChatterboxVoice(
+          file,
+          voice.name,
+          {
+            sex: voice.gender,
+            // Age and accent come from the catalog's annotation sets. Where a
+            // reader is outside them the value is 'Unspecified', which is left
+            // to the store's default rather than shown as a fact — the cast
+            // dropdown says nothing instead of guessing.
+            ageGroup: voice.ageLabel === 'Unspecified' ? '' : voice.ageLabel,
+            accent: voice.accent === 'Unspecified' ? '' : voice.accent,
+            register: voice.register === 'unmeasured' ? '' : voice.register,
+            tone: [voice.registerLabel, voice.paceLabel].filter(Boolean).join(' · '),
+            description: voice.description,
+            source: 'Voice catalog',
+            sourceVoiceId: voice.id,
+          },
+          { signal },
+        );
+        // Once storage commits, assignment reconciliation is part of that
+        // transaction's logical completion even if the child catalog closes.
+        // Skipping it would leave the working cast pointed at deleted samples.
+        if (!modal.isConnected) return;
+        enginePool = getVoicesForEngine(engineId);
+        if (replacedVoiceIds.has(workingNarratorVoiceId)) workingNarratorVoiceId = saved.id;
+        for (const [charKey, assignment] of workingAssignments) {
+          if (!replacedVoiceIds.has(assignment.voiceIds?.[engineId])) continue;
+          workingAssignments.set(charKey, {
+            ...assignment,
+            voiceIds: { ...(assignment.voiceIds || {}), [engineId]: saved.id },
+          });
+        }
+        // Cast the role that opened the browser. This is the whole point of the
+        // scoped flow: importing then hunting the new name in a dropdown is the
+        // step it removes. It runs after the replacement reconciliation above so
+        // it wins over any remap that touched the same role.
+        if (roleKey && workingAssignments.has(roleKey)) {
+          const assignment = workingAssignments.get(roleKey);
+          workingAssignments.set(roleKey, {
+            ...assignment,
+            voiceIds: { ...(assignment.voiceIds || {}), [engineId]: saved.id },
+            auto: false,
+          });
+        } else if (wasEmpty) {
+          // Unscoped first import: nothing is cast yet, so seed the whole cast.
+          applyRecommendedCast();
+        }
+        if (wasEmpty && setupMode === 'choice') setupMode = 'review';
+        renderContent();
+      },
+      onClose() {
+        catalogDialog = null;
+        const button = modal.querySelector(returnFocusTo) || modal.querySelector('#btn-find-studio-voice');
+        if (button) {
+          button.disabled = false;
+          button.focus();
+        }
+      },
+    });
+    document.body.appendChild(catalogDialog);
+  }
+
+  /**
+   * Fill an empty cloned-voice library from the bundled catalog in one action.
+   *
+   * Matches every role first, then downloads only the voices those matches
+   * name — a four-hander pulls four clips, not the catalog. Imports run in
+   * sequence rather than in parallel: `saveChatterboxVoice` serialises on its
+   * own mutation queue anyway, and a failure part-way should leave the roles it
+   * already cast working rather than unwinding them.
+   */
+  async function castAllFromCatalog() {
+    if (bulkCasting) return;
+    bulkCasting = true;
+    bulkCastError = '';
+    renderContent();
+
+    await bulkCastOperation.run(
+      async ({ signal }) => {
+        const catalog = await loadVoiceSampleCatalog();
+        throwIfAborted(signal);
+        const cast = castRoles(characters, catalog.voices);
+        if (cast.size === 0) throw new Error('No catalog voice matched these roles.');
+
+        let castCount = 0;
+        for (const [roleKey, voice] of cast) {
+          throwIfAborted(signal);
+          const file = await downloadVoiceSample(voice, { signal });
+          throwIfAborted(signal);
           const saved = await saveChatterboxVoice(
             file,
             voice.name,
             {
               sex: voice.gender,
-              // Age and accent come from the catalog's annotation sets. Where a
-              // reader is outside them the value is 'Unspecified', which is left
-              // to the store's default rather than shown as a fact — the cast
-              // dropdown says nothing instead of guessing.
               ageGroup: voice.ageLabel === 'Unspecified' ? '' : voice.ageLabel,
               accent: voice.accent === 'Unspecified' ? '' : voice.accent,
+              register: voice.register === 'unmeasured' ? '' : voice.register,
               tone: [voice.registerLabel, voice.paceLabel].filter(Boolean).join(' · '),
               description: voice.description,
               source: 'Voice catalog',
@@ -721,35 +910,53 @@ export function createVoiceConfigModal({
             },
             { signal },
           );
-          // Once storage commits, assignment reconciliation is part of that
-          // transaction's logical completion even if the child catalog closes.
-          // Skipping it would leave the working cast pointed at deleted samples.
-          if (!modal.isConnected) return;
-          enginePool = getVoicesForEngine(engineId);
-          if (replacedVoiceIds.has(workingNarratorVoiceId)) workingNarratorVoiceId = saved.id;
-          for (const [charKey, assignment] of workingAssignments) {
-            if (!replacedVoiceIds.has(assignment.voiceIds?.[engineId])) continue;
-            workingAssignments.set(charKey, {
+          // Storage has committed, so the assignment belongs with it even if
+          // the modal closed underneath us — the same rule the single import
+          // follows. Only the re-render is skipped.
+          const assignment = workingAssignments.get(roleKey);
+          if (assignment) {
+            workingAssignments.set(roleKey, {
               ...assignment,
               voiceIds: { ...(assignment.voiceIds || {}), [engineId]: saved.id },
+              auto: true,
             });
+            castCount++;
           }
-          if (wasEmpty) {
-            applyRecommendedCast();
-            if (setupMode === 'choice') setupMode = 'review';
+        }
+        return castCount;
+      },
+      {
+        onCommit: (castCount) => {
+          enginePool = getVoicesForEngine(engineId);
+          if (!workingNarratorVoiceId || !enginePool.some((v) => v.id === workingNarratorVoiceId)) {
+            workingNarratorVoiceId = narratorPool[0]?.id || enginePool[0]?.id || workingNarratorVoiceId;
           }
-          renderContent();
+          if (castCount > 0) setupMode = 'review';
         },
-        onClose() {
-          catalogDialog = null;
-          const button = modal.querySelector('#btn-find-studio-voice');
-          if (button) {
-            button.disabled = false;
-            button.focus();
-          }
+        onError: (error) => {
+          bulkCastError = error?.message || 'Those voices could not be downloaded.';
         },
+        onFinally: () => {
+          bulkCasting = false;
+          if (!closed) renderContent();
+        },
+      },
+    );
+  }
+
+  function attachEventListeners() {
+    modal.querySelector('#btn-find-studio-voice')?.addEventListener('click', () => void openCatalog());
+    modal.querySelector('#casting-path-catalog')?.addEventListener('click', () => void castAllFromCatalog());
+
+    modal.querySelectorAll('.btn-cast-from-catalog').forEach((button) => {
+      button.addEventListener('click', () => {
+        const character = characters.find((c) => c.name === button.dataset.char);
+        if (character)
+          void openCatalog({
+            character,
+            returnFocusTo: `[data-char="${CSS.escape(character.name)}"].btn-cast-from-catalog`,
+          });
       });
-      document.body.appendChild(catalogDialog);
     });
 
     modal.querySelector('#studio-voice-file')?.addEventListener('change', async (event) => {
@@ -1111,6 +1318,10 @@ export function createVoiceConfigModal({
     currentlyPlayingChar = null;
     auditionPhase = 'idle';
     window.removeEventListener('keydown', onKeyDown);
+    // Stops further downloads. Voices already imported stay in the library and
+    // their assignments stay committed — closing cancels the remaining work, it
+    // does not roll back what already succeeded.
+    bulkCastOperation.close();
     catalogDialog?.close();
     catalogDialog = null;
     audioManager.stop({ preservePrewarm: true });
@@ -1124,6 +1335,10 @@ export function createVoiceConfigModal({
     currentlyPlayingChar = null;
     auditionPhase = 'idle';
     window.removeEventListener('keydown', onKeyDown);
+    // Stops further downloads. Voices already imported stay in the library and
+    // their assignments stay committed — closing cancels the remaining work, it
+    // does not roll back what already succeeded.
+    bulkCastOperation.close();
     catalogDialog?.close();
     catalogDialog = null;
     audioManager.stop({ preservePrewarm: true });

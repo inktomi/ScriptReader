@@ -330,7 +330,18 @@ test('Studio casting requires a private reference before the player can open', (
     assert.ok(modal.querySelector('.studio-voice-library'));
     assert.ok(modal.querySelector('#studio-voice-file'));
     assert.ok(modal.querySelector('#btn-find-studio-voice'));
-    assert.equal(modal.querySelector('#casting-path-recommended').disabled, true);
+
+    // An empty library used to render the recommended path as a disabled
+    // dead-end: the highest-quality engine demanded that every voice be
+    // hand-picked before anything worked at all. It now offers to fill itself
+    // from the bundled catalog, which is a live control rather than a wall.
+    assert.equal(modal.querySelector('#casting-path-recommended'), null);
+    const fromCatalog = modal.querySelector('#casting-path-catalog');
+    assert.ok(fromCatalog);
+    assert.equal(fromCatalog.disabled, false);
+
+    // Still no cast, so the player still cannot open. The cold start got a way
+    // through it, not a way around the requirement.
     assert.equal(modal.querySelector('#btn-modal-save').disabled, true);
   } finally {
     removeDom(dom);

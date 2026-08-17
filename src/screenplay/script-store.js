@@ -1,4 +1,5 @@
 import { ENGINE_IDS as ENGINE_ID_MAP } from '../audio/engine-contract.js';
+import { pickEngineVoiceForCharacter } from '../audio/voice-casting.js';
 import {
   DEFAULT_NARRATOR_VOICE_ID,
   getDefaultNarratorVoice,
@@ -520,7 +521,13 @@ export class ScriptStore {
       const activeVoiceId =
         engineId === ENGINE_ID_MAP.KOKORO
           ? localVoiceId
-          : mapVoiceAcrossEngines(localVoiceId, engineId, usedEngineVoices);
+          : pickEngineVoiceForCharacter(char.name, {
+              introduction: char.introduction,
+              sampleLine: char.sampleLine,
+              engineId,
+              usedVoices: usedEngineVoices,
+              fallbackVoiceId: localVoiceId,
+            });
       usedEngineVoices.add(activeVoiceId);
 
       const key = char.name.toUpperCase().trim();

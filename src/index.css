@@ -1093,6 +1093,27 @@ button:disabled {
   line-height: 1.45;
 }
 
+/* Two characters on one voice. Advisory rather than an error — sharing is
+   sometimes deliberate, and a writer who meant it should not be scolded. */
+.cast-duplicate-warning {
+  margin: 8px 0 0;
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  padding: 6px 9px;
+  color: #f59e0b;
+  font-size: 0.68rem;
+  line-height: 1.45;
+  background: rgba(245, 158, 11, 0.1);
+  border: 1px solid rgba(245, 158, 11, 0.25);
+  border-radius: 6px;
+}
+
+.cast-duplicate-warning svg {
+  flex-shrink: 0;
+  margin-top: 2px;
+}
+
 .voice-advanced {
   margin-top: 10px;
   border-top: 1px solid var(--border);

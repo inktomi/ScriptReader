@@ -55,7 +55,14 @@ export function createVoiceSampleCatalogModal({
   importedVoiceIds = [],
   getAudioSettings = () => ({ volume: 1, isMuted: false }),
   catalogClient = { search: searchVoiceSamples, download: downloadVoiceSample },
+  // The role being cast, when the browser was opened from a character rather
+  // than from the library as a whole. Its name retitles the dialog and its
+  // traits seed the filters, so the writer is not retyping into a search box
+  // what the screenplay already said and the app already parsed.
+  role = null,
+  initialFilters = null,
 } = {}) {
+  const roleName = typeof role?.name === 'string' ? role.name.trim() : '';
   const modal = document.createElement('div');
   modal.className = 'modal-overlay voice-sample-catalog-overlay';
   modal.setAttribute('role', 'dialog');
@@ -63,7 +70,19 @@ export function createVoiceSampleCatalogModal({
   modal.setAttribute('aria-labelledby', 'voice-catalog-title');
 
   const state = {
-    filters: { query: '', gender: '', age: '', accent: '', register: '', pace: '' },
+    filters: {
+      query: '',
+      gender: '',
+      age: '',
+      accent: '',
+      register: '',
+      pace: '',
+      ...(initialFilters || {}),
+    },
+    // Seeded filters are a starting point, not a cage. The writer can clear any
+    // of them, and this records that they came from the script so the UI can
+    // say so rather than looking like the catalog is arbitrarily narrowed.
+    seededFilters: initialFilters ? Object.entries(initialFilters).filter(([, value]) => value).length : 0,
     // Populated from the first search that lands. Until then the accent select
     // offers only "Any accent" rather than a guessed list.
     accents: [],
@@ -122,11 +141,20 @@ export function createVoiceSampleCatalogModal({
     return [['', 'Any accent'], ...values.map((value) => [value, value])];
   }
 
+  function hasActiveFilters() {
+    const { query, ...selects } = state.filters;
+    return Boolean(query) || Object.values(selects).some(Boolean);
+  }
+
   function resultSummary() {
     if (state.loading && state.voices.length === 0) return 'Finding the strongest matches…';
     const count = state.totalCount || state.voices.length;
     const scope = count === 1 ? 'catalog voice' : 'catalog voices';
-    return `${count.toLocaleString()} ${scope} · strongest matches first`;
+    // Naming the seeded filters matters: a role-scoped browse opens already
+    // narrowed, and a count with no explanation reads as a smaller catalog
+    // rather than as a filtered one.
+    const seeded = roleName && state.seededFilters > 0 ? ' matching this role' : '';
+    return `${count.toLocaleString()} ${scope}${seeded} · strongest matches first`;
   }
 
   function voiceCard(voice) {
@@ -167,7 +195,15 @@ export function createVoiceSampleCatalogModal({
             ${getIconSvg(isPreviewing ? 'stop' : 'volume', 14)} <span>${isPreviewing ? (previewLoading ? 'Loading…' : 'Stop') : 'Preview'}</span>
           </button>
           <button class="btn ${isAdded ? 'btn-secondary' : 'btn-primary'} btn-catalog-add" type="button" data-voice-id="${escapeHtml(voice.id)}" data-focus-key="add:${escapeHtml(voice.id)}" ${isAdded || isImporting || state.importingId ? 'disabled' : ''}>
-            ${isAdded ? `${getIconSvg('check', 14)} Added` : isImporting ? 'Adding…' : `${getIconSvg('download', 14)} Add voice`}
+            ${
+              isAdded
+                ? `${getIconSvg('check', 14)} ${roleName ? 'Cast' : 'Added'}`
+                : isImporting
+                  ? roleName
+                    ? 'Casting…'
+                    : 'Adding…'
+                  : `${getIconSvg('download', 14)} ${roleName ? `Cast as ${escapeHtml(roleName)}` : 'Add voice'}`
+            }
           </button>
         </div>
       </article>`;
@@ -179,8 +215,13 @@ export function createVoiceSampleCatalogModal({
         modal.innerHTML = `
       <div class="modal-card voice-sample-catalog-card">
         <header class="voice-catalog-header">
-          <div><span class="eyebrow">Quality-first voice catalog</span><h2 id="voice-catalog-title">Find the right performance</h2>
-            <p>Search bundled audiobook narrators, ranked by recording clarity. Everything here ships with the app — preview freely, and only voices you add are stored on this device.</p></div>
+          <div><span class="eyebrow">${roleName ? `Casting ${escapeHtml(roleName)}` : 'Quality-first voice catalog'}</span>
+            <h2 id="voice-catalog-title">${roleName ? `Find ${escapeHtml(roleName)}’s voice` : 'Find the right performance'}</h2>
+            <p>${
+              roleName
+                ? 'Filtered to what the screenplay says about this character. Clear any filter to hear the rest — nothing here is locked.'
+                : 'Search bundled audiobook narrators, ranked by recording clarity. Everything here ships with the app — preview freely, and only voices you add are stored on this device.'
+            }</p></div>
           <button class="btn-icon btn-close-catalog" type="button" data-focus-key="close" aria-label="Close voice catalog">${getIconSvg('close', 18)}</button>
         </header>
         <form class="voice-catalog-search" role="search">
@@ -218,7 +259,20 @@ export function createVoiceSampleCatalogModal({
                 ).join('')
               : state.voices.map(voiceCard).join('')
           }
-          ${!state.loading && !state.error && state.voices.length === 0 ? '<div class="voice-catalog-empty"><strong>No exact matches yet.</strong><span>Try fewer words or broaden one of the filters.</span></div>' : ''}
+          ${
+            !state.loading && !state.error && state.voices.length === 0
+              ? `<div class="voice-catalog-empty"><strong>No exact matches yet.</strong>
+                  <span>${
+                    hasActiveFilters() ? 'The filters may be narrower than the catalog can serve.' : 'Try fewer words.'
+                  }</span>
+                  ${
+                    hasActiveFilters()
+                      ? `<button class="btn btn-secondary btn-catalog-clear" type="button" data-focus-key="clear">Clear filters</button>`
+                      : ''
+                  }
+                </div>`
+              : ''
+          }
         </div>
         <footer class="voice-catalog-footer"><span>${
           state.capped
@@ -415,7 +469,9 @@ export function createVoiceSampleCatalogModal({
       {
         onCommit: (addedVoice) => {
           state.addedIds.add(addedVoice.id);
-          state.notice = `${addedVoice.name} is ready in your private voice library.`;
+          state.notice = roleName
+            ? `${addedVoice.name} is now voicing ${roleName}.`
+            : `${addedVoice.name} is ready in your private voice library.`;
         },
         onError: (error) => {
           state.error = error.message || 'That voice could not be added.';
@@ -450,6 +506,11 @@ export function createVoiceSampleCatalogModal({
         readFilters();
         void runSearch();
       });
+    });
+    modal.querySelector('.btn-catalog-clear')?.addEventListener('click', () => {
+      state.filters = { query: '', gender: '', age: '', accent: '', register: '', pace: '' };
+      state.seededFilters = 0;
+      void runSearch();
     });
     modal.querySelector('.btn-catalog-retry')?.addEventListener('click', retryLastOperation);
     modal.querySelector('.btn-catalog-more')?.addEventListener('click', () => void runSearch({ append: true }));

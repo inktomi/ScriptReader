@@ -834,6 +834,32 @@ const FEMALE_KEYWORDS = [
   'WIDOW',
   'NUN',
   'WAITRESS',
+  // Unambiguously female nouns a writer uses in an introduction. Their absence
+  // was casting them male by default — `DUCHESS` was the clearest case, since
+  // it sits in BRITISH_KEYWORDS and so produced a British man. Only words with
+  // no male reading belong here; anything arguable stays out and falls through
+  // to the pronoun check above, which is the stronger signal anyway.
+  'MATRIARCH',
+  'WIFE',
+  'GRANDMA',
+  'GRANNY',
+  'NIECE',
+  'BRIDE',
+  'MOM',
+  'MUM',
+  'MAMA',
+  'MADAM',
+  'MADAME',
+  'PRINCESS',
+  'DUCHESS',
+  'BARONESS',
+  'COUNTESS',
+  'EMPRESS',
+  'HEIRESS',
+  'ACTRESS',
+  'HOSTESS',
+  'MISTRESS',
+  'SORCERESS',
 ];
 
 // Pronouns in a character's introduction almost always refer to its subject, so
@@ -841,6 +867,46 @@ const FEMALE_KEYWORDS = [
 // `COMMANDER CHEN (30s, weary, grease on her forehead)` says it outright.
 const FEMALE_PRONOUNS = ['SHE', 'HER', 'HERS', 'HERSELF'];
 const MALE_PRONOUNS = ['HE', 'HIM', 'HIS', 'HIMSELF'];
+
+/**
+ * Unambiguously male nouns, for the one case a pronoun gets wrong.
+ *
+ * A possessive in an introduction often belongs to somebody else: `DECLAN, 20s,
+ * her grandson` is a man described through his grandmother. Reading `her` as
+ * his own cast him as a woman — the worst casting error there is, and the
+ * construction is common enough (`his wife`, `her husband`, `her son`) to be
+ * worth naming. There was no male list before because male was the fallback, so
+ * nothing needed to outvote anything.
+ */
+const MALE_KEYWORDS = [
+  'SON',
+  'GRANDSON',
+  'FATHER',
+  'DAD',
+  'PAPA',
+  'HUSBAND',
+  'BROTHER',
+  'UNCLE',
+  'NEPHEW',
+  'GRANDFATHER',
+  'GRANDPA',
+  'WIDOWER',
+  'GROOM',
+  'MAN',
+  'BOY',
+  'GENTLEMAN',
+  'KING',
+  'PRINCE',
+  'MR',
+  'SIR',
+  'MONK',
+  'WAITER',
+];
+
+// The noun tests must not read a pronoun as a noun; 'HER' appears in the female
+// keyword list for name matching, and leaving it in here would make "her
+// grandson" female on the very check meant to catch it.
+const FEMALE_NOUNS = FEMALE_KEYWORDS.filter((word) => !FEMALE_PRONOUNS.includes(word));
 
 const VILLAIN_KEYWORDS = [
   'SHADOW',
@@ -973,12 +1039,17 @@ function ageInYears(age) {
  * — the historical default this function has always had.
  */
 function resolveIsFemale(nameTokens, introTokens) {
+  // A gendered noun names the subject. A pronoun only usually does, so where
+  // the two disagree — "her grandson" — the noun is the one to trust.
+  const femaleNoun = FEMALE_NOUNS.some((kw) => introTokens.includes(kw));
+  const maleNoun = MALE_KEYWORDS.some((kw) => introTokens.includes(kw));
+  if (femaleNoun !== maleNoun) return femaleNoun;
+
   const female = introTokens.filter((token) => FEMALE_PRONOUNS.includes(token)).length;
   const male = introTokens.filter((token) => MALE_PRONOUNS.includes(token)).length;
   if (female !== male) return female > male;
 
-  if (FEMALE_KEYWORDS.some((kw) => nameTokens.includes(kw))) return true;
-  return FEMALE_KEYWORDS.some((kw) => introTokens.includes(kw));
+  return FEMALE_KEYWORDS.some((kw) => nameTokens.includes(kw));
 }
 
 function pickShortlist(tokens, isFemale, years) {
@@ -1020,17 +1091,34 @@ function pickShortlist(tokens, isFemale, years) {
  * @param {{usedVoices?: Set<string>, introduction?: {text: string, age: string|null}}} context
  * @returns {string} a voice id, always
  */
-export function getSuggestedVoiceForCharacter(characterName, context = {}) {
+/**
+ * Everything the script says about a character that bears on casting, in one
+ * place: whether they narrate, their sex, the age the writer wrote, and the
+ * tokens the keyword lists match against.
+ *
+ * Exported because the Kokoro shortlist below is no longer the only consumer.
+ * The bundled catalog carries a real age band and accent per reader now, and
+ * matching a role against those needs exactly this — derived once, the same
+ * way, rather than re-inferred by each caller from the same introduction.
+ */
+export function characterCastingTraits(characterName, context = {}) {
   const raw = (characterName || '').toUpperCase().trim();
-  const used = context.usedVoices || new Set();
-
-  if (isNarratorName(raw)) return DEFAULT_NARRATOR_VOICE_ID;
-
   const nameTokens = raw.split(/[^A-Z0-9]+/).filter(Boolean);
   const introTokens = introductionTokens(context.introduction);
-  const tokens = introTokens.length > 0 ? nameTokens.concat(introTokens) : nameTokens;
-  const isFemale = resolveIsFemale(nameTokens, introTokens);
-  const years = ageInYears(context.introduction?.age);
+  return {
+    name: raw,
+    isNarrator: isNarratorName(raw),
+    isFemale: resolveIsFemale(nameTokens, introTokens),
+    years: ageInYears(context.introduction?.age),
+    tokens: introTokens.length > 0 ? nameTokens.concat(introTokens) : nameTokens,
+  };
+}
+
+export function getSuggestedVoiceForCharacter(characterName, context = {}) {
+  const used = context.usedVoices || new Set();
+  const { name: raw, isNarrator, isFemale, years, tokens } = characterCastingTraits(characterName, context);
+
+  if (isNarrator) return DEFAULT_NARRATOR_VOICE_ID;
 
   // 1. Intent: first unused entry from the role shortlist.
   for (const id of pickShortlist(tokens, isFemale, years)) {
