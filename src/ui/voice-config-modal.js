@@ -248,6 +248,7 @@ export function createVoiceConfigModal({
       const localVoiceId = getSuggestedVoiceForCharacter(char.name, {
         sampleLine: char.sampleLine,
         introduction: char.introduction,
+        gender: char.gender,
         usedVoices: usedLocalVoices,
       });
       usedLocalVoices.add(localVoiceId);
@@ -256,6 +257,7 @@ export function createVoiceConfigModal({
           ? localVoiceId
           : pickEngineVoiceForCharacter(char.name, {
               introduction: char.introduction,
+              gender: char.gender,
               sampleLine: char.sampleLine,
               engineId,
               usedVoices: usedEngineVoices,

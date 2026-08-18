@@ -168,6 +168,7 @@ export function castRoles(characters = [], pool = [], { reserved = [] } = {}) {
   for (const character of characters) {
     const traits = characterCastingTraits(character.name, {
       introduction: character.introduction,
+      gender: character.gender,
       sampleLine: character.sampleLine,
     });
     if (traits.isNarrator) continue;
@@ -190,11 +191,11 @@ export function castRoles(characters = [], pool = [], { reserved = [] } = {}) {
  */
 export function pickEngineVoiceForCharacter(
   characterName,
-  { introduction, sampleLine, engineId, usedVoices = new Set(), fallbackVoiceId = '' } = {},
+  { introduction, gender, sampleLine, engineId, usedVoices = new Set(), fallbackVoiceId = '' } = {},
 ) {
   const clonesOwnPool = engineId === ENGINE_IDS.CHATTERBOX || engineId === ENGINE_IDS.RUNPOD;
   if (clonesOwnPool) {
-    const traits = characterCastingTraits(characterName, { introduction, sampleLine });
+    const traits = characterCastingTraits(characterName, { introduction, gender, sampleLine });
     if (!traits.isNarrator) {
       const matched = pickVoiceForRole(getVoicesForEngine(engineId), traits, { used: usedVoices });
       if (matched) return matched.id;

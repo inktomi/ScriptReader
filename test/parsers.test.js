@@ -669,3 +669,72 @@ test('cleanSpeechForSynthesis normalizes terminal punctuation and ellipses withi
   assert.equal(cleanSpeechForSynthesis('"Hello—"'), '"Hello."');
   assert.equal(cleanSpeechForSynthesis('“Hello—”', 'CHARACTER', { cutOff: true }), '“Hello”');
 });
+
+test('an age-only bracket still yields the description that follows it', () => {
+  // `LEE VALMONT (22) — sits at her desk` used to be discarded outright: the
+  // bracket has no letters, so it read as "no description" and the age went
+  // with it. In a script that writes every character this way, that left the
+  // whole cast with neither an age nor a description.
+  const parsed = parseFountainScript(
+    ['INT. STUDIO - NIGHT', '', 'LEE VALMONT (22) — sits at her desk, hunched forward.', '', 'LEE', 'Hello.'].join(
+      '\n',
+    ),
+  );
+  const lee = parsed.characters.find((c) => c.name === 'LEE');
+  assert.equal(lee.introduction.age, '22');
+  assert.match(lee.introduction.text, /sits at her desk/);
+});
+
+test('a description in the sentence after the bracket is still the character’s', () => {
+  const parsed = parseFountainScript(
+    [
+      'INT. LOUNGE - DAY',
+      '',
+      'PERRI HUTCHINSON (60). A stately-looking woman, sleek in designer pantsuits.',
+      '',
+      'PERRI',
+      'Hello.',
+    ].join('\n'),
+  );
+  const perri = parsed.characters.find((c) => c.name === 'PERRI');
+  assert.equal(perri.introduction.age, '60');
+  assert.match(perri.introduction.text, /stately-looking woman/);
+});
+
+test('a shared introduction does not hand one character the other’s description', () => {
+  const parsed = parseFountainScript(
+    [
+      'EXT. ALLEY - NIGHT',
+      '',
+      'Two men in hoodies stand over her. They are BARRETT (35) and ANGELO (28).',
+      '',
+      'The alpha of the two, Barrett, directs his protégé with a single look.',
+      '',
+      'ANGELO',
+      'Fine.',
+      '',
+      'BARRETT',
+      'Put her with the rest.',
+    ].join('\n'),
+  );
+  const angelo = parsed.characters.find((c) => c.name === 'ANGELO');
+  // Angelo is the second name in the list, so the sentence after it is
+  // describing Barrett — putting it on Angelo's card would be someone else's.
+  assert.ok(!angelo.introduction || !/alpha of the two/.test(angelo.introduction.text));
+});
+
+test('a trailing action clause is dropped, unless it is what names the sex', () => {
+  const script = (intro, cue) =>
+    parseFountainScript(['INT. ROOM - DAY', '', intro, '', cue, 'Hello.'].join('\n')).characters.find(
+      (c) => c.name === cue,
+    );
+
+  // `her hand` belongs to somebody else; read whole it made Ruben a woman.
+  const ruben = script('RUBEN (26) — a smart-ass with a cocky face, yanks it from her hand.', 'RUBEN');
+  assert.match(ruben.introduction.text, /smart-ass with a cocky face/);
+  assert.ok(!/her hand/.test(ruben.introduction.text));
+
+  // But here the last fragment is the description, not an action.
+  const brenda = script('BRENDA (30) — a stunning, statuesque woman.', 'BRENDA');
+  assert.match(brenda.introduction.text, /statuesque woman/);
+});

@@ -264,6 +264,7 @@ export class ScriptStore {
           const suggestedVoiceId = getSuggestedVoiceForCharacter(char.name, {
             sampleLine: char.sampleLine,
             introduction: char.introduction,
+            gender: char.gender,
             usedVoices,
           });
           usedVoices.add(suggestedVoiceId);
@@ -289,6 +290,7 @@ export class ScriptStore {
         const suggestedVoiceId = getSuggestedVoiceForCharacter(char.name, {
           sampleLine: char.sampleLine,
           introduction: char.introduction,
+          gender: char.gender,
           usedVoices,
         });
         usedVoices.add(suggestedVoiceId);
@@ -407,6 +409,7 @@ export class ScriptStore {
       const replacement = getSuggestedVoiceForCharacter(char.name, {
         sampleLine: char.sampleLine,
         introduction: char.introduction,
+        gender: char.gender,
         usedVoices,
       });
       usedVoices.add(replacement);
@@ -515,6 +518,7 @@ export class ScriptStore {
       const localVoiceId = getSuggestedVoiceForCharacter(char.name, {
         sampleLine: char.sampleLine,
         introduction: char.introduction,
+        gender: char.gender,
         usedVoices: usedLocalVoices,
       });
       usedLocalVoices.add(localVoiceId);
@@ -523,6 +527,7 @@ export class ScriptStore {
           ? localVoiceId
           : pickEngineVoiceForCharacter(char.name, {
               introduction: char.introduction,
+              gender: char.gender,
               sampleLine: char.sampleLine,
               engineId,
               usedVoices: usedEngineVoices,

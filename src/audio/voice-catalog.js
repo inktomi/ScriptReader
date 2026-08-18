@@ -1105,10 +1105,16 @@ export function characterCastingTraits(characterName, context = {}) {
   const raw = (characterName || '').toUpperCase().trim();
   const nameTokens = raw.split(/[^A-Z0-9]+/).filter(Boolean);
   const introTokens = introductionTokens(context.introduction);
+  // `gender` is what the whole script's pronouns said, set by
+  // attachCharacterGender. It outranks everything below it because it is the
+  // only signal drawn from more than one sentence: a first name carries none,
+  // and an introduction only exists for some of the cast. It is null whenever
+  // the script did not lean clearly, which is when the older reasoning runs.
+  const stated = context.gender === 'Female' ? true : context.gender === 'Male' ? false : null;
   return {
     name: raw,
     isNarrator: isNarratorName(raw),
-    isFemale: resolveIsFemale(nameTokens, introTokens),
+    isFemale: stated ?? resolveIsFemale(nameTokens, introTokens),
     years: ageInYears(context.introduction?.age),
     tokens: introTokens.length > 0 ? nameTokens.concat(introTokens) : nameTokens,
   };

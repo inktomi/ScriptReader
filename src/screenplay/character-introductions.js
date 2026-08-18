@@ -51,12 +51,16 @@
  *   looks like a bug from the outside, so: it is not one.
  */
 
+import { containsGenderedNoun } from './character-gender.js';
+
 /** Description text is capped so one discursive writer cannot break the card layout. */
 const MAX_DESCRIPTION_CHARS = 140;
 /** Appositives are looser than parentheticals, so they are held to a tighter cap. */
 const MAX_APPOSITIVE_CHARS = 100;
 /** An unclosed `(` should fail fast rather than swallow the rest of the scene. */
 const MAX_PAREN_SCAN = 400;
+/** What may sit between `(30)` and the description it introduces. */
+const SEPARATOR_AFTER_AGE = /[\s\u2014\u2013:,-]/;
 /** The verbatim sentence shown when a user expands an introduction. */
 const MAX_SOURCE_CHARS = 400;
 /** Longest cast name, in tokens, that the run resolver will try to match. */
@@ -347,10 +351,29 @@ function readParenthetical(text, open) {
 }
 
 /**
+ * Drop the action clause a description often ends with.
+ *
+ * `RUBEN (26) — a smart-ass with a cocky face, yanks it from her hand` is a
+ * description followed by a predicate, and the predicate's `her` is somebody
+ * else's hand. Read whole, it makes Ruben a woman. The appositive path already
+ * drops its last comma fragment for exactly this reason.
+ *
+ * The exception is a fragment that names a sex outright — `BRENDA (30) — a
+ * stunning, statuesque woman` — where the last fragment is the description and
+ * dropping it discards the only thing worth reading.
+ */
+function dropTrailingPredicate(description) {
+  const fragments = description.split(',').map(collapseWhitespace).filter(Boolean);
+  if (fragments.length < 2) return description;
+  if (containsGenderedNoun(fragments.at(-1))) return description;
+  return fragments.slice(0, -1).join(', ');
+}
+
+/**
  * Decide what, if anything, the text after a resolved name span describes.
  * @returns {{text: string, age: string|null, form: string, scanFrom: number}|null}
  */
-function readDescription(text, spanEnd, nameEndsSentence, allowAppositive) {
+function readDescription(text, spanEnd, nameEndsSentence, allowAppositive, allowNextSentence = true) {
   let cursor = spanEnd;
   while (cursor < text.length && /\s/.test(text[cursor])) cursor++;
   if (cursor >= text.length) return null;
@@ -362,8 +385,49 @@ function readDescription(text, spanEnd, nameEndsSentence, allowAppositive) {
     if (!parsed) return null;
 
     const body = parsed.body;
-    if (!body || !/\p{L}/u.test(body)) return null;
     if (CUE_EXTENSION_REGEX.test(body)) return null;
+
+    // `LEE VALMONT (22) — sits at her desk` and `BRENDA (30) — a stunning,
+    // statuesque woman`. The bracket holds nothing but an age, so the
+    // description is whatever follows it. Bailing out here — which is what a
+    // bracket with no letters used to do — threw away the age *and* the
+    // description, and in a script that writes every character this way that
+    // meant no character had either.
+    if (!/\p{L}/u.test(body)) {
+      const bracketAge = extractAge(body);
+      if (!bracketAge) return null;
+      let after = parsed.end;
+      while (after < text.length && SEPARATOR_AFTER_AGE.test(text[after])) after++;
+      // `PERRI HUTCHINSON (60). A stately-looking woman, sleek in designer
+      // pantsuits.` The bracket closed the sentence, so the description is the
+      // sentence after it — a common enough form that skipping it loses whole
+      // characters.
+      if (text[after] === '.') {
+        // Only for the first name in its sentence. In `They are BARRETT (35)
+        // and ANGELO (28). The alpha of the two, Barrett, directs...` the
+        // sentence that follows describes Barrett, and handing it to Angelo
+        // puts another character's description on his card.
+        if (!allowNextSentence) return null;
+        after++;
+        while (after < text.length && /\s/.test(text[after])) after++;
+      }
+      const stop = findSentenceEnd(text, after);
+      const trailing = collapseWhitespace(text.slice(after, stop === -1 ? text.length : stop));
+      if (!trailing || !/\p{L}/u.test(trailing)) return null;
+      // `They are BARRETT (35) and ANGELO (28).` A conjunction means the
+      // sentence is still listing people, so what follows describes nobody yet.
+      if (/^(?:and|&|or)\b/i.test(trailing)) return null;
+      // An all-caps opening word is another character being named, not prose.
+      const firstWord = trailing.split(/\s+/)[0] || '';
+      if (firstWord.length > 1 && firstWord === firstWord.toUpperCase() && /\p{L}/u.test(firstWord)) return null;
+      return {
+        text: truncate(dropTrailingPredicate(trailing), MAX_DESCRIPTION_CHARS),
+        age: bracketAge,
+        form: 'parenthetical',
+        scanFrom: stop === -1 ? text.length : stop,
+      };
+    }
+    if (!body) return null;
 
     return {
       text: truncate(body, MAX_DESCRIPTION_CHARS),
@@ -493,7 +557,23 @@ export function findCharacterIntroductions({ elements = [], characters = [] } = 
         }
 
         const lastToken = tokens[spanEnd - 1];
-        const described = readDescription(text, nameEndOf(lastToken), endsSentence(lastToken.raw), allowAppositive);
+        // Is this the first cast member named in its sentence? Walk back to the
+        // previous terminator; anyone found means this mention is part of a list.
+        let precededByCastName = false;
+        for (let back = at - 1; back >= 0; back--) {
+          if (endsSentence(tokens[back].raw)) break;
+          if (index.has(tokens[back].norm)) {
+            precededByCastName = true;
+            break;
+          }
+        }
+        const described = readDescription(
+          text,
+          nameEndOf(lastToken),
+          endsSentence(lastToken.raw),
+          allowAppositive,
+          !precededByCastName,
+        );
 
         if (described) {
           const existing = results.get(hit.name);

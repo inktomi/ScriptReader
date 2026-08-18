@@ -1,4 +1,5 @@
 import * as pdfjsLib from 'pdfjs-dist';
+import { attachCharacterGender } from './character-gender.js';
 import { attachCharacterIntroductions } from './character-introductions.js';
 import { analyzeLineNuance } from './emotion-analyzer.js';
 import { readTitlePageTitle, splitPdfFrontMatter } from './front-matter.js';
@@ -472,15 +473,20 @@ export function processExtractedLines(lines, scriptTitle) {
   // Character introductions matter more here than in Fountain: a PDF wraps its
   // action at the page margin, so the description is routinely split across two
   // extracted rows and only reassembles at the paragraph level.
-  return attachCharacterIntroductions(
-    annotateScriptFlow(
-      expandSharedDialogueCues({
-        title: titlePageTitle || scriptTitle || 'Exported Screenplay',
-        elements,
-        characters,
-        scenes: sceneList,
-        totalLines: elements.length,
-      }),
+  // Gender is read off the whole script's pronouns, so it wraps outermost: it
+  // needs the finished element list and the settled character set, not a
+  // paragraph. Like introductions, it only sets fields on `characters`.
+  return attachCharacterGender(
+    attachCharacterIntroductions(
+      annotateScriptFlow(
+        expandSharedDialogueCues({
+          title: titlePageTitle || scriptTitle || 'Exported Screenplay',
+          elements,
+          characters,
+          scenes: sceneList,
+          totalLines: elements.length,
+        }),
+      ),
     ),
   );
 }

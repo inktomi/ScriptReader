@@ -1,3 +1,4 @@
+import { attachCharacterGender } from './character-gender.js';
 import { attachCharacterIntroductions } from './character-introductions.js';
 import { analyzeLineNuance } from './emotion-analyzer.js';
 import { annotateScriptFlow, DEFAULT_PACE, parsePaceDirective } from './overlap-pacing.js';
@@ -323,15 +324,20 @@ export function parseFountainScript(text) {
   // two keeps "introductions never touch elements" visible at the call site.
   // Shared cues run innermost: splitting `CICI AND MAYA` creates the very
   // adjacency `annotateScriptFlow` exists to resolve, so it has to happen first.
-  return attachCharacterIntroductions(
-    annotateScriptFlow(
-      expandSharedDialogueCues({
-        title: scriptTitle,
-        elements,
-        characters,
-        scenes: sceneList,
-        totalLines: elements.length,
-      }),
+  // Gender is read off the whole script's pronouns, so it wraps outermost: it
+  // needs the finished element list and the settled character set, not a
+  // paragraph. Like introductions, it only sets fields on `characters`.
+  return attachCharacterGender(
+    attachCharacterIntroductions(
+      annotateScriptFlow(
+        expandSharedDialogueCues({
+          title: scriptTitle,
+          elements,
+          characters,
+          scenes: sceneList,
+          totalLines: elements.length,
+        }),
+      ),
     ),
   );
 }
