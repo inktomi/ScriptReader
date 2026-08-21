@@ -23,32 +23,183 @@ import { getAudioContext } from './audio-context.js';
  * long one must not shrink the buffered horizon, or the manager will read the
  * collapse as starvation and stack the next line on top of the one still
  * sounding.
+ *
+ * The placement arithmetic and the per-unit signal chain are exported as free
+ * functions because the offline exporter has to reproduce them exactly. A file
+ * that times its overlaps differently from the speakers is not a recording of
+ * the read; it is a different read.
  */
 
 const MIN_LEAD = 0.03; // never schedule closer than this to "now"
 const RELEASE_TIME = 0.012; // fade used when cutting playback short
-const INTERRUPT_FADE = 0.08; // fade applied when a line is cut off mid-thought
-const MIN_AUDIBLE = 0.06; // a trimmed unit never collapses below this
-const MIX_HEADROOM = 0.76; // leave room for two actors and filter makeup gain
-const MAX_UNIT_GAIN = 1.1; // one actor cannot overload the mix bus alone
+export const INTERRUPT_FADE = 0.08; // fade applied when a line is cut off mid-thought
+export const MIN_AUDIBLE = 0.06; // a trimmed unit never collapses below this
+export const MIX_HEADROOM = 0.76; // leave room for two actors and filter makeup gain
+export const MAX_UNIT_GAIN = 1.1; // one actor cannot overload the mix bus alone
+
+/**
+ * The four timeline edges an anchor can measure from.
+ *
+ * Held as one object rather than four loose fields so the exporter can run a
+ * second, independent timeline without instantiating a scheduler and its live
+ * Web Audio graph.
+ */
+export function createTimelineEdges(at = 0) {
+  return {
+    // Monotonic max of EFFECTIVE (post-truncation) end times. Drives bufferedAhead.
+    timelineEnd: at,
+    // startAt of the most recent first-chunk — the anchor for simultaneous speech.
+    curLineHead: at,
+    // NATURAL (pre-truncation) tail of the current overlap cluster, maxed across
+    // its members — the anchor for an interrupter.
+    curLineTail: at,
+    // Natural end of the most recently scheduled unit — the anchor for the next
+    // chunk of the same line. Distinct from curLineTail: inside a cluster the
+    // tail is the *maximum* across speakers, which is not where this line's own
+    // next chunk belongs.
+    lastUnitEnd: at,
+  };
+}
+
+/**
+ * Decide where one unit sits, and advance the edges it moves.
+ *
+ * `naturalSec` is the unit's duration *after* playbackRate is applied — the
+ * caller owns the resampling arithmetic because the offline path reads it off a
+ * cached buffer while the live path reads it off the node it is about to start.
+ *
+ * @returns {{startAt: number, endAt: number, naturalEnd: number, playSec: number,
+ *            interruptFadeSec: number, truncated: boolean}}
+ */
+export function placeOnTimeline(edges, unit, naturalSec, now = 0) {
+  // A cut-off line is trimmed relative to its OWN natural end. Expressing it
+  // that way is what breaks the circular dependency: when the victim is
+  // scheduled the interrupter's absolute start is not known yet, but "the
+  // interrupter arrives `overlap` before I would have finished" is local.
+  const trim = unit.trimTailSec || 0;
+  const playSec = trim > 0 ? Math.max(MIN_AUDIBLE, naturalSec - trim) : naturalSec;
+
+  // Read the anchor BEFORE any edge is updated.
+  const base =
+    unit.anchor === 'prevHead'
+      ? edges.curLineHead
+      : unit.anchor === 'prevTail'
+        ? edges.curLineTail
+        : unit.anchor === 'chunk'
+          ? edges.lastUnitEnd
+          : edges.timelineEnd;
+
+  const startAt = Math.max(base + (unit.leadPause || 0), now + MIN_LEAD);
+  const naturalEnd = startAt + naturalSec;
+  const interruptFadeSec = unit.interruptFadeSec || INTERRUPT_FADE;
+  const endAt = trim > 0 ? startAt + playSec + interruptFadeSec : naturalEnd;
+
+  if (unit.isFirstChunk) edges.curLineHead = startAt;
+
+  // A sequential first chunk opens a new cluster, so the tail restarts there.
+  // Anything else is a member of the cluster already in flight and extends it.
+  edges.curLineTail =
+    unit.isFirstChunk && (!unit.anchor || unit.anchor === 'sequential')
+      ? naturalEnd
+      : Math.max(edges.curLineTail, naturalEnd);
+
+  edges.lastUnitEnd = naturalEnd;
+  edges.timelineEnd = Math.max(edges.timelineEnd, endAt);
+
+  return { startAt, endAt, naturalEnd, playSec, interruptFadeSec, truncated: trim > 0 };
+}
+
+/**
+ * Build the per-unit signal chain:
+ *
+ *   source → [filters] → gain → panner → destination
+ *
+ * Filters are how a table read conveys that a voice is coming through a radio
+ * or from off-screen rather than in the room. The panner is where each
+ * character sits at the table, which is what keeps two people talking at once
+ * intelligible rather than mush.
+ *
+ * Node order is deliberate. The panner goes after the filters because a
+ * BiquadFilterNode adapts its channel count to its input, so panning first
+ * would double the filter work for identical output. It goes after the gain
+ * because the interrupt fade automates that node, and keeping the fade on a
+ * mono node keeps it cheap and separate from the pan law.
+ *
+ * @returns {{gainNode: GainNode, tailNode: AudioNode}} the node to automate,
+ *          and the last node in the chain (both need disconnecting).
+ */
+export function buildUnitChain(ctx, unit, source, destination) {
+  let head = source;
+  let makeupGain = 1.0;
+
+  if (unit.filter === 'radio') {
+    const highpass = ctx.createBiquadFilter();
+    highpass.type = 'highpass';
+    highpass.frequency.value = 520;
+
+    const lowpass = ctx.createBiquadFilter();
+    lowpass.type = 'lowpass';
+    lowpass.frequency.value = 3200;
+
+    const presence = ctx.createBiquadFilter();
+    presence.type = 'peaking';
+    presence.frequency.value = 2000;
+    presence.Q.value = 1.1;
+    presence.gain.value = 6;
+
+    head.connect(highpass);
+    highpass.connect(lowpass);
+    lowpass.connect(presence);
+    head = presence;
+    makeupGain = 1.7; // band-limiting costs a lot of level
+  } else if (unit.filter === 'distant') {
+    const lowpass = ctx.createBiquadFilter();
+    lowpass.type = 'lowpass';
+    lowpass.frequency.value = 1900;
+    lowpass.Q.value = 0.7;
+
+    head.connect(lowpass);
+    head = lowpass;
+    makeupGain = 0.72;
+  }
+
+  const gainNode = ctx.createGain();
+
+  // StereoPannerNode already uses a constant-power law. Compensating that law
+  // with sqrt(2) made each centred voice full-scale in both channels and left
+  // no headroom for a second actor.
+  const panNode = ctx.createStereoPanner();
+  panNode.pan.value = Math.max(-1, Math.min(1, unit.pan || 0));
+  gainNode.gain.value = Math.min(MAX_UNIT_GAIN, Math.max(0, unit.gain * makeupGain));
+
+  head.connect(gainNode);
+  gainNode.connect(panNode);
+  panNode.connect(destination);
+
+  return { gainNode, tailNode: panNode };
+}
+
+/**
+ * Start a placed unit and, when it is cut off, ride it down instead of stopping
+ * it dead. Shared with the exporter so an interruption sounds the same in the
+ * file as it does in the room.
+ */
+export function applyUnitEnvelope(source, gainNode, placement, startAt = placement.startAt) {
+  source.start(startAt);
+  if (!placement.truncated) return;
+
+  const cut = startAt + placement.playSec;
+  gainNode.gain.setValueAtTime(gainNode.gain.value, cut);
+  gainNode.gain.linearRampToValueAtTime(0.0001, cut + placement.interruptFadeSec);
+  source.stop(cut + placement.interruptFadeSec);
+}
 
 export class PlaybackScheduler {
   constructor() {
     this.ctx = getAudioContext();
     this.active = [];
 
-    // Monotonic max of EFFECTIVE (post-truncation) end times. Drives bufferedAhead.
-    this.timelineEnd = 0;
-    // startAt of the most recent first-chunk — the anchor for simultaneous speech.
-    this.curLineHead = 0;
-    // NATURAL (pre-truncation) tail of the current overlap cluster, maxed across
-    // its members — the anchor for an interrupter.
-    this.curLineTail = 0;
-    // Natural end of the most recently scheduled unit — the anchor for the next
-    // chunk of the same line. Distinct from curLineTail: inside a cluster the
-    // tail is the *maximum* across speakers, which is not where this line's own
-    // next chunk belongs.
-    this.lastUnitEnd = 0;
+    this.edges = createTimelineEdges(0);
 
     this.volume = 1.0;
     this.isMuted = false;
@@ -77,6 +228,33 @@ export class PlaybackScheduler {
     }
   }
 
+  // The edges stay readable and writable under their original names: the
+  // manager watches `timelineEnd` to detect a stalled clock.
+  get timelineEnd() {
+    return this.edges.timelineEnd;
+  }
+  set timelineEnd(value) {
+    this.edges.timelineEnd = value;
+  }
+  get curLineHead() {
+    return this.edges.curLineHead;
+  }
+  set curLineHead(value) {
+    this.edges.curLineHead = value;
+  }
+  get curLineTail() {
+    return this.edges.curLineTail;
+  }
+  set curLineTail(value) {
+    this.edges.curLineTail = value;
+  }
+  get lastUnitEnd() {
+    return this.edges.lastUnitEnd;
+  }
+  set lastUnitEnd(value) {
+    this.edges.lastUnitEnd = value;
+  }
+
   get currentTime() {
     return this.ctx ? this.ctx.currentTime : 0;
   }
@@ -90,7 +268,7 @@ export class PlaybackScheduler {
    */
   get bufferedAhead() {
     if (this.active.length === 0) return 0;
-    return Math.max(0, this.timelineEnd - this.currentTime);
+    return Math.max(0, this.edges.timelineEnd - this.currentTime);
   }
 
   setVolume(volume) {
@@ -109,75 +287,9 @@ export class PlaybackScheduler {
     this.master.gain.setTargetAtTime(target, this.ctx.currentTime, 0.015);
   }
 
-  /**
-   * Build the per-unit signal chain:
-   *
-   *   source → [filters] → gain → panner → master
-   *
-   * Filters are how a table read conveys that a voice is coming through a radio
-   * or from off-screen rather than in the room. The panner is where each
-   * character sits at the table, which is what keeps two people talking at once
-   * intelligible rather than mush.
-   *
-   * Node order is deliberate. The panner goes after the filters because a
-   * BiquadFilterNode adapts its channel count to its input, so panning first
-   * would double the filter work for identical output. It goes after the gain
-   * because the interrupt fade automates that node, and keeping the fade on a
-   * mono node keeps it cheap and separate from the pan law.
-   *
-   * @returns {{gainNode: GainNode, tailNode: AudioNode}} the node to automate,
-   *          and the last node in the chain (both need disconnecting).
-   */
+  /** @deprecated Kept as the instance-shaped entry point; see `buildUnitChain`. */
   _buildChain(unit, source) {
-    const ctx = this.ctx;
-    let head = source;
-    let makeupGain = 1.0;
-
-    if (unit.filter === 'radio') {
-      const highpass = ctx.createBiquadFilter();
-      highpass.type = 'highpass';
-      highpass.frequency.value = 520;
-
-      const lowpass = ctx.createBiquadFilter();
-      lowpass.type = 'lowpass';
-      lowpass.frequency.value = 3200;
-
-      const presence = ctx.createBiquadFilter();
-      presence.type = 'peaking';
-      presence.frequency.value = 2000;
-      presence.Q.value = 1.1;
-      presence.gain.value = 6;
-
-      head.connect(highpass);
-      highpass.connect(lowpass);
-      lowpass.connect(presence);
-      head = presence;
-      makeupGain = 1.7; // band-limiting costs a lot of level
-    } else if (unit.filter === 'distant') {
-      const lowpass = ctx.createBiquadFilter();
-      lowpass.type = 'lowpass';
-      lowpass.frequency.value = 1900;
-      lowpass.Q.value = 0.7;
-
-      head.connect(lowpass);
-      head = lowpass;
-      makeupGain = 0.72;
-    }
-
-    const gainNode = ctx.createGain();
-
-    // StereoPannerNode already uses a constant-power law. Compensating that law
-    // with sqrt(2) made each centred voice full-scale in both channels and left
-    // no headroom for a second actor.
-    const panNode = ctx.createStereoPanner();
-    panNode.pan.value = Math.max(-1, Math.min(1, unit.pan || 0));
-    gainNode.gain.value = Math.min(MAX_UNIT_GAIN, Math.max(0, unit.gain * makeupGain));
-
-    head.connect(gainNode);
-    gainNode.connect(panNode);
-    panNode.connect(this.master);
-
-    return { gainNode, tailNode: panNode };
+    return buildUnitChain(this.ctx, unit, source, this.master);
   }
 
   /**
@@ -189,45 +301,16 @@ export class PlaybackScheduler {
     if (!ctx) return { startAt: 0, endAt: 0, naturalEnd: 0, truncated: false };
 
     const rate = unit.playbackRate || 1.0;
-    const natural = audioBuffer.duration / rate;
-
-    // A cut-off line is trimmed relative to its OWN natural end. Expressing it
-    // that way is what breaks the circular dependency: when the victim is
-    // scheduled the interrupter's absolute start is not known yet, but "the
-    // interrupter arrives `overlap` before I would have finished" is local.
-    const trim = unit.trimTailSec || 0;
-    const play = trim > 0 ? Math.max(MIN_AUDIBLE, natural - trim) : natural;
-
-    // Read the anchor BEFORE any edge is updated.
-    const base =
-      unit.anchor === 'prevHead'
-        ? this.curLineHead
-        : unit.anchor === 'prevTail'
-          ? this.curLineTail
-          : unit.anchor === 'chunk'
-            ? this.lastUnitEnd
-            : this.timelineEnd;
-
-    const startAt = Math.max(base + (unit.leadPause || 0), ctx.currentTime + MIN_LEAD);
+    const placement = placeOnTimeline(this.edges, unit, audioBuffer.duration / rate, ctx.currentTime);
+    const { startAt, endAt, naturalEnd, truncated } = placement;
 
     const source = ctx.createBufferSource();
     source.buffer = audioBuffer;
     source.playbackRate.value = rate;
 
-    const { gainNode, tailNode } = this._buildChain(unit, source);
+    const { gainNode, tailNode } = buildUnitChain(ctx, unit, source, this.master);
 
-    const naturalEnd = startAt + natural;
-    const interruptFade = unit.interruptFadeSec || INTERRUPT_FADE;
-    const endAt = trim > 0 ? startAt + play + interruptFade : naturalEnd;
-
-    source.start(startAt);
-
-    if (trim > 0) {
-      const cut = startAt + play;
-      gainNode.gain.setValueAtTime(gainNode.gain.value, cut);
-      gainNode.gain.linearRampToValueAtTime(0.0001, cut + interruptFade);
-      source.stop(cut + interruptFade);
-    }
+    applyUnitEnvelope(source, gainNode, placement, startAt);
 
     const entry = { source, gainNode, tailNode, startAt, endAt, unit };
     this.active.push(entry);
@@ -243,19 +326,7 @@ export class PlaybackScheduler {
       }
     };
 
-    if (unit.isFirstChunk) this.curLineHead = startAt;
-
-    // A sequential first chunk opens a new cluster, so the tail restarts there.
-    // Anything else is a member of the cluster already in flight and extends it.
-    this.curLineTail =
-      unit.isFirstChunk && (!unit.anchor || unit.anchor === 'sequential')
-        ? naturalEnd
-        : Math.max(this.curLineTail, naturalEnd);
-
-    this.lastUnitEnd = naturalEnd;
-    this.timelineEnd = Math.max(this.timelineEnd, endAt);
-
-    return { startAt, endAt, naturalEnd, truncated: trim > 0 };
+    return { startAt, endAt, naturalEnd, truncated };
   }
 
   /**
@@ -267,10 +338,7 @@ export class PlaybackScheduler {
   resetTimeline(at = null) {
     if (!this.ctx) return;
     const t = at !== null ? at : this.ctx.currentTime;
-    this.timelineEnd = t;
-    this.curLineHead = t;
-    this.curLineTail = t;
-    this.lastUnitEnd = t;
+    this.edges = createTimelineEdges(t);
   }
 
   /** Cut everything currently sounding or scheduled. */
@@ -295,10 +363,7 @@ export class PlaybackScheduler {
     }
 
     this.active.length = 0;
-    this.timelineEnd = now;
-    this.curLineHead = now;
-    this.curLineTail = now;
-    this.lastUnitEnd = now;
+    this.edges = createTimelineEdges(now);
   }
 
   getAnalyser() {

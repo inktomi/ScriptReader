@@ -104,6 +104,7 @@ async function initApp() {
     onShowLibrary: (tab) => showLibraryTab(tab),
     onToggleHelp: () => openHelpModal(),
     onOpenEngineSettings: () => openEngineSettingsModal(),
+    onExportAudio: () => startAudioExport(),
     currentEngine: audioManager.engineId,
   });
 
@@ -152,7 +153,50 @@ async function initApp() {
       audioManager.seek(index);
       scriptStore.setActiveLine(index);
     },
+    onExport: () => startAudioExport(),
+    onCancelExport: () => audioManager.cancelExport(),
   });
+
+  /** Keep the Download control honest about whether it can do anything. */
+  function syncExportAvailability() {
+    header.setExportState({
+      blockedReason: audioManager.exportBlockedReason(),
+      exporting: audioManager.isExporting,
+    });
+  }
+
+  /**
+   * Render the loaded script to a file.
+   *
+   * The save dialog has to open inside the click that started this, so nothing
+   * is awaited before `exportAudio` gets the chance to raise it.
+   */
+  function startAudioExport() {
+    if (audioManager.isExporting) return;
+    const title = scriptStore.currentScript?.title || 'ScriptReader table read';
+
+    syncExportAvailability();
+    audioManager
+      .exportAudio({ title })
+      .then((result) => {
+        if (result) showResumeToast(`Saved ${result.filename} — ${formatReadLength(result.seconds)} of audio.`);
+      })
+      .catch((err) => {
+        showResumeToast(err?.message || 'The read could not be exported.');
+      })
+      .finally(() => {
+        syncExportAvailability();
+      });
+  }
+
+  function formatReadLength(seconds) {
+    const total = Math.max(0, Math.round(seconds));
+    const minutes = Math.floor(total / 60);
+    if (minutes < 1) return `${total} seconds`;
+    const hours = Math.floor(minutes / 60);
+    if (hours < 1) return `${minutes} min`;
+    return `${hours} h ${String(minutes % 60).padStart(2, '0')} min`;
+  }
 
   // Assemble the listening room. The rail contains one library at a time so the
   // screenplay, not dashboard chrome, owns the workspace.
@@ -240,6 +284,7 @@ async function initApp() {
     audioManager.setNarratorVoice(scriptStore.getNarratorVoice(audioManager.engineId));
     audioManager.setScript(scriptStore.currentScript.elements, scriptStore.castAssignments, activeLine);
     header.setScript(scriptStore.currentScript);
+    syncExportAvailability();
     teleprompter.renderScript();
     teleprompter.highlightActiveLine(activeLine, true);
     castPanel.render();
@@ -270,6 +315,10 @@ async function initApp() {
 
   function showWelcome() {
     currentView = APP_VIEWS.WELCOME;
+    // The export belongs to the player. Leaving it running would render on
+    // behalf of a screenplay nobody is looking at any more, then announce a
+    // saved file from a different script than the one on screen.
+    audioManager.cancelExport('The screenplay was closed, so the export was stopped.');
     audioManager.stop();
     scriptStore.saveCurrentState();
     activeVoiceModal?.remove();
@@ -346,6 +395,8 @@ async function initApp() {
     syncLoadedScript();
     header.setLibraryActive(isLibraryOpen());
     transportBar.updateRenderProgress(audioManager.renderStatus);
+    transportBar.updateExportProgress(audioManager.exportStatus);
+    syncExportAvailability();
     playerShell.hidden = false;
   }
 
@@ -397,6 +448,11 @@ async function initApp() {
 
       case 'renderProgress':
         transportBar.updateRenderProgress(data);
+        break;
+
+      case 'exportProgress':
+        transportBar.updateExportProgress(data);
+        syncExportAvailability();
         break;
 
       case 'lineStart':
@@ -512,6 +568,7 @@ async function initApp() {
           scriptStore.activeLineIndex,
         );
         header.setEngineBadge(engineId);
+        syncExportAvailability();
         castPanel.render();
         showResumeToast(
           engineId === ENGINE_TYPES.OPENAI

@@ -3,6 +3,7 @@ import { getAudioContext, resumeAudioContext, suspendAudioContext } from './audi
 import { ChatterboxStudioEngine, getChatterboxCacheStatus } from './chatterbox-engine.js';
 import { MAX_RENDER_CACHE_SECONDS } from './chatterbox-render-store.js';
 import { ENGINE_IDS } from './engine-contract.js';
+import { runExportJob } from './export-job.js';
 import { KokoroNeuralEngine } from './kokoro-engine.js';
 import { DEFAULT_MODEL_ID, ModelCacheManager } from './model-cache-manager.js';
 import { OpenAiTtsEngine } from './openai-engine.js';
@@ -82,6 +83,14 @@ const PAN_SPREAD = 0.35;
 
 // Playhead entries are kept this long past their end before being pruned.
 const PLAYHEAD_RETAIN_SEC = 5;
+
+// What the export row says while each stage runs.
+const EXPORT_PHASE_MESSAGES = {
+  preparing: 'Preparing the export',
+  rendering: 'Rendering the read',
+  encoding: 'Finishing the audio',
+  saving: 'Saving the file',
+};
 
 export class ScreenplayAudioManager {
   constructor() {
@@ -168,6 +177,23 @@ export class ScreenplayAudioManager {
       total: 0,
       percent: 0,
       etaSeconds: null,
+      message: '',
+    };
+
+    // One export at a time, owned by a generation counter for the same reason
+    // the prewarm has one: a cast edit mid-export invalidates the units the
+    // remaining clusters were going to be built from.
+    this.exportGeneration = 0;
+    this._exportAbort = null;
+    this.exportStatus = {
+      active: false,
+      phase: 'idle',
+      completed: 0,
+      total: 0,
+      percent: 0,
+      renderedSeconds: 0,
+      etaSeconds: null,
+      error: null,
       message: '',
     };
 
@@ -822,6 +848,9 @@ export class ScreenplayAudioManager {
   _invalidateUnits() {
     this.unitCache.clear();
     this.prewarmGeneration++;
+    // Everything past the current cluster would be built from units that no
+    // longer describe this cast, so the file would change voice halfway down.
+    this.cancelExport('The cast or pacing changed, so the export was stopped.');
     const isStudioEngine = this.engineId === ENGINE_IDS.CHATTERBOX || this.engineId === ENGINE_IDS.RUNPOD;
     if (isStudioEngine) {
       const label = this.engine?.capabilities?.label || 'Studio';
@@ -888,21 +917,33 @@ export class ScreenplayAudioManager {
    * would resolve those anchors against a stale edge.
    */
   _clusterUnits(fromLine) {
+    return this._clusterSpan(fromLine).units;
+  }
+
+  /**
+   * As `_clusterUnits`, but also reporting the last line the cluster consumed.
+   *
+   * The exporter walks the script cluster by cluster and has to know where to
+   * resume; the render pumps only ever need the units.
+   */
+  _clusterSpan(fromLine) {
     const collected = [];
     let line = fromLine;
+    let endLine = fromLine;
     let guard = 0;
 
     while (guard++ < this.scriptElements.length + 1) {
       const units = this._unitsForLine(line);
       if (!units) break;
       collected.push(...units);
+      endLine = line;
 
       const next = this.scriptElements[line + 1];
       if (!next || !next.overlap || !next.overlap.mode) break;
       line++;
     }
 
-    return collected;
+    return { units: collected, endLine };
   }
 
   _clusterReady(units) {
@@ -1651,12 +1692,185 @@ export class ScreenplayAudioManager {
     }
   }
 
+  // ----------------------------------------------------------------- audio export
+
+  /**
+   * Why this script cannot be exported right now, or null when it can.
+   *
+   * Web Speech is the one engine with nothing to record: it drives the browser's
+   * own synthesiser, which speaks straight to the output device and hands back
+   * no buffer at all.
+   */
+  exportBlockedReason() {
+    if (this.scriptElements.length === 0) return 'Load a screenplay first.';
+    if (this.engineId === ENGINE_IDS.WEB_SPEECH || this.usingWebSpeechFallback) {
+      return "The browser's built-in voice cannot be recorded. Pick a neural engine to export.";
+    }
+    if (typeof globalThis.OfflineAudioContext !== 'function') {
+      return 'This browser cannot render audio offline.';
+    }
+    return null;
+  }
+
+  /**
+   * Every unit of the whole script, grouped into the clusters that have to be
+   * placed together.
+   *
+   * Deliberately not `_studioRenderUnits()`: that plan starts at the playhead
+   * and wraps around, which is right for filling a cache and wrong for a file,
+   * where line one has to come first.
+   */
+  getExportPlan() {
+    const clusters = [];
+    let line = 0;
+    let guard = 0;
+
+    while (line < this.scriptElements.length && guard++ < this.scriptElements.length + 2) {
+      const { units, endLine } = this._clusterSpan(line);
+      if (units.length > 0) clusters.push(units);
+      line = Math.max(line + 1, endLine + 1);
+    }
+
+    return clusters;
+  }
+
+  /** Route one unit to the engine that owns its voice and ask for its audio. */
+  requestUnit(unit, priority = 0) {
+    return this._engineForUnit(unit).request(unit, priority);
+  }
+
+  get isExporting() {
+    return this._exportAbort !== null;
+  }
+
+  _setExportStatus(status) {
+    this.exportStatus = { ...this.exportStatus, ...status };
+    this.emit('exportProgress', this.exportStatus);
+  }
+
+  /** @returns {boolean} whether there was an export to stop. */
+  cancelExport(reason = 'Export cancelled.') {
+    if (!this._exportAbort) return false;
+    this._exportAbort.abort(new DOMException(reason, 'AbortError'));
+    return true;
+  }
+
+  /**
+   * Render the whole script to one file.
+   *
+   * Playback is stopped first rather than shared with: the export needs the
+   * engines' request queues and the render pumps would keep moving the cursor
+   * underneath it. Cancelling, or any failure, leaves no half-written file.
+   *
+   * @returns {Promise<{filename: string, seconds: number, codec: string}|null>}
+   *          null when the export was cancelled.
+   */
+  async exportAudio({ title = 'ScriptReader table read' } = {}) {
+    const blocked = this.exportBlockedReason();
+    if (blocked) {
+      this._setExportStatus({ active: false, phase: 'idle', error: blocked, message: blocked });
+      throw new Error(blocked);
+    }
+    if (this._exportAbort) throw new Error('An export is already running.');
+
+    this.stop();
+
+    const generation = ++this.exportGeneration;
+    const controller = new AbortController();
+    this._exportAbort = controller;
+    const owns = () => generation === this.exportGeneration;
+
+    this._setExportStatus({
+      active: true,
+      phase: 'preparing',
+      completed: 0,
+      total: 0,
+      percent: 0,
+      renderedSeconds: 0,
+      etaSeconds: null,
+      error: null,
+      message: 'Preparing the export',
+    });
+
+    try {
+      const clusters = this.getExportPlan();
+      const nativeSampleRate = this._requiredEngines().reduce(
+        (rate, engine) => Math.max(rate, engine.capabilities?.nativeSampleRate || 0),
+        24000,
+      );
+
+      const result = await runExportJob({
+        clusters,
+        title,
+        nativeSampleRate,
+        signal: controller.signal,
+        // Engines start only once the listener has chosen a destination. A cold
+        // model can take tens of seconds to load, which is far longer than the
+        // browser keeps the Download click alive as a gesture the save dialog
+        // will accept.
+        prepare: async () => {
+          const { primaryError, failed } = await this._initRequiredEngines();
+          if (!owns()) throw new DOMException('Export superseded.', 'AbortError');
+          // `_initRequiredEngines` reports the active engine through
+          // `primaryError` and keeps it out of `failed`, so checking only
+          // `failed` would start rendering against an engine that never loaded
+          // and surface its outage as a generic queue error much later.
+          if (primaryError || !this.engine.isReady) {
+            throw (
+              primaryError ||
+              new Error(`${this.engine.capabilities?.label || 'The voice engine'} could not be started.`)
+            );
+          }
+          if (failed.length > 0) {
+            throw new Error(`${failed[0].capabilities?.label || 'A voice engine'} could not be started.`);
+          }
+        },
+        requestUnit: (unit, priority) => this.requestUnit(unit, priority),
+        onProgress: (status) => {
+          if (owns()) this._setExportStatus({ ...status, message: EXPORT_PHASE_MESSAGES[status.phase] || '' });
+        },
+      });
+
+      if (!owns()) return null;
+      this._setExportStatus({
+        active: false,
+        phase: 'done',
+        percent: 100,
+        error: null,
+        message: `Saved ${result.filename}`,
+      });
+      return result;
+    } catch (err) {
+      const cancelled = err?.name === 'AbortError';
+      if (owns()) {
+        this._setExportStatus({
+          active: false,
+          phase: 'idle',
+          error: cancelled ? null : err?.message || 'The export could not be completed.',
+          message: cancelled ? 'Export cancelled' : err?.message || 'The export could not be completed.',
+        });
+      }
+      if (cancelled) return null;
+      throw err;
+    } finally {
+      if (this._exportAbort === controller) this._exportAbort = null;
+      // The pre-render was stood down to make room; put it back to work.
+      if (owns()) this.prewarm();
+    }
+  }
+
   // ------------------------------------------------------------- transport API
 
   async play() {
     if (this.scriptElements.length === 0) return;
     if (this.playbackState === PLAYBACK_STATES.PLAYING || this.playbackState === PLAYBACK_STATES.BUFFERING) {
       return;
+    }
+    // An export holds the engines' request queues and would starve playback
+    // into a permanent buffering state. Pressing Play means the file mattered
+    // less than hearing the read now, so the export stands down.
+    if (this._exportAbort) {
+      this.cancelExport('Playback started, so the export was stopped.');
     }
 
     // The runway check exists to protect a *cold* start, not a resume. A pause
@@ -1817,7 +2031,10 @@ export class ScreenplayAudioManager {
     }
     this.webSpeechEngine.stop();
 
-    if (!preservePending && !preservePrewarm) {
+    // An export owns the engines' request queues while it runs. Flushing them
+    // here would reject its in-flight units as "dropped" and fail the file over
+    // a transport action the listener sees as unrelated to it.
+    if (!preservePending && !preservePrewarm && !this.isExporting) {
       this._dropPendingExcept([]);
     }
 
@@ -1853,7 +2070,11 @@ export class ScreenplayAudioManager {
     this.cursorUnit = 0;
 
     // Abandon lookahead the jump made irrelevant, keeping only what we now need.
-    this._dropPendingExcept(this._upcomingKeys(target, 8));
+    // An export in flight is the exception: its units are not lookahead, and
+    // dropping them would fail a render the seek has nothing to do with.
+    if (!this.isExporting) {
+      this._dropPendingExcept(this._upcomingKeys(target, 8));
+    }
 
     this.emit('lineChange', {
       index: this.currentIndex,

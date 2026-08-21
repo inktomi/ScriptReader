@@ -1916,7 +1916,11 @@ button:disabled {
 
 .transport-render-row {
   display: grid;
-  grid-template-columns: minmax(220px, auto) 1fr;
+  /* Three explicit columns, and every child names the one it belongs to. A
+     hidden button is removed from the grid entirely, so implicit placement
+     would slide the progress track into the button's column the moment the
+     download affordance disappears. */
+  grid-template-columns: minmax(220px, auto) auto 1fr;
   align-items: center;
   gap: 12px;
   margin-bottom: 8px;
@@ -1924,6 +1928,30 @@ button:disabled {
 
 .transport-render-row[hidden] {
   display: none;
+}
+
+.transport-render-copy {
+  grid-column: 1;
+}
+
+.transport-render-row > .btn {
+  grid-column: 2;
+  padding: 3px 9px;
+  font-size: 0.56rem;
+}
+
+.transport-render-row > .transport-render-track {
+  grid-column: 3;
+}
+
+.transport-render-download:not([hidden]) {
+  color: var(--success);
+}
+
+/* The export row reads as the pre-render row's sibling, one shade quieter so
+   the two bars are never mistaken for each other. */
+.transport-export-row .transport-render-track > span {
+  background: var(--accent, var(--success));
 }
 
 .transport-render-copy {

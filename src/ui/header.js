@@ -8,6 +8,7 @@ export function createHeader({
   onToggleLibrary,
   onToggleHelp,
   onOpenEngineSettings,
+  onExportAudio,
   currentEngine = ENGINE_TYPES.KOKORO_NEURAL,
 }) {
   const header = document.createElement('header');
@@ -39,6 +40,11 @@ export function createHeader({
         ${getIconSvg('users', 15)}
         <span>Cast</span>
       </button>
+      <button id="btn-export-audio" class="btn btn-quiet" type="button" disabled
+        title="Load a screenplay to download the read as an audio file">
+        ${getIconSvg('download', 15)}
+        <span>Download</span>
+      </button>
       <button id="engine-status-badge" class="engine-badge" type="button" title="Voice engine settings">
         ${getIconSvg('cpu', 14)}
         <span id="engine-badge-text">Local voices</span>
@@ -58,6 +64,7 @@ export function createHeader({
       onShowLibrary('cast');
     }
   });
+  header.querySelector('#btn-export-audio').addEventListener('click', () => onExportAudio?.());
   header.querySelector('#engine-status-badge').addEventListener('click', onOpenEngineSettings);
   header.querySelector('#btn-help').addEventListener('click', onToggleHelp);
 
@@ -115,6 +122,35 @@ export function createHeader({
     if (isFullyCached || isModelCached) badgeText.textContent = 'Local · ready offline';
   }
 
+  /**
+   * Reflect whether an export can start.
+   *
+   * `blockedReason` is the audio manager's own sentence rather than a boolean,
+   * so a disabled button always says why it is disabled instead of leaving the
+   * listener to guess which of several conditions applies.
+   */
+  function setExportState({ blockedReason = null, exporting = false } = {}) {
+    const btn = header.querySelector('#btn-export-audio');
+    if (!btn) return;
+
+    const disabled = exporting || Boolean(blockedReason);
+    // Moving focus first: a control that disables under the caret drops focus to
+    // the document body and strands keyboard navigation. Cast is the natural
+    // neighbour but it is `display: none` under 760px, where focusing it would
+    // cause the very drop this is here to avoid - so fall back to a control
+    // that survives every viewport.
+    if (disabled && document.activeElement === btn) {
+      const cast = header.querySelector('#btn-voice-setup');
+      const visible = cast && header.ownerDocument?.defaultView?.getComputedStyle(cast).display !== 'none';
+      (visible ? cast : header.querySelector('#btn-library'))?.focus();
+    }
+    btn.disabled = disabled;
+    btn.classList.toggle('is-busy', exporting);
+    btn.title = exporting
+      ? 'Rendering the read to a file'
+      : blockedReason || 'Download the whole read as an audio file';
+  }
+
   function setLibraryActive(isOpen) {
     const btn = header.querySelector('#btn-library');
     if (!btn) return;
@@ -128,6 +164,7 @@ export function createHeader({
   return {
     element: header,
     setScript,
+    setExportState,
     setLibraryActive,
     updateEngineCacheBadge,
     setEngineBadge,

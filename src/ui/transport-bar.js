@@ -10,6 +10,8 @@ export function createTransportBar({
   onSkipNext,
   onSkipPrev,
   onSeek,
+  onExport,
+  onCancelExport,
 }) {
   const container = document.createElement('div');
   container.className = 'transport-container';
@@ -85,9 +87,29 @@ export function createTransportBar({
         <span id="transport-render-label">Pre-rendering Studio Local audio</span>
         <span id="transport-render-detail"></span>
       </div>
+      <button id="transport-render-download" class="btn btn-quiet transport-render-download" type="button" hidden
+        title="Download the whole read as an audio file">
+        ${getIconSvg('download', 14)}
+        <span>Download audio</span>
+      </button>
       <div class="transport-render-track" role="progressbar" aria-label="Studio Local pre-render progress"
         aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
         <span id="transport-render-fill"></span>
+      </div>
+    </div>
+
+    <div class="transport-render-row transport-export-row" id="transport-export-row" hidden>
+      <div class="transport-render-copy">
+        <span id="transport-export-label">Rendering the read</span>
+        <span id="transport-export-detail"></span>
+      </div>
+      <button id="transport-export-cancel" class="btn btn-quiet" type="button" title="Stop the export">
+        ${getIconSvg('stop', 14)}
+        <span>Cancel</span>
+      </button>
+      <div class="transport-render-track" role="progressbar" aria-label="Audio export progress"
+        aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
+        <span id="transport-export-fill"></span>
       </div>
     </div>
 
@@ -126,10 +148,18 @@ export function createTransportBar({
   const renderRow = container.querySelector('#transport-render-row');
   const renderLabel = container.querySelector('#transport-render-label');
   const renderDetail = container.querySelector('#transport-render-detail');
-  const renderTrack = container.querySelector('.transport-render-track');
+  const renderTrack = container.querySelector('#transport-render-row .transport-render-track');
   const renderFill = container.querySelector('#transport-render-fill');
+  const renderDownload = container.querySelector('#transport-render-download');
+  const exportRow = container.querySelector('#transport-export-row');
+  const exportLabel = container.querySelector('#transport-export-label');
+  const exportDetail = container.querySelector('#transport-export-detail');
+  const exportTrack = container.querySelector('#transport-export-row .transport-render-track');
+  const exportFill = container.querySelector('#transport-export-fill');
+  const exportCancel = container.querySelector('#transport-export-cancel');
   let latestPlaybackState = PLAYBACK_STATES.IDLE;
   let latestRenderStatus = { visible: false, canPlay: true };
+  let latestExportStatus = { active: false };
 
   function setPlayDisabled(disabled) {
     if (disabled && document.activeElement === btnPlay) btnPrev.focus();
@@ -177,6 +207,9 @@ export function createTransportBar({
       onPlay();
     }
   });
+
+  renderDownload.addEventListener('click', () => onExport?.());
+  exportCancel.addEventListener('click', () => onCancelExport?.());
 
   btnPrev.addEventListener('click', onSkipPrev);
   btnNext.addEventListener('click', onSkipNext);
@@ -232,6 +265,9 @@ export function createTransportBar({
     latestRenderStatus = { ...latestRenderStatus, ...status };
     renderRow.hidden = !latestRenderStatus.visible;
     if (!latestRenderStatus.visible) {
+      // Engines without a whole-script pre-render have no bar to hang the
+      // affordance off; the header button is the entry point there.
+      setDownloadVisible(false);
       setPlayDisabled(false);
       return;
     }
@@ -267,12 +303,88 @@ export function createTransportBar({
       renderDetail.textContent = `Building a safe playback lead${formatEta(latestRenderStatus.etaSeconds) ? ` · ${formatEta(latestRenderStatus.etaSeconds)}` : ''}`;
     }
 
+    // The whole script is banked, so the export is a cache read rather than a
+    // re-render. That is the moment worth offering it right here, next to the
+    // bar that just finished.
+    const complete = percent >= 100 && latestRenderStatus.canPlay && !latestRenderStatus.error;
+    setDownloadVisible(complete && !latestExportStatus.active);
+
     setPlayDisabled(
       latestRenderStatus.visible && !latestRenderStatus.canPlay && latestPlaybackState === PLAYBACK_STATES.IDLE,
     );
     btnPlay.title = btnPlay.disabled
       ? `${engineLabel} is rendering enough audio for uninterrupted playback`
       : 'Play / Pause (Spacebar)';
+  }
+
+  /**
+   * The nearest control that can actually hold focus.
+   *
+   * Play is disabled whenever the pre-render has not reached a safe lead, and
+   * focusing a disabled button is a no-op that drops the caret to the body -
+   * which is the exact failure the focus hand-off exists to prevent.
+   */
+  function focusFallback() {
+    if (!exportRow.hidden) return exportCancel;
+    if (!renderDownload.hidden) return renderDownload;
+    return btnPlay.disabled ? btnPrev : btnPlay;
+  }
+
+  function setDownloadVisible(visible) {
+    if (renderDownload.hidden === !visible) return;
+    // Hiding the control the caret is on would strand focus on the body.
+    const hadFocus = !visible && document.activeElement === renderDownload;
+    renderDownload.hidden = !visible;
+    if (hadFocus) focusFallback().focus();
+  }
+
+  const EXPORT_PHASE_LABELS = {
+    preparing: 'Preparing the export',
+    rendering: 'Rendering the read',
+    encoding: 'Finishing the audio',
+    saving: 'Saving the file',
+  };
+
+  /**
+   * Paint export progress in its own row.
+   *
+   * Separate from the pre-render row on purpose: they can be true at once (a
+   * Studio script is pre-rendered *and* exporting), and collapsing them into one
+   * bar would make each one's percentage look like the other's.
+   */
+  function updateExportProgress(status = {}) {
+    const wasActive = latestExportStatus.active;
+    const hadCancelFocus = document.activeElement === exportCancel;
+    latestExportStatus = { ...latestExportStatus, ...status };
+
+    const active = Boolean(latestExportStatus.active);
+    exportRow.hidden = !active;
+
+    if (active) {
+      const percent = Math.max(0, Math.min(100, Number(latestExportStatus.percent) || 0));
+      exportFill.style.width = `${percent}%`;
+      exportTrack.setAttribute('aria-valuenow', String(percent));
+      exportLabel.textContent = `${EXPORT_PHASE_LABELS[latestExportStatus.phase] || 'Exporting'} · ${percent}%`;
+      const eta = formatEta(latestExportStatus.etaSeconds);
+      exportDetail.textContent =
+        latestExportStatus.phase === 'rendering' && eta ? eta : 'Keep this tab open until the file is saved';
+      // Offering the same export from two controls at once invites a second
+      // click that can only be refused.
+      setDownloadVisible(false);
+      return;
+    }
+
+    // Settle the pre-render row first: it owns the download affordance, and both
+    // the failure notice and the focus hand-off below depend on whether that
+    // button came back.
+    updateRenderProgress({});
+    if (latestExportStatus.error) {
+      // The reason belongs where the listener was already looking.
+      renderDetail.textContent = latestExportStatus.error;
+    }
+    if (wasActive && hadCancelFocus) {
+      focusFallback().focus();
+    }
   }
 
   function updateActiveSpeaker(element, voice, nuance, others = []) {
@@ -324,6 +436,7 @@ export function createTransportBar({
     visualizerCanvas,
     updatePlaybackState,
     updateRenderProgress,
+    updateExportProgress,
     updateActiveSpeaker,
     updateProgress,
   };

@@ -17,12 +17,14 @@ By leveraging advanced in-browser neural Text-to-Speech (TTS), ScriptReader can 
 * **Direction-Aware Performance**: Parentheticals actually change the delivery. `(whispering)` drops the level and slows the read; `(authoritative)` lowers the pitch and firms the tempo; `(over comms)` band-limits the voice like a radio; an `(O.S.)` cue moves it off-screen.
 * **Teleprompter UI**: Follow along with the audio playback via a clean, auto-scrolling teleprompter interface that highlights the current active line.
 * **Cast Studio**: Audition every voice against your own dialogue, then tune pitch and pace per character. Choices persist per script.
+* **Download the Read**: Export the whole script as a single `.m4a` — the same mix the speakers produce, with the overlaps, pacing, panning and filters intact — to listen to away from the app or keep for later. Encoding uses the browser's own AAC encoder, so there is no extra dependency; browsers without one (Firefox today) get an uncompressed `.wav` instead.
 
 ## How It Works
 
 1. **Upload a Script**: Drag and drop a `.fountain` or `.pdf` file.
 2. **Assign Voices**: Open the Cast Panel to map characters to specific synthetic voice profiles. 
 3. **Play**: Hit play on the transport bar, and the application will orchestrate the table read.
+4. **Keep It** (optional): Press **Download** in the header to render the whole script to one audio file. Every engine except the browser's built-in voice can be exported — Studio Local scripts already at 100% export straight from the render cache, and the others render as the export walks the script.
 
 ## Overlap and pacing notation
 
